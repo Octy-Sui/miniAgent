@@ -26,3 +26,58 @@
 13. This repository favors minimal abstractions and minimal dependencies.
     Do not introduce helpers, classes, abstractions, or dependencies until
     they provide clear value.
+
+# Commit Messages
+
+Use the following format:
+
+* `test: description` for test changes.
+* `ci: description` for CI configuration and GitHub workflow changes.
+* `dev: description` for development tooling and development instructions, including Cursor or Claude rules.
+* `fix(component): description` for bug fixes.
+* `feat(component): description` for new capabilities.
+* `enh(component): description` for improvements to existing capabilities, behavior, performance, or usability.
+* `docs: description` for documentation.
+* `ref(component): description` for internal refactoring that does not intentionally change behavior.
+* `chore: description` or `chore(deps): description` for maintenance tasks such as dependency updates, pre-commit hooks, and import cleanup.
+
+Descriptions should explain the intent of the change rather than implementation details.
+
+Use lowercase descriptions and do not end them with a period.
+
+## Style notes
+
+<IMPORTANT>Do **NOT** add `Co-authored-by: Cursor` or similar AI attribution lines to commit messages or trailers.</IMPORTANT>
+
+## Reviewing
+
+Before preparing a commit message, review the changes for critical issues.
+
+Flag as critical:
+
+* Unintentional unhandled exceptions.
+* Logic that appears incorrect or internally inconsistent.
+* Breaking changes to public interfaces, protocols, schemas, configuration formats, or CLI contracts without corresponding updates to implementations or callers.
+
+Flag as minor:
+
+* Imports not at the top of the file.
+
+Minor issues should be reported but should not block the commit.
+
+Do not flag stylistic preferences or unrelated minor improvements.
+
+## Components
+
+Use these component names for scoped commits:
+
+* `models` — model interfaces and providers such as litellm, anthropic, openai, portkey, and openrouter.
+* `agents` — agent classes such as default, interactive, and multimodal agents.
+* `env` — execution environments such as docker, local, singularity, bubblewrap, and swerex.
+* `config` — configuration files and configuration handling.
+* `run` — run scripts such as mini and hello_world.
+* `benchmarks` — benchmark runners such as swebench and inspector.
+* `cli` — CLI argument parsing and behavior.
+* `deps` — dependency maintenance.
+
+For changes spanning multiple components, use the component that best represents the intent of the change rather than listing multiple components. Split unrelated changes into separate commits when practical.
