@@ -6,6 +6,7 @@ import asyncio
 import unittest
 from typing import Any
 
+from miniagent.agents import AgentSpec, ModelTarget
 from miniagent.models.model import (
     FinishReason,
     Message,
@@ -27,8 +28,10 @@ from miniagent.tools import Tool
 class QueueProvider(ModelProvider):
     def __init__(self, responses: list[ModelResponse | Exception]) -> None:
         self.responses = responses
+        self.requests: list[ModelRequest] = []
 
     async def generate(self, request: ModelRequest) -> ModelResponse:
+        self.requests.append(request)
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -85,15 +88,25 @@ def tool_response(name: str = "ok") -> ModelResponse:
     )
 
 
+def agent(*, allowed_tools: list[str] | None = None) -> AgentSpec:
+    return AgentSpec(
+        name="test",
+        system_prompt="Test system prompt.",
+        model=ModelTarget(provider="test", model="test-model"),
+        allowed_tools=allowed_tools or [],
+        temperature=0.25,
+        max_output_tokens=100,
+    )
+
+
 class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_model_stop_completes_run(self) -> None:
         runtime = AgentRuntime(
             provider=QueueProvider([final_response()]),
-            model="test",
             tools={},
         )
 
-        result = await runtime.run([Message(role="user", content="task")])
+        result = await runtime.run(agent(), "task")
 
         self.assertEqual(result.status, RunStatus.COMPLETED)
         self.assertEqual(result.reason, TerminationReason.MODEL_COMPLETED)
@@ -101,18 +114,22 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.steps, 1)
 
     async def test_step_limit_stops_tool_loop(self) -> None:
+        provider = QueueProvider([tool_response(), tool_response()])
         runtime = AgentRuntime(
-            provider=QueueProvider([tool_response(), tool_response()]),
-            model="test",
+            provider=provider,
             tools={"ok": SuccessfulTool()},
             config=RuntimeConfig(max_steps=2),
         )
 
-        result = await runtime.run([Message(role="user", content="task")])
+        result = await runtime.run(agent(allowed_tools=["ok"]), "task")
 
         self.assertEqual(result.status, RunStatus.FAILED)
         self.assertEqual(result.reason, TerminationReason.MAX_STEPS_REACHED)
         self.assertEqual(result.steps, 2)
+        self.assertEqual(provider.requests[0].model, "test-model")
+        self.assertEqual(provider.requests[0].temperature, 0.25)
+        self.assertEqual(provider.requests[0].max_output_tokens, 100)
+        self.assertEqual([tool.name for tool in provider.requests[0].tools], ["ok"])
 
     async def test_abnormal_model_finish_fails_run(self) -> None:
         response = ModelResponse(
@@ -121,11 +138,10 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         runtime = AgentRuntime(
             provider=QueueProvider([response]),
-            model="test",
             tools={},
         )
 
-        result = await runtime.run([Message(role="user", content="task")])
+        result = await runtime.run(agent(), "task")
 
         self.assertEqual(result.reason, TerminationReason.MODEL_FAILED)
         assert result.error is not None
@@ -134,11 +150,10 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_provider_exception_fails_run(self) -> None:
         runtime = AgentRuntime(
             provider=QueueProvider([RuntimeError("offline")]),
-            model="test",
             tools={},
         )
 
-        result = await runtime.run([Message(role="user", content="task")])
+        result = await runtime.run(agent(), "task")
 
         self.assertEqual(result.reason, TerminationReason.MODEL_FAILED)
         assert result.error is not None
@@ -149,12 +164,11 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
             provider=QueueProvider(
                 [tool_response("missing"), tool_response("missing")]
             ),
-            model="test",
             tools={},
             config=RuntimeConfig(max_consecutive_failures=2),
         )
 
-        result = await runtime.run([Message(role="user", content="task")])
+        result = await runtime.run(agent(), "task")
 
         self.assertEqual(
             result.reason,
@@ -167,11 +181,10 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         token = CancellationToken()
         runtime = AgentRuntime(
             provider=provider,
-            model="test",
             tools={},
             cancellation_token=token,
         )
-        run = asyncio.create_task(runtime.run([Message(role="user", content="task")]))
+        run = asyncio.create_task(runtime.run(agent(), "task"))
         await provider.started.wait()
 
         token.cancel()
@@ -183,8 +196,8 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_asyncio_cancellation_propagates_and_stops_model(self) -> None:
         provider = BlockingProvider()
-        runtime = AgentRuntime(provider=provider, model="test", tools={})
-        run = asyncio.create_task(runtime.run([Message(role="user", content="task")]))
+        runtime = AgentRuntime(provider=provider, tools={})
+        run = asyncio.create_task(runtime.run(agent(), "task"))
         await provider.started.wait()
 
         run.cancel()

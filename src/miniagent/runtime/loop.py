@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Mapping
 from contextlib import suppress
 from typing import TypeVar
 
+from miniagent.agents import AgentSpec
 from miniagent.models.model import Message, ModelRequest, ModelResponse
 from miniagent.models.tool import ToolError, ToolResult, ToolStatus
 from miniagent.providers import ModelProvider
@@ -38,20 +39,23 @@ class AgentRuntime:
         self,
         *,
         provider: ModelProvider,
-        model: str,
         tools: Mapping[str, Tool],
         config: RuntimeConfig | None = None,
         cancellation_token: CancellationToken | None = None,
     ) -> None:
         self.provider = provider
-        self.model = model
         self._tools = dict(tools)
-        self.tools = [tool.definition for tool in self._tools.values()]
         self.config = config or RuntimeConfig()
         self.cancellation_token = cancellation_token or CancellationToken()
 
-    async def run(self, messages: list[Message]) -> RunResult:
-        state = RunState(messages=list(messages))
+    async def run(self, agent: AgentSpec, task: str) -> RunResult:
+        self._validate_agent_tools(agent)
+        state = RunState(
+            messages=[
+                Message(role="system", content=agent.system_prompt),
+                Message(role="user", content=task),
+            ]
+        )
 
         try:
             while True:
@@ -69,7 +73,7 @@ class AgentRuntime:
 
                 try:
                     response = await self._await_with_cancellation(
-                        self.provider.generate(self._build_request(state))
+                        self.provider.generate(self._build_request(agent, state))
                     )
                 except _CancellationRequested:
                     raise
@@ -89,7 +93,7 @@ class AgentRuntime:
                 if decision is not None:
                     return self._decision_result(state, decision)
 
-                results = await self._execute_tool_calls(response, state)
+                results = await self._execute_tool_calls(agent, response, state)
                 if tool_step_failed(results):
                     state.consecutive_failures += 1
                 else:
@@ -104,15 +108,26 @@ class AgentRuntime:
         except _CancellationRequested:
             return self._cancelled_result(state)
 
-    def _build_request(self, state: RunState) -> ModelRequest:
+    def _validate_agent_tools(self, agent: AgentSpec) -> None:
+        unknown_tools = set(agent.allowed_tools) - self._tools.keys()
+        if unknown_tools:
+            names = ", ".join(sorted(unknown_tools))
+            raise ValueError(f"Agent {agent.name!r} references unknown tools: {names}")
+
+    def _build_request(self, agent: AgentSpec, state: RunState) -> ModelRequest:
         return ModelRequest(
-            model=self.model,
+            model=agent.model.model,
             messages=state.messages,
-            tools=self.tools,
+            tools=[
+                self._tools[name].definition for name in agent.allowed_tools
+            ],
+            max_output_tokens=agent.max_output_tokens,
+            temperature=agent.temperature,
         )
 
     async def _execute_tool_calls(
         self,
+        agent: AgentSpec,
         response: ModelResponse,
         state: RunState,
     ) -> list[ToolResult]:
@@ -121,15 +136,15 @@ class AgentRuntime:
             if self.cancellation_token.is_cancelled:
                 raise _CancellationRequested
 
-            tool = self._tools.get(call.name)
-            if tool is None:
+            if call.name not in agent.allowed_tools:
                 result = ToolResult(
                     tool_call_id=call.id,
-                    status=ToolStatus.ERROR,
-                    content=f"Unknown tool: {call.name}",
-                    error=ToolError(code="UNKNOWN_TOOL", message=call.name),
+                    status=ToolStatus.DENIED,
+                    content=f"Tool not allowed for agent {agent.name}: {call.name}",
+                    error=ToolError(code="TOOL_NOT_ALLOWED", message=call.name),
                 )
             else:
+                tool = self._tools[call.name]
                 try:
                     result = await self._await_with_cancellation(
                         tool.execute(call.arguments, tool_call_id=call.id)

@@ -28,8 +28,6 @@ class QwenProvider(ModelProvider):
             api_key=api_key,
             base_url=base_url,
         )
-        self.temperature: int = 0
-        self.max_tokens: int = 1000000
 
     def _to_provider_message(self, message: Message) -> dict[str, Any]:
         """
@@ -105,15 +103,9 @@ class QwenProvider(ModelProvider):
                 }
                 for tool in request.tools
             ],
-            temperature=request.temperature
-            if request.temperature is not None
-            else self.temperature,
-            max_tokens=request.max_output_tokens
-            if request.max_output_tokens is not None
-            else self.max_tokens,
+            temperature=request.temperature,
+            max_tokens=request.max_output_tokens,
         )
-        print(f"msg:{response}")
-
         choice = response.choices[0]
         provider_message = choice.message
 
