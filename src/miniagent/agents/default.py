@@ -6,16 +6,26 @@ import traceback
 from pathlib import Path
 
 from miniagent.config import Settings
-from miniagent.models.model import Message, ModelRequest
-from miniagent.models.tool import ToolError, ToolResult, ToolStatus
+from miniagent.models.model import Message
 from miniagent.providers.qwen import QwenProvider
+from miniagent.runtime import AgentRuntime, RunResult, RunStatus
 from miniagent.tools.read_file import ReadFileTool
 from miniagent.tools.shell import ShellTool
 
-SYSTEM_PROMPT = "You are a helpful assistant that can interact with a computer shell to solve programming tasks.\n"
+SYSTEM_PROMPT = (
+    "You are a helpful assistant that can interact with a computer shell "
+    "to solve programming tasks.\n"
+)
+SAMPLE_TASK = "model qwen的providers实现路径是？"
 
 
-async def run():
+async def run(task: str) -> RunResult:
+    setting = Settings()
+    workspace = Path.cwd()
+    tools = {
+        "read_file": ReadFileTool(workspace),
+        "shell": ShellTool(workspace),
+    }
     messages = [
         Message(
             role="system",
@@ -27,65 +37,28 @@ async def run():
         ),
     ]
 
-    provider = QwenProvider(api_key=api_key, base_url=base_url)
-    while True:
-        response = await provider.generate(
-            ModelRequest(
-                model=model,
-                messages=messages,
-                tools=[tool.definition for tool in tools.values()],
-            )
-        )
-        # print(response)
-
-        messages.append(response.message)
-
-        if not response.message.tool_calls:
-            print(response.message.content)
-            return response.message.content
-
-        for call in response.message.tool_calls:
-            tool = tools.get(call.name)
-
-            if tool is None:
-                result = ToolResult(
-                    tool_call_id=call.id,
-                    status=ToolStatus.ERROR,
-                    content=(f"Unknown tool: {call.name}"),
-                    error=ToolError(
-                        code="UNKNOWN_TOOL",
-                        message=call.name,
-                    ),
-                )
-            else:
-                result = await tool.execute(
-                    call.arguments,
-                    tool_call_id=call.id,
-                )
-
-            messages.append(
-                Message(
-                    role="tool",
-                    tool_call_id=call.id,
-                    content=result.content,
-                )
-            )
+    runtime = AgentRuntime(
+        provider=QwenProvider(
+            api_key=setting.openai_api_key,
+            base_url=setting.openai_base_url,
+        ),
+        model="qwen3.8-flash",
+        tools=tools,
+    )
+    return await runtime.run(messages)
 
 
 async def main() -> None:
-    await run()
+    result = await run(SAMPLE_TASK)
+    if result.status is RunStatus.COMPLETED:
+        print(result.output)
+    else:
+        print(f"Agent stopped: {result.reason}")
+        if result.error is not None:
+            print(result.error.message)
 
 
 if __name__ == "__main__":
-    # main()
-    setting = Settings()
-
-    api_key = setting.openai_api_key
-    base_url = setting.openai_base_url
-    model = "qwen3.8-flash"
-    task = "model qwen的providers实现路径是？"
-    path = Path.cwd()
-    tools = {"read_file": ReadFileTool(path), "shell": ShellTool(path)}
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
@@ -93,3 +66,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"How exceptional! {e}")
         traceback.print_exc()
+        raise

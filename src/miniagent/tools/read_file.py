@@ -76,7 +76,7 @@ class ReadFileTool(Tool):
                 status=ToolStatus.ERROR,
                 content=f"Cannot read binary file: {path}",
                 error=ToolError(
-                    code="NOT_TEXT_FILE",
+                    code="DECODE_ERROR",
                     message="File is not valid UTF-8 text.",
                 ),
             )

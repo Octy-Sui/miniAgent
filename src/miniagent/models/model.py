@@ -22,7 +22,6 @@ class Message(BaseModel):
 class ModelRequest(BaseModel):
     model: str
     messages: list[Message]
-
     tools: list[ToolDefinition] = Field(default_factory=list)
 
     max_output_tokens: int | None = None

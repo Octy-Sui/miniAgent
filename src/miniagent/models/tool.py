@@ -46,17 +46,10 @@ class WorkspaceDelta(BaseModel):
 
 class ToolResult(BaseModel):
     tool_call_id: str
-
     status: ToolStatus
-
     content: str
-
     data: dict[str, Any] | None = None
-
     error: ToolError | None = None
-
     artifacts: list[ArtifactRef] = Field(default_factory=list)
-
     metrics: dict[str, Any] = Field(default_factory=dict)
-
     workspace_delta: WorkspaceDelta | None = None
