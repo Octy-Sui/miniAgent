@@ -145,7 +145,7 @@ def main(
     except (KeyboardInterrupt, asyncio.CancelledError):
         raise typer.Exit(code=130) from None
 
-    if result.status is RunStatus.COMPLETED:
+    if result.status is RunStatus.SUCCEEDED:
         typer.echo(result.output)
         return
 

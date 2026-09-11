@@ -4,7 +4,9 @@
 
 import asyncio
 import unittest
+from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from miniagent.agents import AgentSpec, ModelTarget
 from miniagent.models.model import (
@@ -18,9 +20,18 @@ from miniagent.providers import ModelProvider
 from miniagent.runtime import (
     AgentRuntime,
     CancellationToken,
+    EvaluationRequest,
+    EvaluationResult,
+    Evaluator,
+    InvalidRunTransition,
+    RunCursor,
+    RunError,
+    RunResult,
+    RunState,
     RunStatus,
     RuntimeConfig,
     TerminationReason,
+    transition,
 )
 from miniagent.tools import Tool
 
@@ -71,6 +82,16 @@ class SuccessfulTool(Tool):
         )
 
 
+class RecordingEvaluator(Evaluator):
+    def __init__(self, result: EvaluationResult) -> None:
+        self.result = result
+        self.requests: list[EvaluationRequest] = []
+
+    async def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+        self.requests.append(request)
+        return self.result
+
+
 def final_response(content: str = "finished") -> ModelResponse:
     return ModelResponse(
         message=Message(role="assistant", content=content),
@@ -99,19 +120,125 @@ def agent(*, allowed_tools: list[str] | None = None) -> AgentSpec:
     )
 
 
+def run_state() -> RunState:
+    now = datetime.now(UTC)
+    return RunState(
+        run_id=uuid4(),
+        task="task",
+        agent_spec=agent(),
+        config=RuntimeConfig(),
+        created_at=now,
+        updated_at=now,
+    )
+
+
+class RunStateTests(unittest.TestCase):
+    def test_valid_lifecycle_reaches_succeeded(self) -> None:
+        state = run_state()
+
+        transition(state, RunStatus.PREPARING)
+        transition(state, RunStatus.RUNNING, cursor=RunCursor.REQUEST_MODEL)
+        state.candidate_output = "candidate"
+        transition(state, RunStatus.EVALUATING)
+        state.final_output = "verified"
+        transition(
+            state,
+            RunStatus.SUCCEEDED,
+            reason=TerminationReason.TASK_VERIFIED,
+        )
+
+        self.assertEqual(state.status, RunStatus.SUCCEEDED)
+        self.assertEqual(state.version, 4)
+        self.assertIsNotNone(state.started_at)
+        self.assertIsNotNone(state.finished_at)
+
+        result = RunResult.from_state(state)
+        self.assertEqual(result.run_id, state.run_id)
+        self.assertEqual(result.output, "verified")
+        self.assertEqual(result.usage, state.usage)
+
+    def test_illegal_transition_does_not_mutate_state(self) -> None:
+        state = run_state()
+
+        with self.assertRaises(InvalidRunTransition):
+            transition(state, RunStatus.RUNNING, cursor=RunCursor.REQUEST_MODEL)
+
+        self.assertEqual(state.status, RunStatus.CREATED)
+        self.assertEqual(state.version, 0)
+
+    def test_cancelled_before_start_can_produce_result(self) -> None:
+        state = run_state()
+        transition(
+            state,
+            RunStatus.CANCELLED,
+            reason=TerminationReason.CANCEL_REQUESTED,
+        )
+
+        result = RunResult.from_state(state)
+
+        self.assertEqual(result.status, RunStatus.CANCELLED)
+        self.assertIsNone(result.started_at)
+
+    def test_invalid_target_invariants_do_not_mutate_state(self) -> None:
+        state = run_state()
+        transition(state, RunStatus.PREPARING)
+        transition(state, RunStatus.RUNNING, cursor=RunCursor.REQUEST_MODEL)
+
+        with self.assertRaisesRegex(ValueError, "candidate output"):
+            transition(state, RunStatus.EVALUATING)
+
+        self.assertEqual(state.status, RunStatus.RUNNING)
+        self.assertEqual(state.cursor, RunCursor.REQUEST_MODEL)
+        self.assertEqual(state.version, 2)
+
+    def test_reserved_recovery_fields_have_empty_defaults(self) -> None:
+        state = run_state()
+
+        self.assertEqual(state.usage.model_requests, 0)
+        self.assertEqual(state.completed_tool_call_ids, set())
+        self.assertIsNone(state.pending_approval_id)
+        self.assertIsNone(state.checkpoint_id)
+
+
 class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_model_stop_completes_run(self) -> None:
+    async def test_model_stop_is_evaluated_before_run_succeeds(self) -> None:
+        evaluator = RecordingEvaluator(
+            EvaluationResult(passed=True, output="verified output")
+        )
         runtime = AgentRuntime(
             provider=QueueProvider([final_response()]),
             tools={},
+            evaluator=evaluator,
         )
 
         result = await runtime.run(agent(), "task")
 
-        self.assertEqual(result.status, RunStatus.COMPLETED)
-        self.assertEqual(result.reason, TerminationReason.MODEL_COMPLETED)
-        self.assertEqual(result.output, "finished")
-        self.assertEqual(result.steps, 1)
+        self.assertEqual(result.status, RunStatus.SUCCEEDED)
+        self.assertEqual(result.reason, TerminationReason.TASK_VERIFIED)
+        self.assertEqual(result.output, "verified output")
+        self.assertEqual(len(evaluator.requests), 1)
+        self.assertEqual(evaluator.requests[0].candidate_output, "finished")
+        self.assertEqual(evaluator.requests[0].run_id, result.run_id)
+
+    async def test_failed_evaluation_fails_run(self) -> None:
+        evaluator = RecordingEvaluator(
+            EvaluationResult(
+                passed=False,
+                error=RunError(code="TESTS_FAILED", message="Tests failed"),
+            )
+        )
+        runtime = AgentRuntime(
+            provider=QueueProvider([final_response()]),
+            tools={},
+            evaluator=evaluator,
+        )
+
+        result = await runtime.run(agent(), "task")
+
+        self.assertEqual(result.status, RunStatus.FAILED)
+        self.assertEqual(result.reason, TerminationReason.EVALUATION_FAILED)
+        assert result.error is not None
+        self.assertEqual(result.error.code, "TESTS_FAILED")
 
     async def test_step_limit_stops_tool_loop(self) -> None:
         provider = QueueProvider([tool_response(), tool_response()])
@@ -125,7 +252,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.status, RunStatus.FAILED)
         self.assertEqual(result.reason, TerminationReason.MAX_STEPS_REACHED)
-        self.assertEqual(result.steps, 2)
+        self.assertEqual(len(provider.requests), 2)
         self.assertEqual(provider.requests[0].model, "test-model")
         self.assertEqual(provider.requests[0].temperature, 0.25)
         self.assertEqual(provider.requests[0].max_output_tokens, 100)
@@ -160,10 +287,11 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.error.code, "PROVIDER_EXCEPTION")
 
     async def test_consecutive_failed_tool_steps_stop_run(self) -> None:
+        provider = QueueProvider(
+            [tool_response("missing"), tool_response("missing")]
+        )
         runtime = AgentRuntime(
-            provider=QueueProvider(
-                [tool_response("missing"), tool_response("missing")]
-            ),
+            provider=provider,
             tools={},
             config=RuntimeConfig(max_consecutive_failures=2),
         )
@@ -174,7 +302,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
             result.reason,
             TerminationReason.CONSECUTIVE_FAILURE_LIMIT,
         )
-        self.assertEqual(result.consecutive_failures, 2)
+        self.assertEqual(len(provider.requests), 2)
 
     async def test_cancellation_stops_in_flight_model_request(self) -> None:
         provider = BlockingProvider()

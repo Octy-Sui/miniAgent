@@ -10,23 +10,23 @@ from miniagent.runtime.state import RunError, RunStatus, TerminationReason
 
 
 @dataclass(frozen=True)
-class TerminationDecision:
-    status: RunStatus
-    reason: TerminationReason
-    output: str | None = None
+class ModelDecision:
+    target: RunStatus
+    reason: TerminationReason | None = None
+    candidate_output: str | None = None
     error: RunError | None = None
 
 
-def evaluate_model_response(response: ModelResponse) -> TerminationDecision | None:
+def evaluate_model_response(response: ModelResponse) -> ModelDecision | None:
     """
-    Task正常完成条件: finish_reason == STOP and tool_calls 为空 and content 非空;
+    Task进入评估条件: finish_reason == STOP and tool_calls 为空 and content 非空;
     Task仍在执行条件: finish_reason == TOOL_CALL and tool_calls 非空;
     Task失败条件: 其他场景均为失败
     """
     if response.error is not None:
         # Task失败, 模型请求失败
-        return TerminationDecision(
-            status=RunStatus.FAILED,
+        return ModelDecision(
+            target=RunStatus.FAILED,
             reason=TerminationReason.MODEL_FAILED,
             error=RunError(
                 code=response.error.code,
@@ -46,11 +46,9 @@ def evaluate_model_response(response: ModelResponse) -> TerminationDecision | No
                 "MODEL_STOPPED_WITHOUT_CONTENT",
                 "Model stopped without a final response.",
             )
-        # Task成功, 正常完成条件
-        return TerminationDecision(
-            status=RunStatus.COMPLETED,
-            reason=TerminationReason.MODEL_COMPLETED,
-            output=response.message.content,
+        return ModelDecision(
+            target=RunStatus.EVALUATING,
+            candidate_output=response.message.content,
         )
 
     if response.finish_reason is FinishReason.TOOL_CALL:
@@ -64,8 +62,8 @@ def evaluate_model_response(response: ModelResponse) -> TerminationDecision | No
         )
 
     # 其他非正常返回FinishReason
-    return TerminationDecision(
-        status=RunStatus.FAILED,
+    return ModelDecision(
+        target=RunStatus.FAILED,
         reason=TerminationReason.MODEL_FAILED,
         error=RunError(
             code="MODEL_ABNORMAL_FINISH",
@@ -80,9 +78,9 @@ def tool_step_failed(results: list[ToolResult]) -> bool:
     )
 
 
-def _invalid_response(code: str, message: str) -> TerminationDecision:
-    return TerminationDecision(
-        status=RunStatus.FAILED,
+def _invalid_response(code: str, message: str) -> ModelDecision:
+    return ModelDecision(
+        target=RunStatus.FAILED,
         reason=TerminationReason.MODEL_FAILED,
         error=RunError(code=code, message=message),
     )

@@ -5,23 +5,32 @@
 import asyncio
 from collections.abc import Awaitable, Mapping
 from contextlib import suppress
+from datetime import UTC, datetime
 from typing import TypeVar
+from uuid import uuid4
 
 from miniagent.agents import AgentSpec
 from miniagent.models.model import Message, ModelRequest, ModelResponse
 from miniagent.models.tool import ToolError, ToolResult, ToolStatus
 from miniagent.providers import ModelProvider
 from miniagent.runtime.cancellation import CancellationToken
+from miniagent.runtime.evaluator import (
+    EvaluationRequest,
+    Evaluator,
+    PassThroughEvaluator,
+)
 from miniagent.runtime.state import (
+    RunCursor,
     RunError,
     RunResult,
     RunState,
     RunStatus,
     RuntimeConfig,
     TerminationReason,
+    transition,
 )
 from miniagent.runtime.termination import (
-    TerminationDecision,
+    ModelDecision,
     evaluate_model_response,
     tool_step_failed,
 )
@@ -42,20 +51,31 @@ class AgentRuntime:
         tools: Mapping[str, Tool],
         config: RuntimeConfig | None = None,
         cancellation_token: CancellationToken | None = None,
+        evaluator: Evaluator | None = None,
     ) -> None:
         self.provider = provider
         self._tools = dict(tools)
         self.config = config or RuntimeConfig()
         self.cancellation_token = cancellation_token or CancellationToken()
+        self.evaluator = evaluator or PassThroughEvaluator()
 
     async def run(self, agent: AgentSpec, task: str) -> RunResult:
         self._validate_agent_tools(agent)
+        now = datetime.now(UTC)
         state = RunState(
+            run_id=uuid4(),
+            task=task,
+            agent_spec=agent,
+            config=self.config,
             messages=[
                 Message(role="system", content=agent.system_prompt),
                 Message(role="user", content=task),
-            ]
+            ],
+            created_at=now,
+            updated_at=now,
         )
+        transition(state, RunStatus.PREPARING)
+        transition(state, RunStatus.RUNNING, cursor=RunCursor.REQUEST_MODEL)
 
         try:
             while True:
@@ -63,11 +83,12 @@ class AgentRuntime:
                     return self._cancelled_result(state)
 
                 if state.steps_started >= self.config.max_steps:
-                    return self._result(
+                    transition(
                         state,
-                        status=RunStatus.FAILED,
+                        RunStatus.FAILED,
                         reason=TerminationReason.MAX_STEPS_REACHED,
                     )
+                    return RunResult.from_state(state)
 
                 state.steps_started += 1
 
@@ -78,33 +99,42 @@ class AgentRuntime:
                 except _CancellationRequested:
                     raise
                 except Exception as exc:  # noqa: BLE001
-                    return self._result(
+                    transition(
                         state,
-                        status=RunStatus.FAILED,
+                        RunStatus.FAILED,
                         reason=TerminationReason.MODEL_FAILED,
                         error=RunError(
                             code="PROVIDER_EXCEPTION",
                             message=f"{type(exc).__name__}: {exc}",
                         ),
                     )
+                    return RunResult.from_state(state)
 
                 state.messages.append(response.message)
                 decision = evaluate_model_response(response)
                 if decision is not None:
-                    return self._decision_result(state, decision)
+                    return await self._handle_model_decision(state, decision)
 
+                state.pending_tool_calls = list(response.message.tool_calls)
+                state.cursor = RunCursor.EXECUTE_TOOL_CALLS
                 results = await self._execute_tool_calls(agent, response, state)
+                state.pending_tool_calls = []
+                state.cursor = RunCursor.REQUEST_MODEL
                 if tool_step_failed(results):
-                    state.consecutive_failures += 1
+                    state.consecutive_failed_steps += 1
                 else:
-                    state.consecutive_failures = 0
+                    state.consecutive_failed_steps = 0
 
-                if state.consecutive_failures >= self.config.max_consecutive_failures:
-                    return self._result(
+                if (
+                    state.consecutive_failed_steps
+                    >= self.config.max_consecutive_failures
+                ):
+                    transition(
                         state,
-                        status=RunStatus.FAILED,
+                        RunStatus.FAILED,
                         reason=TerminationReason.CONSECUTIVE_FAILURE_LIMIT,
                     )
+                    return RunResult.from_state(state)
         except _CancellationRequested:
             return self._cancelled_result(state)
 
@@ -206,41 +236,78 @@ class AgentRuntime:
                 with suppress(asyncio.CancelledError):
                     await task
 
-    def _decision_result(
+    async def _handle_model_decision(
         self,
         state: RunState,
-        decision: TerminationDecision,
+        decision: ModelDecision,
     ) -> RunResult:
-        return self._result(
-            state,
-            status=decision.status,
-            reason=decision.reason,
-            output=decision.output,
-            error=decision.error,
-        )
+        if decision.target is RunStatus.FAILED:
+            if decision.reason is None:
+                raise ValueError("Failed model decision requires a reason")
+            transition(
+                state,
+                RunStatus.FAILED,
+                reason=decision.reason,
+                error=decision.error,
+            )
+            return RunResult.from_state(state)
+
+        if decision.target is not RunStatus.EVALUATING:
+            raise ValueError(f"Unsupported model decision: {decision.target}")
+        if decision.candidate_output is None:
+            raise ValueError("Evaluation decision requires candidate output")
+
+        state.candidate_output = decision.candidate_output
+        transition(state, RunStatus.EVALUATING)
+
+        try:
+            evaluation = await self._await_with_cancellation(
+                self.evaluator.evaluate(
+                    EvaluationRequest(
+                        run_id=state.run_id,
+                        task=state.task,
+                        candidate_output=state.candidate_output,
+                    )
+                )
+            )
+        except _CancellationRequested:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            transition(
+                state,
+                RunStatus.FAILED,
+                reason=TerminationReason.EVALUATION_FAILED,
+                error=RunError(
+                    code="EVALUATOR_EXCEPTION",
+                    message=f"{type(exc).__name__}: {exc}",
+                ),
+            )
+            return RunResult.from_state(state)
+
+        if evaluation.passed:
+            state.final_output = (
+                evaluation.output
+                if evaluation.output is not None
+                else state.candidate_output
+            )
+            transition(
+                state,
+                RunStatus.SUCCEEDED,
+                reason=TerminationReason.TASK_VERIFIED,
+            )
+        else:
+            transition(
+                state,
+                RunStatus.FAILED,
+                reason=TerminationReason.EVALUATION_FAILED,
+                error=evaluation.error,
+            )
+        return RunResult.from_state(state)
 
     def _cancelled_result(self, state: RunState) -> RunResult:
-        return self._result(
+        transition(
             state,
-            status=RunStatus.CANCELLED,
+            RunStatus.CANCELLED,
             reason=TerminationReason.CANCEL_REQUESTED,
         )
-
-    @staticmethod
-    def _result(
-        state: RunState,
-        *,
-        status: RunStatus,
-        reason: TerminationReason,
-        output: str | None = None,
-        error: RunError | None = None,
-    ) -> RunResult:
-        return RunResult(
-            status=status,
-            reason=reason,
-            output=output,
-            steps=state.steps_started,
-            consecutive_failures=state.consecutive_failures,
-            messages=state.messages,
-            error=error,
-        )
+        return RunResult.from_state(state)

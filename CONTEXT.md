@@ -27,3 +27,19 @@ _Avoid_: Sub-run
 **Termination Reason**:
 The specific condition that caused a Run to end, distinct from the Run's broad completion status.
 _Avoid_: Finish reason
+
+**Run Status**:
+The lifecycle stage of a Run, including active stages and terminal outcomes.
+_Avoid_: Finish reason, model status
+
+**Run State**:
+The durable facts required to inspect or resume a Run, identified by one stable Run ID.
+_Avoid_: Runtime object, process state
+
+**Candidate Output**:
+The result submitted by an Agent for independent evaluation; it is not evidence that the Run succeeded.
+_Avoid_: Final result
+
+**Final Output**:
+The externally reported result of a Run after successful evaluation.
+_Avoid_: Candidate output
