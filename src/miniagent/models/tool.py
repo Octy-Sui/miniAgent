@@ -7,6 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from miniagent.models.artifact import ArtifactRef
+
 
 class ToolDefinition(BaseModel):
     name: str
@@ -31,11 +33,6 @@ class ToolError(BaseModel):
     code: str
     message: str
     retryable: bool = False
-
-
-class ArtifactRef(BaseModel):
-    uri: str
-    type: str | None = None
 
 
 class WorkspaceDelta(BaseModel):

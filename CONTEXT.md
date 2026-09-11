@@ -36,6 +36,34 @@ _Avoid_: Finish reason, model status
 The durable facts required to inspect or resume a Run, identified by one stable Run ID.
 _Avoid_: Runtime object, process state
 
+**Run Event**:
+An immutable, ordered fact about something that happened during a Run. Run Events are the audit history from which current state can be explained or reconstructed.
+_Avoid_: Message, log line
+
+**Run Snapshot**:
+A versioned copy of Run State at a known Run Event sequence, used to resume without replaying the complete event history.
+_Avoid_: Workspace checkpoint, event
+
+**Workspace**:
+The isolated, Run-owned code environment in which commands execute and candidate changes are produced.
+_Avoid_: Runtime, repository
+
+**Workspace Checkpoint**:
+A restorable identity for the code state of a Workspace at a safe boundary.
+_Avoid_: Run snapshot, artifact
+
+**Artifact**:
+An immutable, addressable large output produced by a Run, such as a patch, complete command output, test report, or trace.
+_Avoid_: Event payload, message
+
+**Recovery Decision**:
+A deterministic instruction describing how the Runtime should respond to failure, stagnation, regression, interruption, or budget pressure.
+_Avoid_: Recovery execution, retry result
+
+**Evaluation**:
+An independent determination of whether a Candidate Output satisfies the task without unacceptable regression.
+_Avoid_: Agent finish, model judgment
+
 **Candidate Output**:
 The result submitted by an Agent for independent evaluation; it is not evidence that the Run succeeded.
 _Avoid_: Final result

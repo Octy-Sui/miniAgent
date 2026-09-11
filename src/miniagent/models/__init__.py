@@ -1,7 +1,4 @@
-# File   : __init__.py
-# Created: 2026-09-09 17:48:21
-# Author : octy Sui
-
+from miniagent.models.artifact import ArtifactRef
 from miniagent.models.pricing import (
     ModelPrice,
     PriceConfig,
@@ -10,6 +7,7 @@ from miniagent.models.pricing import (
 from miniagent.models.settings import Settings
 
 __all__ = [
+    "ArtifactRef",
     "ModelPrice",
     "PriceConfig",
     "Settings",

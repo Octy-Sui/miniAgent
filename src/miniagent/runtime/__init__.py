@@ -4,12 +4,35 @@
 
 from miniagent.runtime.cancellation import CancellationToken
 from miniagent.runtime.evaluator import (
+    EvaluationCheck,
+    EvaluationPlan,
     EvaluationRequest,
     EvaluationResult,
     Evaluator,
     PassThroughEvaluator,
 )
+from miniagent.runtime.events import (
+    EventSequenceConflictError,
+    EventStore,
+    NewRunEvent,
+    RunEvent,
+    RunEventType,
+)
 from miniagent.runtime.loop import AgentRuntime
+from miniagent.runtime.recovery import (
+    RecoveryAction,
+    RecoveryController,
+    RecoveryDecision,
+    RecoveryLevel,
+    RecoveryRequest,
+    RecoveryTrigger,
+)
+from miniagent.runtime.snapshots import (
+    NewRunSnapshot,
+    RunSnapshot,
+    SnapshotStore,
+    SnapshotVersionConflictError,
+)
 from miniagent.runtime.state import (
     ALLOWED_TRANSITIONS,
     TERMINAL_STATUSES,
@@ -36,19 +59,36 @@ __all__ = [
     "TERMINAL_STATUSES",
     "AgentRuntime",
     "CancellationToken",
+    "EvaluationCheck",
+    "EvaluationPlan",
     "EvaluationRequest",
     "EvaluationResult",
     "Evaluator",
+    "EventSequenceConflictError",
+    "EventStore",
     "InvalidRunTransition",
+    "NewRunEvent",
+    "NewRunSnapshot",
     "PassThroughEvaluator",
+    "RecoveryAction",
+    "RecoveryController",
+    "RecoveryDecision",
+    "RecoveryLevel",
+    "RecoveryRequest",
+    "RecoveryTrigger",
     "RequestCost",
     "RunCursor",
     "RunError",
+    "RunEvent",
+    "RunEventType",
     "RunResult",
+    "RunSnapshot",
     "RunState",
     "RunStatus",
     "RunUsage",
     "RuntimeConfig",
+    "SnapshotStore",
+    "SnapshotVersionConflictError",
     "TerminationReason",
     "add_request_usage",
     "calculate_request_cost",
