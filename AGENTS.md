@@ -27,6 +27,40 @@
     Do not introduce helpers, classes, abstractions, or dependencies until
     they provide clear value.
 
+## Test style
+
+1. Use `pytest`, not `unittest`.
+2. Prefer real behavior over mocks. Do not mock or patch internal implementation details unless explicitly requested. Use fakes or mocks only at external boundaries when necessary.
+3. Test meaningful behavior, contracts, edge cases, and failure modes. Avoid trivial tests that merely restate Python, framework behavior, or implementation details.
+4. Keep each test focused on one behavior. Multiple assertions are fine when they verify the same behavior or result.
+5. Inline expressions that are used by only one assertion:
+
+```python
+# bad
+result = func()
+assert result == expected
+
+# good
+assert func() == expected
+```
+
+Keep intermediate values when they are reused or improve readability.
+
+6. For `pytest.mark.parametrize`, use a tuple of argument names and a list of argument values:
+
+```python
+@pytest.mark.parametrize(
+    ("input_value", "expected"),
+    [
+        (1, 2),
+        (2, 4),
+    ],
+)
+```
+
+7. Test observable behavior and public contracts rather than internal implementation details.
+8. When the reason for an exception is part of the contract, use `pytest.raises(..., match=...)` to verify the expected failure.
+
 # Commit Messages
 
 Use the following format:

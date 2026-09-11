@@ -12,7 +12,7 @@ miniAgent 是一个使用 Python 从零实现的最小 Agent Runtime。它让模
 - 对模型响应和 Tool Call 使用 Pydantic 结构化建模。
 - 支持正常完成、最大步数、模型异常、连续失败和外部取消等退出机制。
 - 通过 Typer 提供命令行入口。
-- 使用标准库 `unittest` 覆盖 Agent Runtime 的主要终止路径。
+- 使用 `pytest` 覆盖 CLI、定价、协议模型和 Agent Runtime 的主要行为。
 
 ## 运行流程
 
@@ -143,7 +143,10 @@ src/miniagent/
 ├── runtime/         # Agent Loop、状态、终止判断和取消机制
 └── tools/           # 工具接口及具体工具
 tests/
-└── test_runtime.py  # Runtime 单元测试
+├── test_cli.py              # CLI 输出与信号取消测试
+├── test_pricing.py          # 定价配置和用量计费测试
+├── test_protocol_models.py  # 协议模型校验测试
+└── test_runtime.py          # Runtime 状态与执行循环测试
 ```
 
 核心依赖方向：
@@ -158,11 +161,26 @@ Provider 只负责一次模型请求的协议适配。Agent 循环、Tool 调度
 
 ## 测试与类型检查
 
-运行单元测试：
+测试使用 `pytest` 和 `pytest-asyncio`，相关依赖位于 `dev` dependency group。安装开发依赖：
 
 ```bash
-uv run python -m unittest discover -s tests -v
+uv sync --dev
 ```
+
+运行完整测试套件：
+
+```bash
+uv run pytest
+```
+
+运行单个测试模块或测试用例：
+
+```bash
+uv run pytest tests/test_runtime.py
+uv run pytest tests/test_runtime.py::TestAgentRuntime::test_step_limit_stops_tool_loop
+```
+
+异步测试由 `pytest-asyncio` 以 auto 模式执行，无需逐个添加异步 marker。测试应优先验证公开契约和可观察行为；涉及 Provider、Evaluator 或系统信号等边界时，使用轻量 fake 隔离外部依赖。
 
 检查当前 Agent Runtime 相关代码：
 
