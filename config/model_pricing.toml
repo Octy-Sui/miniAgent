@@ -1,0 +1,16 @@
+currency = "USD"
+billing_unit_tokens = 1000000
+
+[[models]]
+provider = "qwen"
+model = "qwen3.8-flash"
+input_per_unit = "0.400000"
+cached_input_per_unit = "0.014815"
+output_per_unit = "0.400000"
+
+[[models]]
+provider = "qwen"
+model = "deepseek-v4-flash"
+input_per_unit = "0.148148"
+cached_input_per_unit = "0.148148"
+output_per_unit = "0.296296"

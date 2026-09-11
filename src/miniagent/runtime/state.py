@@ -124,8 +124,14 @@ class RunUsage(BaseModel):
     model_requests: int = Field(default=0, ge=0)
     tool_calls: int = Field(default=0, ge=0)
     input_tokens: int = Field(default=0, ge=0)
+    cached_input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
-    cost_usd: Decimal = Field(default=Decimal("0"), ge=0)
+    reasoning_output_tokens: int = Field(default=0, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+    input_cost_usd: Decimal = Field(default=Decimal(0), ge=0)
+    cached_input_cost_usd: Decimal = Field(default=Decimal(0), ge=0)
+    output_cost_usd: Decimal = Field(default=Decimal(0), ge=0)
+    cost_usd: Decimal = Field(default=Decimal(0), ge=0)
     active_duration_ms: int = Field(default=0, ge=0)
 
 

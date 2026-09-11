@@ -124,12 +124,27 @@ class QwenProvider(ModelProvider):
             tool_calls=tool_calls,
         )
 
+        prompt_details = (
+            response.usage.prompt_tokens_details if response.usage else None
+        )
+        completion_details = (
+            response.usage.completion_tokens_details if response.usage else None
+        )
+
         return ModelResponse(
             message=message,
             finish_reason=self._map_finish_reason(choice.finish_reason),
             usage=Usage(
                 input_tokens=response.usage.prompt_tokens,
+                cached_input_tokens=(
+                    prompt_details.cached_tokens or 0 if prompt_details else 0
+                ),
                 output_tokens=response.usage.completion_tokens,
+                reasoning_output_tokens=(
+                    completion_details.reasoning_tokens or 0
+                    if completion_details
+                    else 0
+                ),
                 total_tokens=response.usage.total_tokens,
             )
             if response.usage

@@ -15,5 +15,5 @@ DEFAULT_AGENT = AgentSpec(
     model=ModelTarget(provider="qwen", model="qwen3.8-flash"),
     allowed_tools=["read_file", "shell"],
     temperature=0,
-    max_output_tokens=1_000_000,
+    max_output_tokens=131_072,
 )

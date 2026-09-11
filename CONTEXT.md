@@ -43,3 +43,15 @@ _Avoid_: Final result
 **Final Output**:
 The externally reported result of a Run after successful evaluation.
 _Avoid_: Candidate output
+
+**Model Usage**:
+The provider-reported token consumption of one model request, including nested cached input and reasoning output counts.
+_Avoid_: Run usage, token cost
+
+**Run Usage**:
+The accumulated model and tool consumption of a Run, including its model cost.
+_Avoid_: Model usage, request usage
+
+**Request Cost**:
+The model charge attributed to one provider response under the active price configuration.
+_Avoid_: Run cost, token usage

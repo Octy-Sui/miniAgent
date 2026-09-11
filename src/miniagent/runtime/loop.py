@@ -10,6 +10,7 @@ from typing import TypeVar
 from uuid import uuid4
 
 from miniagent.agents import AgentSpec
+from miniagent.models import PriceConfig
 from miniagent.models.model import Message, ModelRequest, ModelResponse
 from miniagent.models.tool import ToolError, ToolResult, ToolStatus
 from miniagent.providers import ModelProvider
@@ -34,6 +35,7 @@ from miniagent.runtime.termination import (
     evaluate_model_response,
     tool_step_failed,
 )
+from miniagent.runtime.usage import add_request_usage, calculate_request_cost
 from miniagent.tools import Tool
 
 T = TypeVar("T")
@@ -52,15 +54,19 @@ class AgentRuntime:
         config: RuntimeConfig | None = None,
         cancellation_token: CancellationToken | None = None,
         evaluator: Evaluator | None = None,
+        pricing: PriceConfig | None = None,
     ) -> None:
         self.provider = provider
         self._tools = dict(tools)
         self.config = config or RuntimeConfig()
         self.cancellation_token = cancellation_token or CancellationToken()
         self.evaluator = evaluator or PassThroughEvaluator()
+        self.pricing = pricing
 
     async def run(self, agent: AgentSpec, task: str) -> RunResult:
         self._validate_agent_tools(agent)
+        if self.pricing is not None:
+            self.pricing.price_for(agent.model.provider, agent.model.model)
         now = datetime.now(UTC)
         state = RunState(
             run_id=uuid4(),
@@ -91,6 +97,7 @@ class AgentRuntime:
                     return RunResult.from_state(state)
 
                 state.steps_started += 1
+                state.usage.model_requests += 1
 
                 try:
                     response = await self._await_with_cancellation(
@@ -109,6 +116,33 @@ class AgentRuntime:
                         ),
                     )
                     return RunResult.from_state(state)
+
+                if self.pricing is not None:
+                    if response.usage is None:
+                        transition(
+                            state,
+                            RunStatus.FAILED,
+                            reason=TerminationReason.MODEL_FAILED,
+                            error=RunError(
+                                code="MODEL_USAGE_MISSING",
+                                message=(
+                                    "Provider response did not include token usage"
+                                ),
+                            ),
+                        )
+                        return RunResult.from_state(state)
+
+                    request_cost = calculate_request_cost(
+                        provider=agent.model.provider,
+                        model=agent.model.model,
+                        usage=response.usage,
+                        pricing=self.pricing,
+                    )
+                    state.usage = add_request_usage(
+                        state.usage,
+                        response.usage,
+                        request_cost,
+                    )
 
                 state.messages.append(response.message)
                 decision = evaluate_model_response(response)

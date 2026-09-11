@@ -25,6 +25,11 @@ from miniagent.runtime.state import (
     transition,
     validate_state,
 )
+from miniagent.runtime.usage import (
+    RequestCost,
+    add_request_usage,
+    calculate_request_cost,
+)
 
 __all__ = [
     "ALLOWED_TRANSITIONS",
@@ -36,6 +41,7 @@ __all__ = [
     "Evaluator",
     "InvalidRunTransition",
     "PassThroughEvaluator",
+    "RequestCost",
     "RunCursor",
     "RunError",
     "RunResult",
@@ -44,6 +50,8 @@ __all__ = [
     "RunUsage",
     "RuntimeConfig",
     "TerminationReason",
+    "add_request_usage",
+    "calculate_request_cost",
     "transition",
     "validate_state",
 ]

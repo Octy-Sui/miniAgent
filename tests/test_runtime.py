@@ -5,16 +5,20 @@
 import asyncio
 import unittest
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
 from miniagent.agents import AgentSpec, ModelTarget
+from miniagent.models import PriceConfig
 from miniagent.models.model import (
     FinishReason,
     Message,
     ModelRequest,
     ModelResponse,
+    Usage,
 )
+from miniagent.models.pricing import ModelPrice
 from miniagent.models.tool import ToolCall, ToolDefinition, ToolResult, ToolStatus
 from miniagent.providers import ModelProvider
 from miniagent.runtime import (
@@ -201,6 +205,48 @@ class RunStateTests(unittest.TestCase):
 
 
 class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_model_usage_and_cost_accumulate_across_steps(self) -> None:
+        first = tool_response()
+        first.usage = Usage(
+            input_tokens=100,
+            cached_input_tokens=40,
+            output_tokens=20,
+            reasoning_output_tokens=5,
+            total_tokens=120,
+        )
+        second = final_response()
+        second.usage = Usage(
+            input_tokens=200,
+            cached_input_tokens=50,
+            output_tokens=30,
+            reasoning_output_tokens=10,
+            total_tokens=230,
+        )
+        pricing = PriceConfig(
+            models=[
+                ModelPrice(
+                    provider="test",
+                    model="test-model",
+                    input_per_token=Decimal("0.0000004"),
+                    cached_input_per_token=Decimal("0.0000001"),
+                    output_per_token=Decimal("0.0000012"),
+                )
+            ]
+        )
+        runtime = AgentRuntime(
+            provider=QueueProvider([first, second]),
+            tools={"ok": SuccessfulTool()},
+            pricing=pricing,
+        )
+
+        result = await runtime.run(agent(allowed_tools=["ok"]), "task")
+
+        self.assertEqual(result.status, RunStatus.SUCCEEDED)
+        self.assertEqual(result.usage.model_requests, 2)
+        self.assertEqual(result.usage.total_tokens, 350)
+        self.assertEqual(result.usage.reasoning_output_tokens, 15)
+        self.assertEqual(result.usage.cost_usd, Decimal("0.0001530"))
+
     async def test_model_stop_is_evaluated_before_run_succeeds(self) -> None:
         evaluator = RecordingEvaluator(
             EvaluationResult(passed=True, output="verified output")

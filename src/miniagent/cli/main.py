@@ -11,7 +11,7 @@ import typer
 
 from miniagent.agents import AgentSpec, ModelTarget
 from miniagent.agents.default import DEFAULT_AGENT
-from miniagent.config import Settings
+from miniagent.models import Settings, load_price_config
 from miniagent.providers import ModelProvider
 from miniagent.providers.qwen import QwenProvider
 from miniagent.runtime import (
@@ -54,10 +54,12 @@ async def run_agent(
     workspace: Path,
     cancellation_token: CancellationToken | None = None,
 ) -> RunResult:
+    settings = Settings()
     runtime = AgentRuntime(
-        provider=build_provider(agent, Settings()),
+        provider=build_provider(agent, settings),
         tools=build_tools(workspace),
         cancellation_token=cancellation_token,
+        pricing=load_price_config(settings.model_pricing_file),
     )
     return await runtime.run(agent, task)
 
@@ -147,6 +149,21 @@ def main(
 
     if result.status is RunStatus.SUCCEEDED:
         typer.echo(result.output)
+        typer.echo(
+            "Token usage: "
+            f"total={result.usage.total_tokens} "
+            f"input={result.usage.input_tokens} "
+            f"(+{result.usage.cached_input_tokens} cached) "
+            f"output={result.usage.output_tokens} "
+            f"({result.usage.reasoning_output_tokens} reasoning)"
+        )
+        typer.echo(
+            "Cost: "
+            f"total=${result.usage.cost_usd:.8f} "
+            f"input=${result.usage.input_cost_usd:.8f} "
+            f"cached=${result.usage.cached_input_cost_usd:.8f} "
+            f"output=${result.usage.output_cost_usd:.8f} USD"
+        )
         return
 
     typer.echo(f"Agent stopped: {result.reason}", err=True)
