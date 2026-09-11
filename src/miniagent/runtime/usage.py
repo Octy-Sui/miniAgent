@@ -17,6 +17,7 @@ class RequestCost(BaseModel):
     provider: str
     model: str
     currency: str
+    cached_input_priced_separately: bool = False
     input_cost: Decimal = Field(default=Decimal(0), ge=0)
     cached_input_cost: Decimal = Field(default=Decimal(0), ge=0)
     output_cost: Decimal = Field(default=Decimal(0), ge=0)
@@ -38,16 +39,24 @@ def calculate_request_cost(
     pricing: PriceConfig,
 ) -> RequestCost:
     price = pricing.price_for(provider, model)
-    input_cost = Decimal(usage.uncached_input_tokens) * price.input_per_token
-    cached_input_cost = (
-        Decimal(usage.cached_input_tokens) * price.cached_input_per_token
-    )
+    cached_input_priced_separately = price.cached_input_per_token is not None
+    if price.cached_input_per_token is None:
+        input_cost = Decimal(usage.input_tokens) * price.input_per_token
+        cached_input_cost = Decimal(0)
+    else:
+        input_cost = (
+            Decimal(usage.uncached_input_tokens) * price.input_per_token
+        )
+        cached_input_cost = (
+            Decimal(usage.cached_input_tokens) * price.cached_input_per_token
+        )
     output_cost = Decimal(usage.output_tokens) * price.output_per_token
 
     return RequestCost(
         provider=provider,
         model=model,
         currency=pricing.currency,
+        cached_input_priced_separately=cached_input_priced_separately,
         input_cost=input_cost,
         cached_input_cost=cached_input_cost,
         output_cost=output_cost,
@@ -70,8 +79,14 @@ def add_request_usage(
             current.reasoning_output_tokens + usage.reasoning_output_tokens
         ),
         total_tokens=current.total_tokens + usage.total_tokens,
+        cached_input_priced_separately=(
+            current.cached_input_priced_separately
+            or cost.cached_input_priced_separately
+        ),
         input_cost_usd=current.input_cost_usd + cost.input_cost,
-        cached_input_cost_usd=(current.cached_input_cost_usd + cost.cached_input_cost),
+        cached_input_cost_usd=(
+            current.cached_input_cost_usd + cost.cached_input_cost
+        ),
         output_cost_usd=current.output_cost_usd + cost.output_cost,
         cost_usd=current.cost_usd + cost.total_cost,
         active_duration_ms=current.active_duration_ms,

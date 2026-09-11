@@ -48,6 +48,10 @@ _Avoid_: Candidate output
 The provider-reported token consumption of one model request, including nested cached input and reasoning output counts.
 _Avoid_: Run usage, token cost
 
+**Input Pricing**:
+Input is priced either as separate uncached and cached categories or as one category containing all input tokens.
+_Avoid_: Model usage, output pricing
+
 **Run Usage**:
 The accumulated model and tool consumption of a Run, including its model cost.
 _Avoid_: Model usage, request usage

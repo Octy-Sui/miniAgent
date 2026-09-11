@@ -245,6 +245,9 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.usage.model_requests, 2)
         self.assertEqual(result.usage.total_tokens, 350)
         self.assertEqual(result.usage.reasoning_output_tokens, 15)
+        self.assertTrue(result.usage.cached_input_priced_separately)
+        self.assertEqual(result.usage.input_cost_usd, Decimal("0.0000840"))
+        self.assertEqual(result.usage.cached_input_cost_usd, Decimal("0.0000090"))
         self.assertEqual(result.usage.cost_usd, Decimal("0.0001530"))
 
     async def test_model_stop_is_evaluated_before_run_succeeds(self) -> None:

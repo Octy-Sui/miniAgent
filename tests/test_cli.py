@@ -128,10 +128,9 @@ class CliOutputTests(unittest.TestCase):
                 output_tokens=42_728,
                 reasoning_output_tokens=14_382,
                 total_tokens=175_663,
-                input_cost_usd=Decimal("0.0156060"),
-                cached_input_cost_usd=Decimal("0.0093920"),
+                input_cost_usd=Decimal("0.0531740"),
                 output_cost_usd=Decimal("0.0512736"),
-                cost_usd=Decimal("0.0762716"),
+                cost_usd=Decimal("0.1044476"),
             ),
             started_at=now,
             finished_at=now,
@@ -149,8 +148,44 @@ class CliOutputTests(unittest.TestCase):
             "answer\n"
             "Token usage: total=175663 input=132935 (+93920 cached) "
             "output=42728 (14382 reasoning)\n"
-            "Cost: total=$0.07627160 input=$0.01560600 "
+            "Cost: total=$0.10444760 input=$0.05317400 "
+            "output=$0.05127360 USD\n",
+        )
+
+    def test_separate_cache_pricing_prints_cache_cost(self) -> None:
+        now = datetime.now(UTC)
+        result = RunResult(
+            run_id=uuid4(),
+            status=RunStatus.SUCCEEDED,
+            reason=TerminationReason.TASK_VERIFIED,
+            output="answer",
+            usage=RunUsage(
+                input_tokens=132_935,
+                cached_input_tokens=93_920,
+                output_tokens=42_728,
+                reasoning_output_tokens=14_382,
+                total_tokens=175_663,
+                cached_input_priced_separately=True,
+                input_cost_usd=Decimal("0.0156060"),
+                cached_input_cost_usd=Decimal("0.0093920"),
+                output_cost_usd=Decimal("0.0512736"),
+                cost_usd=Decimal("0.0762716"),
+            ),
+            started_at=now,
+            finished_at=now,
+        )
+
+        with patch(
+            "miniagent.cli.main._run_agent_with_signals",
+            new=AsyncMock(return_value=(result, None)),
+        ):
+            invocation = CliRunner().invoke(app, ["task"])
+
+        self.assertEqual(invocation.exit_code, 0)
+        self.assertIn(
+            "Cost: total=$0.07627160 uncached_input=$0.01560600 "
             "cached=$0.00939200 output=$0.05127360 USD\n",
+            invocation.stdout,
         )
 
 

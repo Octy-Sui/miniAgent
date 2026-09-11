@@ -17,7 +17,6 @@ def price_config() -> PriceConfig:
                 provider="qwen",
                 model="qwen3.8-flash",
                 input_per_token=Decimal("0.0000004"),
-                cached_input_per_token=Decimal("0.0000001"),
                 output_per_token=Decimal("0.0000012"),
             )
         ]
@@ -48,20 +47,35 @@ output_per_unit = "1.2"
         self.assertEqual(price.cached_input_per_token, Decimal("0.0000001"))
         self.assertEqual(price.output_per_token, Decimal("0.0000012"))
 
+    def test_load_preserves_missing_cached_input_price(self) -> None:
+        content = """
+[[models]]
+provider = "qwen"
+model = "input-output-only"
+input_per_unit = "0.4"
+output_per_unit = "1.2"
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pricing.toml"
+            path.write_text(content, encoding="utf-8")
+
+            pricing = load_price_config(path)
+
+        price = pricing.price_for("qwen", "input-output-only")
+        self.assertIsNone(price.cached_input_per_token)
+
     def test_duplicate_provider_model_price_is_rejected(self) -> None:
         content = """
 [[models]]
 provider = "qwen"
 model = "duplicate"
 input_per_unit = "1"
-cached_input_per_unit = "1"
 output_per_unit = "1"
 
 [[models]]
 provider = "qwen"
 model = "duplicate"
 input_per_unit = "2"
-cached_input_per_unit = "2"
 output_per_unit = "2"
 """
         with tempfile.TemporaryDirectory() as directory:
@@ -73,7 +87,7 @@ output_per_unit = "2"
 
 
 class UsageCostTests(unittest.TestCase):
-    def test_request_cost_bills_all_output_tokens(self) -> None:
+    def test_request_cost_without_cache_price_bills_all_input(self) -> None:
         usage = Usage(
             input_tokens=132_935,
             cached_input_tokens=93_920,
@@ -89,10 +103,44 @@ class UsageCostTests(unittest.TestCase):
             pricing=price_config(),
         )
 
+        self.assertEqual(cost.input_cost, Decimal("0.0531740"))
+        self.assertEqual(cost.cached_input_cost, Decimal(0))
+        self.assertEqual(cost.output_cost, Decimal("0.0512736"))
+        self.assertEqual(cost.total_cost, Decimal("0.1044476"))
+        self.assertFalse(cost.cached_input_priced_separately)
+
+    def test_request_cost_with_cache_price_splits_input_cost(self) -> None:
+        usage = Usage(
+            input_tokens=132_935,
+            cached_input_tokens=93_920,
+            output_tokens=42_728,
+            reasoning_output_tokens=14_382,
+            total_tokens=175_663,
+        )
+        pricing = PriceConfig(
+            models=[
+                ModelPrice(
+                    provider="qwen",
+                    model="cache-priced",
+                    input_per_token=Decimal("0.0000004"),
+                    cached_input_per_token=Decimal("0.0000001"),
+                    output_per_token=Decimal("0.0000012"),
+                )
+            ]
+        )
+
+        cost = calculate_request_cost(
+            provider="qwen",
+            model="cache-priced",
+            usage=usage,
+            pricing=pricing,
+        )
+
         self.assertEqual(cost.input_cost, Decimal("0.0156060"))
         self.assertEqual(cost.cached_input_cost, Decimal("0.0093920"))
         self.assertEqual(cost.output_cost, Decimal("0.0512736"))
         self.assertEqual(cost.total_cost, Decimal("0.0762716"))
+        self.assertTrue(cost.cached_input_priced_separately)
 
     def test_run_usage_accumulates_request_usage_and_cost(self) -> None:
         pricing = price_config()
@@ -128,10 +176,11 @@ class UsageCostTests(unittest.TestCase):
         self.assertEqual(run_usage.output_tokens, 50)
         self.assertEqual(run_usage.reasoning_output_tokens, 15)
         self.assertEqual(run_usage.total_tokens, 350)
-        self.assertEqual(run_usage.input_cost_usd, Decimal("0.0000840"))
-        self.assertEqual(run_usage.cached_input_cost_usd, Decimal("0.0000090"))
+        self.assertFalse(run_usage.cached_input_priced_separately)
+        self.assertEqual(run_usage.input_cost_usd, Decimal("0.0001200"))
+        self.assertEqual(run_usage.cached_input_cost_usd, Decimal(0))
         self.assertEqual(run_usage.output_cost_usd, Decimal("0.0000600"))
-        self.assertEqual(run_usage.cost_usd, Decimal("0.0001530"))
+        self.assertEqual(run_usage.cost_usd, Decimal("0.0001800"))
 
 
 if __name__ == "__main__":

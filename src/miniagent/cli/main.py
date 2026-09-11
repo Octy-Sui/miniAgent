@@ -157,13 +157,21 @@ def main(
             f"output={result.usage.output_tokens} "
             f"({result.usage.reasoning_output_tokens} reasoning)"
         )
-        typer.echo(
-            "Cost: "
-            f"total=${result.usage.cost_usd:.8f} "
-            f"input=${result.usage.input_cost_usd:.8f} "
-            f"cached=${result.usage.cached_input_cost_usd:.8f} "
-            f"output=${result.usage.output_cost_usd:.8f} USD"
-        )
+        if result.usage.cached_input_priced_separately:
+            typer.echo(
+                "Cost: "
+                f"total=${result.usage.cost_usd:.8f} "
+                f"uncached_input=${result.usage.input_cost_usd:.8f} "
+                f"cached=${result.usage.cached_input_cost_usd:.8f} "
+                f"output=${result.usage.output_cost_usd:.8f} USD"
+            )
+        else:
+            typer.echo(
+                "Cost: "
+                f"total=${result.usage.cost_usd:.8f} "
+                f"input=${result.usage.input_cost_usd:.8f} "
+                f"output=${result.usage.output_cost_usd:.8f} USD"
+            )
         return
 
     typer.echo(f"Agent stopped: {result.reason}", err=True)

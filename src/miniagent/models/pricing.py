@@ -14,7 +14,7 @@ class ModelUnitPrice(BaseModel):
     provider: str
     model: str
     input_per_unit: Decimal = Field(ge=0)
-    cached_input_per_unit: Decimal = Field(ge=0)
+    cached_input_per_unit: Decimal | None = Field(default=None, ge=0)
     output_per_unit: Decimal = Field(ge=0)
 
 
@@ -37,7 +37,7 @@ class ModelPrice(BaseModel):
     provider: str
     model: str
     input_per_token: Decimal = Field(ge=0)
-    cached_input_per_token: Decimal = Field(ge=0)
+    cached_input_per_token: Decimal | None = Field(default=None, ge=0)
     output_per_token: Decimal = Field(ge=0)
 
 
@@ -57,7 +57,11 @@ class PriceConfig(BaseModel):
                     provider=price.provider,
                     model=price.model,
                     input_per_token=price.input_per_unit / unit,
-                    cached_input_per_token=price.cached_input_per_unit / unit,
+                    cached_input_per_token=(
+                        price.cached_input_per_unit / unit
+                        if price.cached_input_per_unit is not None
+                        else None
+                    ),
                     output_per_token=price.output_per_unit / unit,
                 )
                 for price in config.models
