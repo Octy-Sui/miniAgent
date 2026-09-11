@@ -77,7 +77,7 @@ class AgentRuntime:
                     )
                 except _CancellationRequested:
                     raise
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     return self._result(
                         state,
                         status=RunStatus.FAILED,
@@ -118,9 +118,7 @@ class AgentRuntime:
         return ModelRequest(
             model=agent.model.model,
             messages=state.messages,
-            tools=[
-                self._tools[name].definition for name in agent.allowed_tools
-            ],
+            tools=[self._tools[name].definition for name in agent.allowed_tools],
             max_output_tokens=agent.max_output_tokens,
             temperature=agent.temperature,
         )
@@ -151,7 +149,7 @@ class AgentRuntime:
                     )
                 except _CancellationRequested:
                     raise
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     result = ToolResult(
                         tool_call_id=call.id,
                         status=ToolStatus.ERROR,

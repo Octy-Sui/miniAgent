@@ -1,3 +1,7 @@
+# File   : spec.py
+# Created: 2026-09-11 00:00:25
+# Author : octy Sui
+
 from pydantic import BaseModel, Field
 
 

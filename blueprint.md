@@ -358,7 +358,7 @@ LLM-as-Judge 只能用于轨迹错误分类、失败归因或报告质量，不�
 | Workspace | Docker Engine API / Docker SDK for Python |
 | Dashboard | FastAPI + Jinja/HTMX，保持只读 |
 | 测试 | pytest + pytest-asyncio |
-| 代码质量 | Ruff + Pyright |
+| 代码质量 | Ruff + ty |
 | 日志 | 标准 logging，结构化字段写入 Event Store |
 
 首版避免引入 Redis、Celery、Kafka、Kubernetes、React 前端和向量数据库。
