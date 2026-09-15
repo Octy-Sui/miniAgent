@@ -3,10 +3,18 @@
 # Author : octy Sui
 
 from enum import StrEnum
+from pathlib import PurePosixPath
 from typing import Protocol
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from miniagent.models.artifact import ArtifactRef
 from miniagent.models.tool import WorkspaceDelta
@@ -18,26 +26,35 @@ class ResourceLimits(BaseModel):
     cpu_count: float = Field(default=1.0, gt=0)
     memory_mb: int = Field(default=1024, ge=64)
     pids: int = Field(default=256, ge=1)
-    disk_mb: int = Field(default=4096, ge=64)
 
 
-class WorkspaceSource(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    uri: str
-    revision: str | None = None
+class ContainerUserPolicy(StrEnum):
+    INHERIT = "inherit"
+    REQUIRE_NON_ROOT = "require_non_root"
 
 
-class WorkspaceSpec(BaseModel):
+class DockerWorkspaceSpec(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     run_id: UUID
-    image: str
-    source: WorkspaceSource
-    workdir: str = "/workspace"
+    image: str = Field(min_length=1)
+    workdir: str = "/testbed"
+    user_policy: ContainerUserPolicy = ContainerUserPolicy.INHERIT
     environment: dict[str, str] = Field(default_factory=dict)
     network_enabled: bool = False
     limits: ResourceLimits = Field(default_factory=ResourceLimits)
+
+    @field_validator("workdir")
+    @classmethod
+    def validate_workdir(cls, value: str) -> str:
+        path = PurePosixPath(value)
+        if not path.is_absolute():
+            raise ValueError("Docker workspace directory must be absolute")
+        if path == PurePosixPath("/"):
+            raise ValueError("Docker workspace directory cannot be the filesystem root")
+        if ".." in path.parts:
+            raise ValueError("Docker workspace directory cannot contain '..'")
+        return str(path)
 
 
 class Command(BaseModel):
@@ -85,6 +102,9 @@ class WorkspaceCheckpoint(BaseModel):
     workspace_id: str
     revision: str
     created_at: AwareDatetime
+    image_id: str | None = None
+    base_revision: str | None = None
+    workdir: str | None = None
     artifact: ArtifactRef | None = None
 
 
@@ -115,10 +135,10 @@ class Workspace(Protocol):
 
 
 class WorkspaceBackend(Protocol):
-    async def create(self, spec: WorkspaceSpec) -> Workspace: ...
+    async def create(self, spec: DockerWorkspaceSpec) -> Workspace: ...
 
     async def recover(
         self,
-        spec: WorkspaceSpec,
+        spec: DockerWorkspaceSpec,
         checkpoint: WorkspaceCheckpoint,
     ) -> Workspace: ...

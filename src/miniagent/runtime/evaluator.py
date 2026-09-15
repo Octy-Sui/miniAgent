@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from miniagent.environments import Command, WorkspaceSpec
+from miniagent.environments import Command, DockerWorkspaceSpec
 from miniagent.models.artifact import ArtifactRef
 from miniagent.runtime.state import RunError
 
@@ -11,7 +11,7 @@ from miniagent.runtime.state import RunError
 class EvaluationPlan(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    workspace: WorkspaceSpec
+    workspace: DockerWorkspaceSpec
     target_commands: list[Command] = Field(min_length=1)
     regression_commands: list[Command] = Field(default_factory=list)
 

@@ -7,11 +7,10 @@ from pydantic import ValidationError
 from miniagent.agents import AgentSpec, ModelTarget
 from miniagent.environments import (
     Command,
+    DockerWorkspaceSpec,
     ExecutionResult,
     ExecutionStatus,
     WorkspaceCheckpoint,
-    WorkspaceSource,
-    WorkspaceSpec,
 )
 from miniagent.runtime import (
     EvaluationCheck,
@@ -151,10 +150,9 @@ def test_evaluation_plan_must_match_run() -> None:
             task="task",
             candidate_output="candidate",
             plan=EvaluationPlan(
-                workspace=WorkspaceSpec(
+                workspace=DockerWorkspaceSpec(
                     run_id=uuid4(),
                     image="python:3.13",
-                    source=WorkspaceSource(uri="artifact://source"),
                 ),
                 target_commands=[Command(argv=["pytest"])],
             ),

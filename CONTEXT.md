@@ -64,6 +64,22 @@ _Avoid_: Recovery execution, retry result
 An independent determination of whether a Candidate Output satisfies the task without unacceptable regression.
 _Avoid_: Agent finish, model judgment
 
+**Benchmark Task**:
+A versioned software issue, repository revision, verification contract, and Task Image used as one reproducible evaluation unit.
+_Avoid_: Run, prompt
+
+**Development Set**:
+A fixed collection of Benchmark Tasks that may be inspected and rerun while developing the Agent and Runtime.
+_Avoid_: Evaluation set, smoke test
+
+**Evaluation Set**:
+A frozen collection of Benchmark Tasks kept separate from development and used unchanged for comparative experiments.
+_Avoid_: Development set, leaderboard
+
+**Task Image**:
+The container image associated with one Benchmark Task and containing its repository revision and prepared execution environment.
+_Avoid_: Workspace, base image
+
 **Candidate Output**:
 The result submitted by an Agent for independent evaluation; it is not evidence that the Run succeeded.
 _Avoid_: Final result

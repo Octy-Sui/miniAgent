@@ -2,8 +2,17 @@
 # Created: 2026-09-11 18:42:33
 # Author : octy Sui
 
+from miniagent.environments.docker import (
+    DockerCommandError,
+    DockerWorkspace,
+    DockerWorkspaceBackend,
+    DockerWorkspaceError,
+    DockerWorkspaceState,
+)
 from miniagent.environments.workspace import (
     Command,
+    ContainerUserPolicy,
+    DockerWorkspaceSpec,
     ExecutionResult,
     ExecutionStatus,
     Patch,
@@ -11,12 +20,17 @@ from miniagent.environments.workspace import (
     Workspace,
     WorkspaceBackend,
     WorkspaceCheckpoint,
-    WorkspaceSource,
-    WorkspaceSpec,
 )
 
 __all__ = [
     "Command",
+    "ContainerUserPolicy",
+    "DockerCommandError",
+    "DockerWorkspace",
+    "DockerWorkspaceBackend",
+    "DockerWorkspaceError",
+    "DockerWorkspaceSpec",
+    "DockerWorkspaceState",
     "ExecutionResult",
     "ExecutionStatus",
     "Patch",
@@ -24,6 +38,4 @@ __all__ = [
     "Workspace",
     "WorkspaceBackend",
     "WorkspaceCheckpoint",
-    "WorkspaceSource",
-    "WorkspaceSpec",
 ]
