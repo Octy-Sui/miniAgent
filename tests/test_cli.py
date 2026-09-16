@@ -1,23 +1,23 @@
 import asyncio
 import signal
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
-from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
 from typer.testing import CliRunner
 
-from miniagent.agents import AgentSpec
-from miniagent.agents.default import DEFAULT_AGENT
+from miniagent.artifacts import ArtifactRef
 from miniagent.cli import main as cli_main
+from miniagent.cli.bootstrap import BootstrapConfig, BootstrappedAgent
 from miniagent.cli.main import (
     _ForcedSignalCancellation,
-    _run_agent_with_signals,
     _signal_exit_code,
     app,
+    run_with_signals,
 )
 from miniagent.runtime import (
     CancellationToken,
@@ -94,24 +94,45 @@ def successful_result(*, separate_cache_pricing: bool = False) -> RunResult:
     )
 
 
-async def test_first_signal_requests_graceful_cancellation(
+def stub_cli_run(
     monkeypatch: pytest.MonkeyPatch,
+    result: RunResult,
+    configs: list[BootstrapConfig] | None = None,
+    patch_artifact: ArtifactRef | None = None,
+) -> None:
+    class StubAgent:
+        def __init__(self) -> None:
+            self.patch_artifact = patch_artifact
+
+    @asynccontextmanager
+    async def bootstrap(
+        config: BootstrapConfig,
+    ) -> AsyncIterator[BootstrappedAgent]:
+        if configs is not None:
+            configs.append(config)
+        yield cast(BootstrappedAgent, StubAgent())
+
+    async def run_with_signals(
+        agent: BootstrappedAgent,
+    ) -> tuple[RunResult, signal.Signals | None]:
+        return result, None
+
+    monkeypatch.setattr(cli_main, "bootstrap", bootstrap)
+    monkeypatch.setattr(cli_main, "run_with_signals", run_with_signals)
+
+
+async def test_first_signal_requests_graceful_cancellation(
     signal_loop: SignalLoop,
 ) -> None:
     expected_result = successful_result()
 
-    async def wait_for_cancellation(
-        agent: AgentSpec,
-        task: str,
-        workspace: Path,
-        cancellation_token: CancellationToken,
-    ) -> RunResult:
-        await cancellation_token.wait()
-        return expected_result
+    class WaitingAgent:
+        async def run(self, cancellation_token: CancellationToken) -> RunResult:
+            await cancellation_token.wait()
+            return expected_result
 
-    monkeypatch.setattr(cli_main, "run_agent", wait_for_cancellation)
     run = asyncio.create_task(
-        _run_agent_with_signals(DEFAULT_AGENT, "task", Path.cwd())
+        run_with_signals(cast(BootstrappedAgent, WaitingAgent()))
     )
     await asyncio.sleep(0)
     signal_loop.send(signal.SIGINT)
@@ -124,24 +145,18 @@ async def test_first_signal_requests_graceful_cancellation(
 
 
 async def test_second_signal_forces_task_cancellation(
-    monkeypatch: pytest.MonkeyPatch,
     signal_loop: SignalLoop,
 ) -> None:
     started = asyncio.Event()
 
-    async def block(
-        agent: AgentSpec,
-        task: str,
-        workspace: Path,
-        cancellation_token: CancellationToken,
-    ) -> RunResult:
-        started.set()
-        await asyncio.Event().wait()
-        raise AssertionError("unreachable")
+    class BlockingAgent:
+        async def run(self, cancellation_token: CancellationToken) -> RunResult:
+            started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
 
-    monkeypatch.setattr(cli_main, "run_agent", block)
     run = asyncio.create_task(
-        _run_agent_with_signals(DEFAULT_AGENT, "task", Path.cwd())
+        run_with_signals(cast(BootstrappedAgent, BlockingAgent()))
     )
     await started.wait()
     signal_loop.send(signal.SIGTERM)
@@ -170,15 +185,7 @@ def test_signal_exit_code_follows_shell_convention(
 def test_successful_run_prints_cost_after_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def run_agent(
-        agent: AgentSpec,
-        task: str,
-        workspace: Path,
-        cancellation_token: CancellationToken,
-    ) -> RunResult:
-        return successful_result()
-
-    monkeypatch.setattr(cli_main, "run_agent", run_agent)
+    stub_cli_run(monkeypatch, successful_result())
 
     invocation = CliRunner().invoke(app, ["task"])
 
@@ -195,15 +202,7 @@ def test_successful_run_prints_cost_after_output(
 def test_separate_cache_pricing_prints_cache_cost(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def run_agent(
-        agent: AgentSpec,
-        task: str,
-        workspace: Path,
-        cancellation_token: CancellationToken,
-    ) -> RunResult:
-        return successful_result(separate_cache_pricing=True)
-
-    monkeypatch.setattr(cli_main, "run_agent", run_agent)
+    stub_cli_run(monkeypatch, successful_result(separate_cache_pricing=True))
 
     invocation = CliRunner().invoke(app, ["task"])
 
@@ -213,3 +212,35 @@ def test_separate_cache_pricing_prints_cache_cost(
         "cached=$0.00939200 output=$0.05127360 USD\n"
         in invocation.stdout
     )
+
+
+def test_successful_run_prints_persisted_patch_location(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stub_cli_run(
+        monkeypatch,
+        successful_result(),
+        patch_artifact=ArtifactRef(uri="file:///artifacts/changes.patch"),
+    )
+
+    invocation = CliRunner().invoke(app, ["task"])
+
+    assert invocation.exit_code == 0
+    assert "Patch: file:///artifacts/changes.patch\n" in invocation.stdout
+
+
+def test_cli_forwards_docker_workspace_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configs: list[BootstrapConfig] = []
+    stub_cli_run(monkeypatch, successful_result(), configs)
+
+    invocation = CliRunner().invoke(
+        app,
+        ["task", "--workspace", "docker", "--docker-image", "task-image"],
+    )
+
+    assert invocation.exit_code == 0
+    assert len(configs) == 1
+    assert configs[0].workspace_kind is cli_main.WorkspaceKind.DOCKER
+    assert configs[0].docker_image == "task-image"

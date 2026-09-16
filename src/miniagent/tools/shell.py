@@ -2,10 +2,9 @@
 # Created: 2026-09-09 17:41:33
 # Author : octy Sui
 
-import asyncio
-from pathlib import Path
 from typing import Any
 
+from miniagent.environments import Command, ExecutionStatus, Workspace
 from miniagent.models.tool import ToolDefinition, ToolError, ToolResult, ToolStatus
 from miniagent.tools import Tool
 
@@ -13,10 +12,10 @@ from miniagent.tools import Tool
 class ShellTool(Tool):
     def __init__(
         self,
-        workspace: Path,
+        workspace: Workspace,
         timeout: float = 30.0,
     ) -> None:
-        self.workspace = workspace.resolve()
+        self.workspace = workspace
         self.timeout = timeout
 
     @property
@@ -44,21 +43,13 @@ class ShellTool(Tool):
     ) -> ToolResult:
         command = arguments["command"]
 
-        process = await asyncio.create_subprocess_shell(
-            command,
-            cwd=self.workspace,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=self.timeout
+        result = await self.workspace.execute(
+            Command(
+                argv=["/bin/sh", "-lc", command],
+                timeout_seconds=self.timeout,
             )
-        except TimeoutError:
-            process.kill()
-            await process.wait()
-
+        )
+        if result.status is ExecutionStatus.TIMEOUT:
             return ToolResult(
                 tool_call_id=tool_call_id,
                 status=ToolStatus.TIMEOUT,
@@ -69,16 +60,12 @@ class ShellTool(Tool):
                     retryable=True,
                 ),
             )
-
-        stdout_text = stdout.decode("utf-8", errors="replace")
-        stderr_text = stderr.decode("utf-8", errors="replace")
-
-        exit_code = process.returncode
+        exit_code = result.exit_code
 
         content = (
             f"$ {command}\n"
-            f"\nstdout:\n{stdout_text}"
-            f"\nstderr:\n{stderr_text}"
+            f"\nstdout:\n{result.stdout}"
+            f"\nstderr:\n{result.stderr}"
             f"\nexit_code: {exit_code}"
         )
 
@@ -88,8 +75,8 @@ class ShellTool(Tool):
             content=content,
             data={
                 "command": command,
-                "stdout": stdout_text,
-                "stderr": stderr_text,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
                 "exit_code": exit_code,
             },
             metrics={
@@ -97,7 +84,7 @@ class ShellTool(Tool):
             },
             error=(
                 None
-                if exit_code == 0
+                if result.status is ExecutionStatus.SUCCESS
                 else ToolError(
                     code="COMMAND_FAILED",
                     message=(f"Command exited with code {exit_code}"),

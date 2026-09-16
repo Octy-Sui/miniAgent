@@ -9,38 +9,22 @@ from typing import Annotated
 
 import typer
 
-from miniagent.agents import AgentSpec, ModelTarget
+from miniagent.agents import ModelTarget
 from miniagent.agents.default import DEFAULT_AGENT
-from miniagent.models import Settings, load_price_config
-from miniagent.providers import ModelProvider
-from miniagent.providers.qwen import QwenProvider
+from miniagent.artifacts import ArtifactRef
+from miniagent.cli.bootstrap import (
+    BootstrapConfig,
+    BootstrappedAgent,
+    bootstrap,
+)
+from miniagent.environments import WorkspaceKind
 from miniagent.runtime import (
-    AgentRuntime,
     CancellationToken,
     RunResult,
     RunStatus,
 )
-from miniagent.tools import Tool
-from miniagent.tools.read_file import ReadFileTool
-from miniagent.tools.shell import ShellTool
 
 app = typer.Typer()
-
-
-def build_provider(agent: AgentSpec, settings: Settings) -> ModelProvider:
-    if agent.model.provider == "qwen":
-        return QwenProvider(
-            api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
-        )
-    raise ValueError(f"Unknown provider: {agent.model.provider}")
-
-
-def build_tools(workspace: Path) -> dict[str, Tool]:
-    return {
-        "read_file": ReadFileTool(workspace),
-        "shell": ShellTool(workspace),
-    }
 
 
 class _ForcedSignalCancellation(Exception):
@@ -48,26 +32,8 @@ class _ForcedSignalCancellation(Exception):
         self.received_signal = received_signal
 
 
-async def run_agent(
-    agent: AgentSpec,
-    task: str,
-    workspace: Path,
-    cancellation_token: CancellationToken | None = None,
-) -> RunResult:
-    settings = Settings()
-    runtime = AgentRuntime(
-        provider=build_provider(agent, settings),
-        tools=build_tools(workspace),
-        cancellation_token=cancellation_token,
-        pricing=load_price_config(settings.model_pricing_file),
-    )
-    return await runtime.run(agent, task)
-
-
-async def _run_agent_with_signals(
-    agent: AgentSpec,
-    task: str,
-    workspace: Path,
+async def run_with_signals(
+    agent: BootstrappedAgent,
 ) -> tuple[RunResult, signal.Signals | None]:
     loop = asyncio.get_running_loop()
     main_task = asyncio.current_task()
@@ -96,12 +62,7 @@ async def _run_agent_with_signals(
         registered_signals.append(handled_signal)
 
     try:
-        result = await run_agent(
-            agent,
-            task,
-            workspace,
-            cancellation_token,
-        )
+        result = await agent.run(cancellation_token)
         return (
             result,
             received_signal.result() if received_signal.done() else None,
@@ -119,34 +80,16 @@ def _signal_exit_code(received_signal: signal.Signals) -> int:
     return 128 + received_signal.value
 
 
-@app.command()
-def main(
-    task: Annotated[str, typer.Argument(help="Task for the agent to complete.")],
-    model: Annotated[
-        str | None,
-        typer.Option(help="Override the default agent model."),
-    ] = None,
+def print_patch_artifact(patch_artifact: ArtifactRef | None) -> None:
+    if patch_artifact is not None:
+        typer.echo(f"Patch: {patch_artifact.uri}")
+
+
+def print_run_result(
+    result: RunResult,
+    received_signal: signal.Signals | None,
+    patch_artifact: ArtifactRef | None = None,
 ) -> None:
-    agent = DEFAULT_AGENT
-    if model is not None:
-        agent = agent.model_copy(
-            update={
-                "model": ModelTarget(
-                    provider=agent.model.provider,
-                    model=model,
-                )
-            }
-        )
-
-    try:
-        result, received_signal = asyncio.run(
-            _run_agent_with_signals(agent, task, Path.cwd())
-        )
-    except _ForcedSignalCancellation as exc:
-        raise typer.Exit(code=_signal_exit_code(exc.received_signal)) from None
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        raise typer.Exit(code=130) from None
-
     if result.status is RunStatus.SUCCEEDED:
         typer.echo(result.output)
         typer.echo(
@@ -172,13 +115,81 @@ def main(
                 f"input=${result.usage.input_cost_usd:.8f} "
                 f"output=${result.usage.output_cost_usd:.8f} USD"
             )
+        print_patch_artifact(patch_artifact)
         return
 
     typer.echo(f"Agent stopped: {result.reason}", err=True)
     if result.error is not None:
         typer.echo(result.error.message, err=True)
+    print_patch_artifact(patch_artifact)
     exit_code = _signal_exit_code(received_signal) if received_signal is not None else 1
     raise typer.Exit(code=exit_code)
+
+
+def parse_config(
+    task: str,
+    model: str | None,
+    workspace: WorkspaceKind | None,
+    docker_image: str | None,
+) -> BootstrapConfig:
+    agent = DEFAULT_AGENT
+    if model is not None:
+        agent = agent.model_copy(
+            update={
+                "model": ModelTarget(
+                    provider=agent.model.provider,
+                    model=model,
+                )
+            }
+        )
+    return BootstrapConfig(
+        agent=agent,
+        task=task,
+        source_dir=Path.cwd(),
+        workspace_kind=workspace,
+        docker_image=docker_image,
+    )
+
+
+async def main(
+    task: str,
+    model: str | None = None,
+    workspace: WorkspaceKind | None = None,
+    docker_image: str | None = None,
+) -> None:
+    config = parse_config(task, model, workspace, docker_image)
+
+    try:
+        async with bootstrap(config) as agent:
+            result, received_signal = await run_with_signals(agent)
+    except _ForcedSignalCancellation as exc:
+        raise typer.Exit(code=_signal_exit_code(exc.received_signal)) from None
+    except asyncio.CancelledError:
+        raise typer.Exit(code=130) from None
+
+    print_run_result(result, received_signal, agent.patch_artifact)
+
+
+@app.command()
+def cli(
+    task: Annotated[str, typer.Argument(help="Task for the agent to complete.")],
+    model: Annotated[
+        str | None,
+        typer.Option(help="Override the default agent model."),
+    ] = None,
+    workspace: Annotated[
+        WorkspaceKind | None,
+        typer.Option("--workspace", help="Workspace backend: local or docker."),
+    ] = None,
+    docker_image: Annotated[
+        str | None,
+        typer.Option(help="Docker image used by the docker workspace backend."),
+    ] = None,
+) -> None:
+    try:
+        asyncio.run(main(task, model, workspace, docker_image))
+    except KeyboardInterrupt:
+        raise typer.Exit(code=130) from None
 
 
 if __name__ == "__main__":

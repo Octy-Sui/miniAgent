@@ -2,6 +2,7 @@
 # Created: 2026-09-11 18:42:22
 # Author : octy Sui
 
+from miniagent.artifacts.file import FileArtifactStore
 from miniagent.artifacts.store import (
     ArtifactNotFoundError,
     ArtifactStore,
@@ -14,4 +15,5 @@ __all__ = [
     "ArtifactRef",
     "ArtifactStore",
     "ArtifactWrite",
+    "FileArtifactStore",
 ]

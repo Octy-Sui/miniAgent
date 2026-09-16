@@ -487,6 +487,8 @@ class DockerWorkspace:
                 exit_code=result.exit_code,
                 stdout=self._decode_output(result.stdout, result.stdout_truncated),
                 stderr=self._decode_output(result.stderr, result.stderr_truncated),
+                stdout_truncated=result.stdout_truncated,
+                stderr_truncated=result.stderr_truncated,
                 duration_ms=result.duration_ms,
             )
 

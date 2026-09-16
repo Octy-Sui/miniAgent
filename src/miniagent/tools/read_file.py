@@ -2,9 +2,10 @@
 # Created: 2026-09-09 17:39:55
 # Author : octy Sui
 
-from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any
 
+from miniagent.environments import Command, ExecutionStatus, Workspace
 from miniagent.models.tool import (
     ToolDefinition,
     ToolError,
@@ -15,8 +16,8 @@ from miniagent.tools import Tool
 
 
 class ReadFileTool(Tool):
-    def __init__(self, workspace: Path) -> None:
-        self.workspace = workspace.resolve()
+    def __init__(self, workspace: Workspace) -> None:
+        self.workspace = workspace
 
     @property
     def definition(self) -> ToolDefinition:
@@ -44,9 +45,8 @@ class ReadFileTool(Tool):
     ) -> ToolResult:
         path = arguments["path"]
 
-        target = (self.workspace / path).resolve()
-
-        if not target.is_relative_to(self.workspace):
+        relative = PurePosixPath(path)
+        if relative.is_absolute() or ".." in relative.parts:
             return ToolResult(
                 tool_call_id=tool_call_id,
                 status=ToolStatus.DENIED,
@@ -57,7 +57,23 @@ class ReadFileTool(Tool):
                 ),
             )
 
-        if not target.is_file():
+        result = await self.workspace.execute(
+            Command(
+                argv=[
+                    "python",
+                    "-c",
+                    (
+                        "import pathlib,sys; "
+                        "path=pathlib.Path(sys.argv[1]); "
+                        "sys.exit(2) if not path.is_file() else None; "
+                        "content=path.read_bytes(); "
+                        "sys.stdout.write(content.decode('utf-8'))"
+                    ),
+                    str(relative),
+                ]
+            )
+        )
+        if result.exit_code == 2:
             return ToolResult(
                 tool_call_id=tool_call_id,
                 status=ToolStatus.ERROR,
@@ -67,10 +83,7 @@ class ReadFileTool(Tool):
                     message=f"File does not exist: {path}",
                 ),
             )
-
-        try:
-            content = target.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
+        if "UnicodeDecodeError" in result.stderr:
             return ToolResult(
                 tool_call_id=tool_call_id,
                 status=ToolStatus.ERROR,
@@ -80,13 +93,37 @@ class ReadFileTool(Tool):
                     message="File is not valid UTF-8 text.",
                 ),
             )
+        if result.status is not ExecutionStatus.SUCCESS:
+            return ToolResult(
+                tool_call_id=tool_call_id,
+                status=ToolStatus.ERROR,
+                content=f"Cannot read file: {path}\n{result.stderr}",
+                error=ToolError(
+                    code="READ_FAILED",
+                    message=f"Cannot read file: {path}",
+                ),
+            )
+        if result.stdout_truncated:
+            return ToolResult(
+                tool_call_id=tool_call_id,
+                status=ToolStatus.ERROR,
+                content=result.stdout,
+                data={
+                    "path": path,
+                    "truncated": True,
+                },
+                error=ToolError(
+                    code="OUTPUT_TRUNCATED",
+                    message="File exceeds the workspace output limit.",
+                ),
+            )
 
         return ToolResult(
             tool_call_id=tool_call_id,
             status=ToolStatus.SUCCESS,
-            content=content,
+            content=result.stdout,
             data={
                 "path": path,
-                "size": target.stat().st_size,
+                "size": len(result.stdout.encode()),
             },
         )

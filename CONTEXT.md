@@ -45,8 +45,20 @@ A versioned copy of Run State at a known Run Event sequence, used to resume with
 _Avoid_: Workspace checkpoint, event
 
 **Workspace**:
-The isolated, Run-owned code environment in which commands execute and candidate changes are produced.
+The Run-owned code environment in which commands execute and candidate changes are produced. Isolation guarantees depend on the selected Workspace Backend.
 _Avoid_: Runtime, repository
+
+**Local Workspace**:
+A Workspace backed by a Run-exclusive host directory. It isolates code state from other Runs but is not a security or resource-isolation boundary.
+_Avoid_: Host sandbox, current directory
+
+**Docker Workspace**:
+A Workspace backed by a dedicated container that applies the configured process, compute, memory, capability, and network controls.
+_Avoid_: Local workspace, task image
+
+**Workspace Backend**:
+The lifecycle implementation that creates, recovers, and destroys one kind of Workspace.
+_Avoid_: Workspace, execution environment
 
 **Workspace Checkpoint**:
 A restorable identity for the code state of a Workspace at a safe boundary.

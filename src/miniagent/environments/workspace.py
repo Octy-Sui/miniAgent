@@ -3,8 +3,8 @@
 # Author : octy Sui
 
 from enum import StrEnum
-from pathlib import PurePosixPath
-from typing import Protocol
+from pathlib import Path, PurePosixPath
+from typing import Annotated, Literal, Protocol
 from uuid import UUID
 
 from pydantic import (
@@ -33,9 +33,29 @@ class ContainerUserPolicy(StrEnum):
     REQUIRE_NON_ROOT = "require_non_root"
 
 
+class WorkspaceKind(StrEnum):
+    LOCAL = "local"
+    DOCKER = "docker"
+
+
+class LocalWorkspaceSpec(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal[WorkspaceKind.LOCAL] = WorkspaceKind.LOCAL
+    run_id: UUID
+    source_dir: Path
+    environment: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("source_dir")
+    @classmethod
+    def resolve_source_dir(cls, value: Path) -> Path:
+        return value.expanduser().resolve()
+
+
 class DockerWorkspaceSpec(BaseModel):
     model_config = ConfigDict(frozen=True)
 
+    kind: Literal[WorkspaceKind.DOCKER] = WorkspaceKind.DOCKER
     run_id: UUID
     image: str = Field(min_length=1)
     workdir: str = "/testbed"
@@ -81,6 +101,8 @@ class ExecutionResult(BaseModel):
     exit_code: int | None = None
     stdout: str = ""
     stderr: str = ""
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
     duration_ms: int = Field(ge=0)
     artifacts: list[ArtifactRef] = Field(default_factory=list)
     workspace_delta: WorkspaceDelta | None = None
@@ -134,11 +156,17 @@ class Workspace(Protocol):
     async def destroy(self) -> None: ...
 
 
-class WorkspaceBackend(Protocol):
-    async def create(self, spec: DockerWorkspaceSpec) -> Workspace: ...
+class WorkspaceBackend[SpecT](Protocol):
+    async def create(self, spec: SpecT) -> Workspace: ...
 
     async def recover(
         self,
-        spec: DockerWorkspaceSpec,
+        spec: SpecT,
         checkpoint: WorkspaceCheckpoint,
     ) -> Workspace: ...
+
+
+type WorkspaceSpec = Annotated[
+    LocalWorkspaceSpec | DockerWorkspaceSpec,
+    Field(discriminator="kind"),
+]

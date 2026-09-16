@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TypeVar
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from miniagent.agents import AgentSpec
 from miniagent.models import PriceConfig
@@ -63,13 +63,19 @@ class AgentRuntime:
         self.evaluator = evaluator or PassThroughEvaluator()
         self.pricing = pricing
 
-    async def run(self, agent: AgentSpec, task: str) -> RunResult:
+    async def run(
+        self,
+        agent: AgentSpec,
+        task: str,
+        *,
+        run_id: UUID | None = None,
+    ) -> RunResult:
         self._validate_agent_tools(agent)
         if self.pricing is not None:
             self.pricing.price_for(agent.model.provider, agent.model.model)
         now = datetime.now(UTC)
         state = RunState(
-            run_id=uuid4(),
+            run_id=run_id or uuid4(),
             task=task,
             agent_spec=agent,
             config=self.config,

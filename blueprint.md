@@ -27,7 +27,7 @@ RCA 接收真实 GitHub Issue，在隔离的代码工作区内自主完成代码
 
 ### 2.1 V1 目标
 
-- 单 Agent 能在 Docker Workspace 中完成 Issue → Patch → Test 闭环。
+- 单 Agent 能在 Local Workspace 或 Docker Workspace 中完成 Issue → Patch → Test 闭环。
 - Agent 使用结构化工具，受限 Shell 作为兜底。
 - Runtime 不依赖 OpenAI Agents SDK、LangGraph 等 Agent 框架。
 - 支持 Provider/API、Tool、Agent 行为和 Workspace 修改异常的分级恢复。
@@ -58,7 +58,9 @@ flowchart TD
     Runtime --> Provider["Model Provider"]
     Runtime --> Registry["Tool Registry"]
     Registry --> Policy["Policy & Approval"]
-    Policy --> Workspace["Docker Workspace"]
+    Policy --> Workspace["Workspace"]
+    Workspace --> Local["Local Workspace"]
+    Workspace --> Docker["Docker Workspace"]
     Runtime --> Recovery["Recovery Controller"]
     Runtime --> Store["Event & State Store"]
     Workspace --> Git["Git Checkpoints"]
@@ -77,7 +79,7 @@ flowchart TD
 
 1. CLI 接收 SWE-bench Task ID 或自定义 Issue。
 2. Task Loader 解析仓库版本、Issue 描述、测试配置和资源预算。
-3. DockerWorkspace 创建独占容器并准备固定版本代码。
+3. WorkspaceBackend 根据运行配置创建 Run 独占的 LocalWorkspace 目录或 DockerWorkspace 容器，并准备固定版本代码。
 4. Runtime 初始化 `RunState`、Working Context 和 Task Memory。
 5. Model Provider 返回文本响应或结构化工具调用。
 6. Tool Registry 校验工具名称和输入 Schema。
@@ -86,7 +88,7 @@ flowchart TD
 9. Event Store 记录模型、工具、文件、测试、恢复和成本事件。
 10. Recovery Controller 检测重试、停滞、预算和上下文条件。
 11. Agent 生成候选 Patch 后，Independent Evaluator 执行验证。
-12. 保存 Patch、Trace、测试报告、指标和最终状态，销毁容器。
+12. 保存 Patch、Trace、测试报告、指标和最终状态，销毁工作区。
 
 ## 5. 模块设计
 
@@ -185,29 +187,164 @@ class Tool(Protocol):
 
 ### 5.4 WorkspaceBackend
 
+Workspace 是 Run 独占的代码状态边界。每个 Run 同一时间最多有一个活动 Workspace；恢复时可以创建替代 Workspace，但新旧 Workspace 不得同时接受命令。不同 Backend 的隔离强度不同：LocalWorkspace 只隔离文件状态，DockerWorkspace 额外提供容器安全和资源边界。
+
 ```python
-class WorkspaceBackend(Protocol):
-    async def create(self, spec: WorkspaceSpec) -> Workspace: ...
+class Workspace(Protocol):
+    @property
+    def workspace_id(self) -> str: ...
+
+    @property
+    def run_id(self) -> UUID: ...
+
     async def execute(self, command: Command) -> ExecutionResult: ...
-    async def checkpoint(self) -> Checkpoint: ...
-    async def restore(self, checkpoint: Checkpoint) -> None: ...
-    async def export_patch(self) -> PatchArtifact: ...
+    async def checkpoint(self) -> WorkspaceCheckpoint: ...
+    async def restore(self, checkpoint: WorkspaceCheckpoint) -> None: ...
+    async def export_patch(self) -> Patch: ...
     async def destroy(self) -> None: ...
+
+
+class WorkspaceBackend[SpecT](Protocol):
+    async def create(self, spec: SpecT) -> Workspace: ...
+
+    async def recover(
+        self,
+        spec: SpecT,
+        checkpoint: WorkspaceCheckpoint,
+    ) -> Workspace: ...
 ```
 
-V1 只实现 `DockerWorkspace`，V2 可实现 `FirecrackerWorkspace`。Wasm 不作为完整代码工作区，可以在以后作为受限 Tool Plugin Runtime。
+V1 实现 `LocalWorkspace` 和 `DockerWorkspace`。CLI 默认使用 LocalWorkspace，正式 SWE-bench 评测和不受信任代码执行必须显式使用 DockerWorkspace。V2 可实现 `FirecrackerWorkspace`。Wasm 不作为完整代码工作区，可以在以后作为受限 Tool Plugin Runtime。
+
+#### 5.4.1 Workspace 选择与公共数据结构
+
+外部配置使用带判别字段的 Pydantic 模型。Backend 的运行时对象使用 dataclass，并实现统一的 Workspace 协议。
+
+```python
+class WorkspaceKind(StrEnum):
+    LOCAL = "local"
+    DOCKER = "docker"
+
+
+class LocalWorkspaceSpec(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal[WorkspaceKind.LOCAL] = WorkspaceKind.LOCAL
+    run_id: UUID
+    source_dir: Path
+    environment: dict[str, str] = Field(default_factory=dict)
+
+
+class DockerWorkspaceSpec(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal[WorkspaceKind.DOCKER] = WorkspaceKind.DOCKER
+    run_id: UUID
+    image: str
+    workdir: str = "/testbed"
+    user_policy: ContainerUserPolicy = ContainerUserPolicy.INHERIT
+    environment: dict[str, str] = Field(default_factory=dict)
+    network_enabled: bool = False
+    limits: ResourceLimits = Field(default_factory=ResourceLimits)
+
+
+type WorkspaceSpec = Annotated[
+    LocalWorkspaceSpec | DockerWorkspaceSpec,
+    Field(discriminator="kind"),
+]
+
+
+class WorkspaceSettings(BaseSettings):
+    workspace_backend: WorkspaceKind = WorkspaceKind.LOCAL
+    local_workspace_root: Path = Path.home() / ".miniagent" / "workspaces"
+```
+
+`run_id` 必须先于 Workspace 创建。CLI bootstrap 根据运行参数构造 `WorkspaceConfig`，由异步 context manager 选择 Backend、管理 Workspace 生命周期，再把创建完成的 Workspace 注入 Tool Executor：
+
+```python
+@dataclass(frozen=True, slots=True)
+class WorkspaceConfig:
+    kind: WorkspaceKind
+    run_id: UUID
+    source_dir: Path
+    settings: Settings
+    docker_image: str | None = None
+
+
+@asynccontextmanager
+async def workspace(config: WorkspaceConfig) -> AsyncIterator[Workspace]:
+    instance = await create_workspace(config)
+    try:
+        yield instance
+    finally:
+        await instance.destroy()
+```
+
+工具只依赖 Workspace 协议，不直接接收宿主机路径或 Docker 容器 ID。CLI 提供 `--workspace local|docker`，默认值为 `local`；Docker 所需镜像来自 Task 配置，而不是 LocalWorkspace 配置。
+
+#### 5.4.2 LocalWorkspace
+
+LocalWorkspace 用于可信代码的低成本开发和调试。它不是当前工作目录的别名，也不直接修改源仓库。Backend 在受管理根目录下为每次创建生成独立目录：
+
+```text
+<local_workspace_root>/<run_id>/<workspace_id>/repo
+```
+
+建议的内部状态：
+
+```python
+class LocalWorkspaceState(StrEnum):
+    ACTIVE = "active"
+    BROKEN = "broken"
+    DESTROYED = "destroyed"
+
+
+@dataclass(slots=True)
+class LocalWorkspace:
+    backend: LocalWorkspaceBackend
+    spec: LocalWorkspaceSpec
+    _workspace_id: str
+    root: Path
+    base_revision: str
+    state: LocalWorkspaceState = LocalWorkspaceState.ACTIVE
+    _operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+```
+
+生命周期与约束：
+
+- `create` 要求 `source_dir` 是 Git 工作树根目录；复制当前 tracked 和未忽略的 untracked 文件，并在副本中创建合成 Git 基线。源工作树可以包含未提交修改，这些修改属于初始快照，不应出现在 Agent 导出的 Patch 中。
+- `source_dir` 和 `local_workspace_root` 必须解析为绝对路径，且两者不能互相包含，避免复制递归和清理源仓库。
+- `execute` 只接受参数数组；工作目录解析后必须位于 `root` 内。需要 Shell 语义时，由受策略控制的 Tool 显式执行 `/bin/sh -lc`。
+- 命令超时后终止整个进程组并把 Workspace 标记为 `BROKEN`，避免遗留子进程继续修改文件。
+- `checkpoint` 将工作区快照写入 Artifact Store；`recover` 在新的独占目录中恢复快照，并校验 `run_id`、revision 和内容摘要。
+- `export_patch` 始终相对 `base_revision` 生成 Git binary patch；源仓库保持不变，只有 Patch 能跨越 Workspace 边界。
+- `destroy` 只能删除 `local_workspace_root` 下且身份标记与 `run_id`、`workspace_id` 匹配的目录；路径校验失败时必须拒绝删除。
+- 子进程环境使用最小宿主机环境加 `spec.environment`。这只能减少意外凭证暴露，不能构成安全隔离。
+
+LocalWorkspace 不实现 capability、PID、CPU、内存或网络限制。它运行的进程仍能访问宿主机权限允许的路径和网络，因此只适用于可信仓库。若调用方为 LocalWorkspace 配置 Docker 专属限制，配置层必须明确拒绝，不能静默降级。
+
+#### 5.4.3 DockerWorkspace
 
 Docker 安全基线：
 
-- Rootless Docker 或 user namespace。
-- 容器内非 root 用户。
+- 每次创建使用独立容器 writable layer；V1 不要求额外创建独立 Volume。
+- 默认继承任务镜像用户；需要时可通过 `REQUIRE_NON_ROOT` 策略拒绝 root 镜像。
 - `cap-drop=ALL` 和 `no-new-privileges`。
-- CPU、内存、PID、磁盘和超时限制。
+- CPU、内存、PID 和命令超时限制。
 - 运行阶段默认关闭网络。
 - 不挂载 Docker Socket、宿主机代码、SSH 配置或凭证。
-- 每个 Run 使用独立 Volume。
 - 依赖尽量预构建到任务镜像。
 - 任务结束只导出 Patch、Trace 和测试 Artifact。
+
+Rootless Docker 或 user namespace 是推荐的部署加固手段，不是 DockerWorkspace 创建成功的前置条件。DockerWorkspace 不提供磁盘配额；需要强多租户边界或磁盘硬限制时，应使用受管 Docker 部署或后续 FirecrackerWorkspace。
+
+#### 5.4.4 Runtime 接入顺序
+
+1. 先把 `run_id` 的生成移到 Workspace 创建之前，并把 Workspace 的创建失败映射为 `PREPARATION_FAILED`。
+2. 实现 LocalWorkspace 的 create、execute、checkpoint、recover、export_patch 和 destroy，再以 Workspace 协议重写文件与 Shell 工具适配层。
+3. CLI bootstrap 使用 `workspace(config)` 异步 context manager 管理 Workspace；退出 Run 时统一销毁，销毁失败必须显式上抛，避免静默泄漏工作区。
+4. 增加 CLI backend 选择和配置校验，Local 为默认，Docker 为显式选择。
+5. 使用同一组 Workspace 契约测试验证 Local 与 Docker；另外为 Local 增加源仓库不变、跨 Run 文件不可见、超时无遗留进程、越界目录拒绝和安全销毁测试。
 
 ### 5.5 ProjectProfile
 
@@ -355,7 +492,7 @@ LLM-as-Judge 只能用于轨迹错误分类、失败归因或报告质量，不�
 | HTTP/Provider | 官方 SDK 或 httpx，封装在 Provider 内 |
 | CLI | Typer |
 | 数据库 | SQLite + SQLAlchemy 2.0/aiosqlite |
-| Workspace | Docker Engine API / Docker SDK for Python |
+| Workspace | 本地进程与文件系统；Docker Engine CLI/API |
 | Dashboard | FastAPI + Jinja/HTMX，保持只读 |
 | 测试 | pytest + pytest-asyncio |
 | 代码质量 | Ruff + ty |
@@ -378,6 +515,8 @@ recoverable-coding-agent/
 │   └── eval_tasks.yaml
 ├── src/rca/
 │   ├── cli/
+│   │   ├── bootstrap.py
+│   │   └── main.py
 │   ├── runtime/
 │   │   ├── loop.py
 │   │   ├── state.py
@@ -395,6 +534,7 @@ recoverable-coding-agent/
 │   │   └── shell.py
 │   ├── workspace/
 │   │   ├── base.py
+│   │   ├── local.py
 │   │   └── docker.py
 │   ├── recovery/
 │   │   ├── controller.py
@@ -516,6 +656,7 @@ Resolved Rate = 验证通过任务数 / 总任务数
 ### 9.2 集成测试
 
 - Provider Fake → Runtime → Fake Tool 完整循环。
+- LocalWorkspace 创建、执行、Checkpoint、Patch 导出和安全销毁。
 - DockerWorkspace 创建、执行、导出和销毁。
 - Git Checkpoint 与回滚。
 - SQLite Snapshot 恢复。
@@ -552,7 +693,7 @@ Resolved Rate = 验证通过任务数 / 总任务数
 
 周日结束前必须同时满足：
 
-- Docker Workspace 中完成 Issue → Patch → Test 闭环。
+- 默认 Local Workspace 和显式 Docker Workspace 均能完成 Issue → Patch → Test 闭环。
 - 实现 8 个结构化工具和受限 Shell。
 - Runtime 统一负责状态机、预算、终止、取消和最终结果。
 - SQLite 持久化 Event、Snapshot 和 Approval。
@@ -641,12 +782,12 @@ Docker 可用
 - 开发集、评测集和统一实验配置进入版本控制。
 - 全部已有测试继续通过。
 
-### 周二，9 月 15 日：Docker Workspace、工具和策略边界
+### 周二，9 月 15 日：Local/Docker Workspace、工具和策略边界
 
 实现：
 
-- `WorkspaceBackend`、`DockerWorkspace` 和 Python `ProjectProfile`。
-- 每个 Run 使用独立工作区，应用非 root、capability、PID、CPU、内存和网络限制。
+- `WorkspaceBackend`、默认 `LocalWorkspace`、`DockerWorkspace` 和 Python `ProjectProfile`。
+- 每个 Run 使用独立工作区；DockerWorkspace 应用 capability、PID、CPU、内存和网络限制，非 root 校验按策略启用。
 - Tool Registry、输入 Schema 校验、输出截断和结构化错误。
 - `list_files`、`search_code`、`read_file`、`apply_patch`。
 - `run_tests`、`git_diff`、受限 `shell_exec`、`finish`。
@@ -670,7 +811,7 @@ Docker 可用
 - Run Snapshot、最近安全边界和 Tool Call 幂等键。
 - Git Checkpoint、restore 和 Patch 导出。
 - `run`、`inspect`、`resume` CLI。
-- Snapshot 恢复后重建 Docker Workspace。
+- Snapshot 恢复后按原 Backend 重建 Workspace。
 
 安全边界顺序：
 
@@ -844,7 +985,7 @@ Dashboard 不负责创建任务、管理用户或远程调度。
 - ADR-001：自研 Runtime 而不是首版使用 Agent 框架。
 - ADR-002：单 Agent + 确定性控制器。
 - ADR-003：结构化工具 + 受限 Shell。
-- ADR-004：Docker V1，Firecracker V2。
+- ADR-004：可信开发默认 Local、受控评测使用 Docker、Firecracker V2。
 - ADR-005：Event Log + Snapshot + Git Checkpoint。
 - ADR-006：客观测试作为最终判定。
 - ADR-007：内部 Tool Registry，MCP Adapter 后置。
@@ -856,7 +997,7 @@ Dashboard 不负责创建任务、管理用户或远程调度。
 |---|---|
 | 范围膨胀 | V1 非目标写入 README；每周只允许一个核心主题 |
 | 模型费用失控 | 单 Run 预算；开发集与评测集分离；缓存静态环境 |
-| Docker 安全被高估 | 明确安全边界；Rootless、资源限制、无敏感挂载 |
+| Workspace 安全被高估 | Local 仅隔离代码状态；Docker 使用 capability、资源、网络和敏感挂载限制；Rootless 作为部署加固 |
 | 评测样本过少 | 明确不声称排行榜结果；冻结任务 ID 和实验配置 |
 | 为任务过拟合 Prompt | 开发集与评测集隔离；不按评测失败修改任务列表 |
 | 恢复导致成本上升 | 同时报告成功率、Token、耗时和恢复成本 |
@@ -870,6 +1011,7 @@ Dashboard 不负责创建任务、管理用户或远程调度。
 
 - 独立代码仓库，不是 mini-swe-agent Fork。
 - Runtime、Provider、Tool、Workspace、Recovery、Evaluator 边界清晰。
+- CLI 默认通过 Run 独占的 LocalWorkspace 执行，并能显式切换 DockerWorkspace；不得把宿主机当前目录直接当作 Workspace。
 - 至少 80% 核心模块具有单元或集成测试覆盖；覆盖率不是唯一质量标准。
 - 通过至少 5 个故障注入 E2E 场景。
 - 能完成一次进程中断后的任务续跑。
@@ -889,7 +1031,7 @@ Dashboard 不负责创建任务、管理用户或远程调度。
 3. 3 分钟：运行一个触发测试失败、重新规划并修复的任务。
 4. 2 分钟：展示 Trace、Checkpoint、回滚和成本。
 5. 1 分钟：展示 Baseline/Recoverable 对照结果。
-6. 1 分钟：说明 Docker 安全边界、V2 Firecracker/MCP 扩展路径。
+6. 1 分钟：说明 Local 与 Docker 的安全边界、V2 Firecracker/MCP 扩展路径。
 
 面试中应主动说明限制：20 个冻结任务不能代表 SWE-bench 全榜；Docker 不能等价于强多租户安全；恢复可能以更多 Token 和耗时换取成功率。
 
