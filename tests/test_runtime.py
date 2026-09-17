@@ -4,6 +4,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
+import orjson
 import pytest
 
 from miniagent.agents import AgentSpec, ModelTarget
@@ -34,7 +35,12 @@ from miniagent.runtime import (
     TerminationReason,
     transition,
 )
-from miniagent.tools import Tool
+from miniagent.tools import Tool, ToolArguments
+from miniagent.tools.registry import ToolRegistry
+
+
+class EmptyArguments(ToolArguments):
+    pass
 
 
 class QueueProvider(ModelProvider):
@@ -66,9 +72,18 @@ class BlockingProvider(ModelProvider):
 
 
 class SuccessfulTool(Tool):
+    arguments_model = EmptyArguments
+
+    def __init__(self) -> None:
+        self.executions = 0
+
     @property
     def definition(self) -> ToolDefinition:
-        return ToolDefinition(name="ok", description="Succeed", input_schema={})
+        return ToolDefinition(
+            name="ok",
+            description="Succeed",
+            input_schema=self.arguments_model.model_json_schema(),
+        )
 
     async def execute(
         self,
@@ -76,8 +91,23 @@ class SuccessfulTool(Tool):
         *,
         tool_call_id: str,
     ) -> ToolResult:
+        self.executions += 1
         return ToolResult(
             tool_call_id=tool_call_id,
+            status=ToolStatus.SUCCESS,
+            content="done",
+        )
+
+
+class MismatchedResultTool(SuccessfulTool):
+    async def execute(
+        self,
+        arguments: dict[str, Any],
+        *,
+        tool_call_id: str,
+    ) -> ToolResult:
+        return ToolResult(
+            tool_call_id="different-call",
             status=ToolStatus.SUCCESS,
             content="done",
         )
@@ -100,11 +130,14 @@ def final_response(content: str = "finished") -> ModelResponse:
     )
 
 
-def tool_response(name: str = "ok") -> ModelResponse:
+def tool_response(
+    name: str = "ok",
+    arguments: dict[str, Any] | None = None,
+) -> ModelResponse:
     return ModelResponse(
         message=Message(
             role="assistant",
-            tool_calls=[ToolCall(id="call", name=name, arguments={})],
+            tool_calls=[ToolCall(id="call", name=name, arguments=arguments or {})],
         ),
         finish_reason=FinishReason.TOOL_CALL,
     )
@@ -119,6 +152,10 @@ def agent(*, allowed_tools: list[str] | None = None) -> AgentSpec:
         temperature=0.25,
         max_output_tokens=100,
     )
+
+
+def registry(*tools: Tool) -> ToolRegistry:
+    return ToolRegistry(tools)
 
 
 def run_state() -> RunState:
@@ -202,6 +239,44 @@ class TestRunState:
 
 
 class TestAgentRuntime:
+    async def test_invalid_tool_arguments_are_returned_without_execution(
+        self,
+    ) -> None:
+        tool = SuccessfulTool()
+        provider = QueueProvider(
+            [tool_response(arguments={"unexpected": True}), final_response()]
+        )
+        runtime = AgentRuntime(provider=provider, tools=registry(tool))
+
+        assert (
+            await runtime.run(agent(allowed_tools=["ok"]), "task")
+        ).status is RunStatus.SUCCEEDED
+        assert tool.executions == 0
+        message = provider.requests[1].messages[-1]
+        assert message.content is not None
+        payload = orjson.loads(message.content)
+        assert payload["status"] == "error"
+        assert payload["error"]["code"] == "INVALID_TOOL_ARGUMENTS"
+        assert payload["error"]["issues"][0]["location"] == ["unexpected"]
+
+    async def test_mismatched_tool_result_is_returned_as_structured_error(
+        self,
+    ) -> None:
+        provider = QueueProvider([tool_response(), final_response()])
+        runtime = AgentRuntime(
+            provider=provider,
+            tools=registry(MismatchedResultTool()),
+        )
+
+        assert (
+            await runtime.run(agent(allowed_tools=["ok"]), "task")
+        ).status is RunStatus.SUCCEEDED
+        message = provider.requests[1].messages[-1]
+        assert message.content is not None
+        assert orjson.loads(message.content)["error"]["code"] == (
+            "INVALID_TOOL_RESULT"
+        )
+
     async def test_model_usage_and_cost_accumulate_across_steps(self) -> None:
         first = tool_response()
         first.usage = Usage(
@@ -232,7 +307,7 @@ class TestAgentRuntime:
         )
         runtime = AgentRuntime(
             provider=QueueProvider([first, second]),
-            tools={"ok": SuccessfulTool()},
+            tools=registry(SuccessfulTool()),
             pricing=pricing,
         )
 
@@ -253,7 +328,7 @@ class TestAgentRuntime:
         )
         runtime = AgentRuntime(
             provider=QueueProvider([final_response()]),
-            tools={},
+            tools=registry(),
             evaluator=evaluator,
         )
 
@@ -275,7 +350,7 @@ class TestAgentRuntime:
         )
         runtime = AgentRuntime(
             provider=QueueProvider([final_response()]),
-            tools={},
+            tools=registry(),
             evaluator=evaluator,
         )
 
@@ -290,7 +365,7 @@ class TestAgentRuntime:
         provider = QueueProvider([tool_response(), tool_response()])
         runtime = AgentRuntime(
             provider=provider,
-            tools={"ok": SuccessfulTool()},
+            tools=registry(SuccessfulTool()),
             config=RuntimeConfig(max_steps=2),
         )
 
@@ -311,7 +386,7 @@ class TestAgentRuntime:
         )
         runtime = AgentRuntime(
             provider=QueueProvider([response]),
-            tools={},
+            tools=registry(),
         )
 
         result = await runtime.run(agent(), "task")
@@ -323,7 +398,7 @@ class TestAgentRuntime:
     async def test_provider_exception_fails_run(self) -> None:
         runtime = AgentRuntime(
             provider=QueueProvider([RuntimeError("offline")]),
-            tools={},
+            tools=registry(),
         )
 
         result = await runtime.run(agent(), "task")
@@ -338,7 +413,7 @@ class TestAgentRuntime:
         )
         runtime = AgentRuntime(
             provider=provider,
-            tools={},
+            tools=registry(),
             config=RuntimeConfig(max_consecutive_failures=2),
         )
 
@@ -352,7 +427,7 @@ class TestAgentRuntime:
         token = CancellationToken()
         runtime = AgentRuntime(
             provider=provider,
-            tools={},
+            tools=registry(),
             cancellation_token=token,
         )
         run = asyncio.create_task(runtime.run(agent(), "task"))
@@ -367,7 +442,7 @@ class TestAgentRuntime:
 
     async def test_asyncio_cancellation_propagates_and_stops_model(self) -> None:
         provider = BlockingProvider()
-        runtime = AgentRuntime(provider=provider, tools={})
+        runtime = AgentRuntime(provider=provider, tools=registry())
         run = asyncio.create_task(runtime.run(agent(), "task"))
         await provider.started.wait()
 

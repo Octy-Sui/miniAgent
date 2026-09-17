@@ -102,6 +102,7 @@ Keep intermediate values when they are reused or improve readability.
 
 7. Test observable behavior and public contracts rather than internal implementation details.
 8. When the reason for an exception is part of the contract, use `pytest.raises(..., match=...)` to verify the expected failure.
+9. Run tests only for changes that can affect runtime behavior. Skip tests for docs, instructions, comments, formatting, and non-runtime config. Prefer targeted tests over the full suite.
 
 # Commit Messages
 

@@ -5,17 +5,29 @@
 from pathlib import PurePosixPath
 from typing import Any
 
+from pydantic import Field
+
 from miniagent.environments import Command, ExecutionStatus, Workspace
 from miniagent.models.tool import (
     ToolDefinition,
     ToolError,
+    ToolOutputInfo,
     ToolResult,
     ToolStatus,
 )
-from miniagent.tools import Tool
+from miniagent.tools import Tool, ToolArguments
+
+
+class ReadFileArguments(ToolArguments):
+    path: str = Field(
+        min_length=1,
+        description="Path relative to the workspace root.",
+    )
 
 
 class ReadFileTool(Tool):
+    arguments_model = ReadFileArguments
+
     def __init__(self, workspace: Workspace) -> None:
         self.workspace = workspace
 
@@ -24,17 +36,7 @@ class ReadFileTool(Tool):
         return ToolDefinition(
             name="read_file",
             description="Read a UTF-8 text file from the workspace.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": ("Path relative to the workspace root."),
-                    }
-                },
-                "required": ["path"],
-                "additionalProperties": False,
-            },
+            input_schema=self.arguments_model.model_json_schema(),
         )
 
     async def execute(
@@ -82,6 +84,10 @@ class ReadFileTool(Tool):
                     code="FILE_NOT_FOUND",
                     message=f"File does not exist: {path}",
                 ),
+                output=ToolOutputInfo(
+                    stdout_truncated=result.stdout_truncated,
+                    stderr_truncated=result.stderr_truncated,
+                ),
             )
         if "UnicodeDecodeError" in result.stderr:
             return ToolResult(
@@ -92,6 +98,10 @@ class ReadFileTool(Tool):
                     code="DECODE_ERROR",
                     message="File is not valid UTF-8 text.",
                 ),
+                output=ToolOutputInfo(
+                    stdout_truncated=result.stdout_truncated,
+                    stderr_truncated=result.stderr_truncated,
+                ),
             )
         if result.status is not ExecutionStatus.SUCCESS:
             return ToolResult(
@@ -101,6 +111,10 @@ class ReadFileTool(Tool):
                 error=ToolError(
                     code="READ_FAILED",
                     message=f"Cannot read file: {path}",
+                ),
+                output=ToolOutputInfo(
+                    stdout_truncated=result.stdout_truncated,
+                    stderr_truncated=result.stderr_truncated,
                 ),
             )
         if result.stdout_truncated:
@@ -116,6 +130,10 @@ class ReadFileTool(Tool):
                     code="OUTPUT_TRUNCATED",
                     message="File exceeds the workspace output limit.",
                 ),
+                output=ToolOutputInfo(
+                    stdout_truncated=True,
+                    stderr_truncated=result.stderr_truncated,
+                ),
             )
 
         return ToolResult(
@@ -126,4 +144,8 @@ class ReadFileTool(Tool):
                 "path": path,
                 "size": len(result.stdout.encode()),
             },
+            output=ToolOutputInfo(
+                stdout_truncated=result.stdout_truncated,
+                stderr_truncated=result.stderr_truncated,
+            ),
         )

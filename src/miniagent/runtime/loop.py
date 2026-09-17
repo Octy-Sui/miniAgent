@@ -3,7 +3,9 @@
 # Author : octy Sui
 
 import asyncio
-from collections.abc import Awaitable, Mapping
+import logging
+import re
+from collections.abc import Awaitable
 from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TypeVar
@@ -35,10 +37,13 @@ from miniagent.runtime.termination import (
     evaluate_model_response,
     tool_step_failed,
 )
+from miniagent.runtime.tool_output import render_tool_result
 from miniagent.runtime.usage import add_request_usage, calculate_request_cost
-from miniagent.tools import Tool
+from miniagent.tools.registry import PreparedToolCall, ToolRegistry
 
 T = TypeVar("T")
+_TOOL_ERROR_CODE = re.compile(r"^[A-Z0-9_]{1,64}$")
+logger = logging.getLogger(__name__)
 
 
 class _CancellationRequested(Exception):
@@ -50,14 +55,14 @@ class AgentRuntime:
         self,
         *,
         provider: ModelProvider,
-        tools: Mapping[str, Tool],
+        tools: ToolRegistry,
         config: RuntimeConfig | None = None,
         cancellation_token: CancellationToken | None = None,
         evaluator: Evaluator | None = None,
         pricing: PriceConfig | None = None,
     ) -> None:
         self.provider = provider
-        self._tools = dict(tools)
+        self.tools = tools
         self.config = config or RuntimeConfig()
         self.cancellation_token = cancellation_token or CancellationToken()
         self.evaluator = evaluator or PassThroughEvaluator()
@@ -179,16 +184,16 @@ class AgentRuntime:
             return self._cancelled_result(state)
 
     def _validate_agent_tools(self, agent: AgentSpec) -> None:
-        unknown_tools = set(agent.allowed_tools) - self._tools.keys()
-        if unknown_tools:
-            names = ", ".join(sorted(unknown_tools))
-            raise ValueError(f"Agent {agent.name!r} references unknown tools: {names}")
+        try:
+            self.tools.definitions(agent.allowed_tools)
+        except ValueError as exc:
+            raise ValueError(f"Invalid tools for agent {agent.name!r}: {exc}") from exc
 
     def _build_request(self, agent: AgentSpec, state: RunState) -> ModelRequest:
         return ModelRequest(
             model=agent.model.model,
             messages=state.messages,
-            tools=[self._tools[name].definition for name in agent.allowed_tools],
+            tools=self.tools.definitions(agent.allowed_tools),
             max_output_tokens=agent.max_output_tokens,
             temperature=agent.temperature,
         )
@@ -212,34 +217,92 @@ class AgentRuntime:
                     error=ToolError(code="TOOL_NOT_ALLOWED", message=call.name),
                 )
             else:
-                tool = self._tools[call.name]
-                try:
-                    result = await self._await_with_cancellation(
-                        tool.execute(call.arguments, tool_call_id=call.id)
-                    )
-                except _CancellationRequested:
-                    raise
-                except Exception as exc:  # noqa: BLE001
+                prepared = self.tools.prepare(call)
+                if isinstance(prepared, ToolError):
                     result = ToolResult(
                         tool_call_id=call.id,
                         status=ToolStatus.ERROR,
-                        content=f"Tool execution failed: {call.name}",
-                        error=ToolError(
-                            code="TOOL_EXECUTION_EXCEPTION",
-                            message=f"{type(exc).__name__}: {exc}",
-                        ),
+                        content=f"Invalid arguments for {call.name}.",
+                        error=prepared,
                     )
+                else:
+                    result = await self._execute_tool(call.id, call.name, prepared)
 
             results.append(result)
             state.messages.append(
                 Message(
                     role="tool",
                     tool_call_id=call.id,
-                    content=result.content,
+                    content=render_tool_result(
+                        result,
+                        self.config.tool_output_limits,
+                    ),
                 )
             )
 
         return results
+
+    async def _execute_tool(
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        prepared: PreparedToolCall,
+    ) -> ToolResult:
+        try:
+            result = await self._await_with_cancellation(
+                prepared.tool.execute(
+                    prepared.arguments,
+                    tool_call_id=tool_call_id,
+                )
+            )
+        except _CancellationRequested:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("Tool execution failed", extra={"tool": tool_name})
+            return ToolResult(
+                tool_call_id=tool_call_id,
+                status=ToolStatus.ERROR,
+                content=f"Tool execution failed: {tool_name}",
+                error=ToolError(
+                    code="TOOL_EXECUTION_EXCEPTION",
+                    message="Tool execution raised an unexpected exception.",
+                ),
+            )
+
+        if not isinstance(result, ToolResult):
+            return self._invalid_tool_result(
+                tool_call_id,
+                tool_name,
+                "Tool returned an unsupported result type.",
+            )
+        if result.tool_call_id != tool_call_id:
+            return self._invalid_tool_result(
+                tool_call_id,
+                tool_name,
+                "Tool result does not match the current call.",
+            )
+        if result.error is not None and not _TOOL_ERROR_CODE.fullmatch(
+            result.error.code
+        ):
+            return self._invalid_tool_result(
+                tool_call_id,
+                tool_name,
+                "Tool returned an invalid error code.",
+            )
+        return result
+
+    @staticmethod
+    def _invalid_tool_result(
+        tool_call_id: str,
+        tool_name: str,
+        message: str,
+    ) -> ToolResult:
+        return ToolResult(
+            tool_call_id=tool_call_id,
+            status=ToolStatus.ERROR,
+            content=f"Invalid result from tool: {tool_name}",
+            error=ToolError(code="INVALID_TOOL_RESULT", message=message),
+        )
 
     async def _await_with_cancellation(self, awaitable: Awaitable[T]) -> T:
         if self.cancellation_token.is_cancelled:

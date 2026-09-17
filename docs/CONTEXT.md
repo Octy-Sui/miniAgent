@@ -20,6 +20,14 @@ _Avoid_: Agent runtime, agent instance
 One model request together with all tool calls produced by its response.
 _Avoid_: Round, turn
 
+**Tool Call**:
+One Agent-requested invocation of a named tool with arguments, correlated with its Tool Result within a Run.
+_Avoid_: Step, command
+
+**Tool Result**:
+The outcome of one Tool Call, including its execution status, observations, and any failure information. Incomplete observations do not by themselves mean that execution failed.
+_Avoid_: Model response, final output
+
 **Agent Segment**:
 A consecutive sequence of Steps executed by the same active Agent within a Run.
 _Avoid_: Sub-run

@@ -27,8 +27,8 @@ from miniagent.models import PriceConfig, Settings, load_price_config
 from miniagent.providers import ModelProvider
 from miniagent.providers.qwen import QwenProvider
 from miniagent.runtime import AgentRuntime, CancellationToken, RunResult
-from miniagent.tools import Tool
 from miniagent.tools.read_file import ReadFileTool
+from miniagent.tools.registry import ToolRegistry
 from miniagent.tools.shell import ShellTool
 
 
@@ -41,11 +41,8 @@ def build_provider(agent: AgentSpec, settings: Settings) -> ModelProvider:
     raise ValueError(f"Unknown provider: {agent.model.provider}")
 
 
-def build_tools(workspace: Workspace) -> dict[str, Tool]:
-    return {
-        "read_file": ReadFileTool(workspace),
-        "shell": ShellTool(workspace),
-    }
+def build_tools(workspace: Workspace) -> ToolRegistry:
+    return ToolRegistry([ReadFileTool(workspace), ShellTool(workspace)])
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,7 +99,7 @@ class BootstrappedAgent:
     task: str
     run_id: UUID
     provider: ModelProvider
-    tools: dict[str, Tool]
+    tools: ToolRegistry
     pricing: PriceConfig
     patch_artifact: ArtifactRef | None = None
 
@@ -170,7 +167,7 @@ async def bootstrap(config: BootstrapConfig) -> AsyncIterator[BootstrappedAgent]
                     instance,
                     FileArtifactStore(settings.artifact_root),
                 )
-            except Exception as patch_error:
+            except Exception as patch_error:  # noqa: BLE001
                 exc.add_note(f"Workspace patch export also failed: {patch_error}")
             raise
         else:

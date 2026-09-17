@@ -15,6 +15,7 @@ from miniagent.environments import (
 )
 from miniagent.models.tool import ToolStatus
 from miniagent.tools.read_file import ReadFileTool
+from miniagent.tools.shell import ShellTool
 
 
 def run_git(repository: Path, *arguments: str) -> None:
@@ -215,5 +216,32 @@ async def test_read_file_tool_reports_truncated_content(
         assert result.error.code == "OUTPUT_TRUNCATED"
         assert result.data is not None
         assert result.data["truncated"] is True
+        assert result.output.stdout_truncated
+    finally:
+        await workspace.destroy()
+
+
+async def test_shell_tool_preserves_success_when_output_is_truncated(
+    tmp_path: Path,
+    source_repository: Path,
+) -> None:
+    backend = LocalWorkspaceBackend(
+        root=tmp_path / "workspaces",
+        artifact_store=FileArtifactStore(tmp_path / "artifacts"),
+        max_output_bytes=4,
+    )
+    workspace = await backend.create(
+        LocalWorkspaceSpec(run_id=uuid4(), source_dir=source_repository)
+    )
+
+    try:
+        result = await ShellTool(workspace).execute(
+            {"command": "printf 123456"},
+            tool_call_id="large",
+        )
+
+        assert result.status is ToolStatus.SUCCESS
+        assert result.output.stdout_truncated
+        assert result.error is None
     finally:
         await workspace.destroy()

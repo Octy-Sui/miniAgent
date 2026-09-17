@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from miniagent.agents import AgentSpec
 from miniagent.models.model import Message
-from miniagent.models.tool import ToolCall
+from miniagent.models.tool import ToolCall, ToolOutputLimits
 
 
 class RunStatus(StrEnum):
@@ -112,6 +112,7 @@ class TerminationReason(StrEnum):
 class RuntimeConfig(BaseModel):
     max_steps: int = Field(default=50, ge=1)
     max_consecutive_failures: int = Field(default=3, ge=1)
+    tool_output_limits: ToolOutputLimits = Field(default_factory=ToolOutputLimits)
 
 
 class RunError(BaseModel):

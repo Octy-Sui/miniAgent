@@ -148,7 +148,14 @@ Provider 层负责协议差异、超时、限流识别和基础网络重试；�
 
 ### 5.3 Tool Registry
 
-首版工具控制在 8 个左右：
+当前只有 `read_file` 和 `shell` 接入执行链。Tool Registry、执行前 Schema 校验、
+Workspace 输出采集截断、模型消息截断和结构化错误 JSON 已接入 Runtime。
+
+四项能力的数据结构、职责、消息大小上限和迁移方案见
+[Tool 契约设计](tool-contract-design.md)。以下工具列表为路线图，
+不表示已经全部注册。
+
+目标工具控制在 8 个左右：
 
 | 工具 | 作用 |
 |---|---|
@@ -161,29 +168,38 @@ Provider 层负责协议差异、超时、限流识别和基础网络重试；�
 | `shell_exec` | 受限命令兜底 |
 | `finish` | 提交候选结果并触发验证 |
 
-统一工具协议：
+统一工具接口使用参数模型生成 Schema 并执行严格校验：
 
 ```python
-class Tool(Protocol):
-    name: str
-    description: str
-    input_schema: dict[str, object]
+class Tool(ABC):
+    arguments_model: type[ToolArguments]
 
+    @property
+    @abstractmethod
+    def definition(self) -> ToolDefinition: ...
+
+    @abstractmethod
     async def execute(
         self,
-        context: ToolContext,
-        arguments: dict[str, object],
+        arguments: dict[str, Any],
+        *,
+        tool_call_id: str,
     ) -> ToolResult: ...
 ```
 
 `ToolResult` 不只返回字符串，应包含：
 
 - `status`：success/error/timeout/denied。
-- `summary`：适合放入模型上下文的短结果。
-- `artifact_refs`：完整输出引用。
+- `content`：适合放入模型上下文的结果文本，发送前执行大小限制。
+- `data`：工具特定的结构化数据。
+- `artifacts`：已实际保存的输出引用；不保证被采集层丢弃的内容可恢复。
 - `metrics`：耗时、退出码、输出大小。
 - `workspace_delta`：修改文件和 Git 状态。
 - `error`：结构化错误类型和是否可重试。
+- `output`：采集截断标志和模型消息裁剪信息。
+
+Registry 负责注册和参数校验；Runtime 保留执行与取消职责，将结果投影为有界 JSON
+工具消息。执行状态和输出完整性独立表达，详细约束以上述 Tool 契约设计为准。
 
 ### 5.4 WorkspaceBackend
 

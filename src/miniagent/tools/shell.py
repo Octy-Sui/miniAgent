@@ -4,12 +4,26 @@
 
 from typing import Any
 
+from pydantic import Field
+
 from miniagent.environments import Command, ExecutionStatus, Workspace
-from miniagent.models.tool import ToolDefinition, ToolError, ToolResult, ToolStatus
-from miniagent.tools import Tool
+from miniagent.models.tool import (
+    ToolDefinition,
+    ToolError,
+    ToolOutputInfo,
+    ToolResult,
+    ToolStatus,
+)
+from miniagent.tools import Tool, ToolArguments
+
+
+class ShellArguments(ToolArguments):
+    command: str = Field(min_length=1)
 
 
 class ShellTool(Tool):
+    arguments_model = ShellArguments
+
     def __init__(
         self,
         workspace: Workspace,
@@ -23,16 +37,7 @@ class ShellTool(Tool):
         return ToolDefinition(
             name="shell",
             description=("Execute a shell command inside the workspace."),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                    }
-                },
-                "required": ["command"],
-                "additionalProperties": False,
-            },
+            input_schema=self.arguments_model.model_json_schema(),
         )
 
     async def execute(
@@ -57,7 +62,10 @@ class ShellTool(Tool):
                 error=ToolError(
                     code="COMMAND_TIMEOUT",
                     message="Shell command timed out.",
-                    retryable=True,
+                ),
+                output=ToolOutputInfo(
+                    stdout_truncated=result.stdout_truncated,
+                    stderr_truncated=result.stderr_truncated,
                 ),
             )
         exit_code = result.exit_code
@@ -89,5 +97,9 @@ class ShellTool(Tool):
                     code="COMMAND_FAILED",
                     message=(f"Command exited with code {exit_code}"),
                 )
+            ),
+            output=ToolOutputInfo(
+                stdout_truncated=result.stdout_truncated,
+                stderr_truncated=result.stderr_truncated,
             ),
         )

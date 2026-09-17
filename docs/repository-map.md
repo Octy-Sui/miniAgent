@@ -38,6 +38,7 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；CLI signal 和 exit s
 | wired | Typer CLI、model override、signal cancellation、result rendering | `src/miniagent/cli/main.py`, `tests/test_cli.py` |
 | wired | Qwen/OpenAI-compatible model request and tool-call translation | `src/miniagent/providers/qwen.py`, `src/miniagent/providers/__init__.py` |
 | wired | Step loop、tool allowlist、termination、usage/cost、cancellation | `src/miniagent/runtime/loop.py`, `src/miniagent/runtime/termination.py`, `src/miniagent/runtime/usage.py` |
+| wired | Tool Registry、严格参数校验、有界 JSON 工具消息和结构化错误 | `src/miniagent/tools/registry.py`, `src/miniagent/runtime/tool_output.py`, `tests/test_tool_contracts.py` |
 | wired | Local/Docker Workspace create、execute、patch export、destroy | `src/miniagent/environments/`, `tests/test_local_workspace.py`, `tests/test_docker_workspace.py` |
 | wired | `read_file` and unrestricted shell fallback inside the selected Workspace | `src/miniagent/tools/`, `src/miniagent/cli/bootstrap.py` |
 | wired | Content-addressed file artifacts and CLI patch persistence | `src/miniagent/artifacts/`, `src/miniagent/cli/bootstrap.py` |
@@ -60,7 +61,7 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；CLI signal 和 exit s
 | Workspace public contract | `src/miniagent/environments/workspace.py` | `src/miniagent/environments/__init__.py` | `tests/test_protocol_models.py` |
 | Local execution/isolation | `src/miniagent/environments/local.py` | `src/miniagent/artifacts/`, `src/miniagent/tools/` | `tests/test_local_workspace.py` |
 | Docker execution/isolation | `src/miniagent/environments/docker.py` | `src/miniagent/environments/workspace.py` | `tests/test_docker_workspace.py` |
-| Tool result/error behavior | `src/miniagent/tools/read_file.py`, `src/miniagent/tools/shell.py` | `src/miniagent/models/tool.py`, selected Workspace | `tests/test_local_workspace.py`, `tests/test_runtime.py` |
+| Tool registration, arguments, result/error behavior | `src/miniagent/tools/registry.py`, `src/miniagent/tools/read_file.py`, `src/miniagent/tools/shell.py` | `src/miniagent/models/tool.py`, `src/miniagent/runtime/tool_output.py`, selected Workspace | `tests/test_tool_contracts.py`, `tests/test_local_workspace.py`, `tests/test_runtime.py` |
 | Patch/artifact persistence | `src/miniagent/artifacts/` | `src/miniagent/cli/bootstrap.py`, Workspace `export_patch()` | `tests/test_cli_bootstrap.py`, `tests/test_local_workspace.py`, `tests/test_docker_workspace.py` |
 | Recovery/event/snapshot contracts | `src/miniagent/runtime/recovery.py` | `src/miniagent/runtime/events.py`, `src/miniagent/runtime/snapshots.py`, `src/miniagent/runtime/state.py` | `tests/test_protocol_models.py` |
 | Codex repository context | `.agents/skills/repo-map/SKILL.md` | `AGENTS.md`, `docs/repository-map.md` | `$repo-map refresh`, skill validator |
