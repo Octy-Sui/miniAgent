@@ -1,103 +1,131 @@
-# Task Handoff: 修复 Workspace 边界与 CLI 失败语义
+# Task Handoff: 完成 Policy Engine 并收尾 Workspace/CLI 遗留问题
 
-<!-- handoff: captured-against 73a0837 | worktree dirty | updated 2026-09-17 -->
+<!-- handoff: captured-against 0bd0784 | worktree dirty | updated 2026-09-17 -->
 
 ## Goal and success criteria
 
-修复 review 发现的三个 Workspace/CLI 问题，同时保留现有 Run 结果、Workspace
-隔离契约和配置的 fail-fast 行为。完成标准是三个回归场景均有测试覆盖，完整测试、类型
-检查和 CLI 验收重新通过。
+完成 Tool Call 的 `allow`、`deny`、`approval` 策略与同进程人工审批，并收尾旧
+handoff 中仍有效的 Workspace/CLI 问题。完成标准：策略三种结果、审批生命周期和
+越界行为有可观察测试；BROKEN Workspace 的 patch 失败不覆盖 Run/退出语义；Local
+Workspace 拒绝 Docker 专用 image；完整测试、类型检查、CLI 验收和最终 diff 均通过。
 
 ## Current state
 
-LocalWorkspace、DockerWorkspace 和 CLI bootstrap 已实现并接入。以下三个 review
-问题在 `73a0837` 上经静态复核仍然存在，尚未开始业务代码修复：
+Policy Engine 已接到参数校验与工具执行之间，CLI 可逐次展示完整参数并批准或拒绝。
+默认策略目前对 Shell 一律请求审批；相对路径读取在 Docker 中允许、在 Local 中请求
+审批；绝对路径、`..` 越界和无匹配规则直接拒绝。Local 读取是否应依赖工具层边界校验
+而自动允许，已提出但尚未决定或修改。
 
-1. BROKEN Workspace 的 patch 导出可能覆盖既有 Run 结果或预期退出语义。
-2. `read_file` 仅做词法路径检查，可通过越界 symlink 读取 Workspace 外文件。
-3. Local Workspace 会静默忽略 `docker_image`。
+旧 handoff 的三个问题中，`read_file` 已增加解析符号链接后的边界检查；另外两个问题
+仍存在：正常退出路径的 patch 导出异常可能覆盖 Run 结果，Local Workspace 仍静默忽略
+显式 `docker_image`。
 
 ## Completed
 
-- Local/Docker Workspace、CLI bootstrap、patch artifact 路径已在此前工作中实现。
-- 已重新检查相关实现与测试入口，确认三个问题没有被后续 repo-map 提交修复。
-- 已将旧根目录 handoff 迁移为项目约定的 `docs/HANDOFF.md`。
+- 新增 `miniagent.policy` 数据模型、确定性默认规则、摘要绑定和 ApprovalHandler 协议。
+- Runtime 已实现 fail-closed 策略评估、`WAITING_APPROVAL`、批准/拒绝/过期/取消、批准
+  后重评，以及实际执行才累计 tool usage。
+- CLI 已接入交互审批，展示完整参数；无人处理审批时返回
+  `APPROVAL_UNAVAILABLE`。
+- Policy Request 已绑定 Agent、工具契约/实现配置和 Workspace 上下文摘要；Run State
+  保存决策、请求和 resolution。
+- `read_file` 执行时解析实际目标，符号链接越界返回 `PATH_OUTSIDE_WORKSPACE`。
+- 同一模型响应中的重复 Tool Call ID 会作为无效模型响应终止。
+- 领域词汇、Policy 设计文档和 repository map 已同步当前实现边界。
 
 ## Current changes
 
-- `.agents/skills/handoff/` — 新增项目级 Codex handoff 工作流；不包含业务代码修改。
-- `HANDOFF.md` → `docs/HANDOFF.md` — 迁移并规范化现有任务状态。
-- `CONTEXT.md`、`blueprint.md` → `docs/` — 迁移项目文档并同步仓库内路径引用。
+- `src/miniagent/policy/`、`src/miniagent/runtime/{loop,state,termination}.py` — 当前
+  session 的 Policy/Approval 实现与 Runtime 接入。
+- `src/miniagent/cli/{bootstrap,main}.py` — 当前 session 的策略上下文装配与 CLI 审批。
+- `src/miniagent/tools/` — 当前 session 的工具策略元数据及 `read_file` 解析后边界检查。
+- `tests/test_policy.py`、`tests/test_runtime.py` — 当前 session 的策略、审批和执行回归测试。
+- `docs/CONTEXT.md`、`docs/policy-engine-design.md`、`docs/repository-map.md` — 当前
+  session 的术语、设计和导航更新。
 
-当前没有针对三个 review 问题的未提交业务代码修改。
+以上修改均未提交。旧 handoff 中的 BROKEN patch 和 Local/docker-image 修复尚未进入
+工作树；不要覆盖或回退现有 Policy 相关改动。
 
 ## Decisions and constraints
 
-- Patch 导出失败不得覆盖已经产生的 Run 结果或 signal exit semantics，且 Workspace
-  最终仍必须销毁。
-- LocalWorkspace 与 DockerWorkspace 必须遵守相同的 `read_file` 越界 symlink
-  拒绝契约，并返回 `PATH_OUTSIDE_WORKSPACE`。
-- `--workspace local` 与 `--docker-image` 同时使用时必须 fail fast；Docker CLI 参数
-  仍可覆盖 settings 中的默认 image。
-- 保留用户已有修改，只处理上述问题，避免顺带重构。
+- 决策优先级为 `deny > approval > allow`；人工批准不能覆盖硬性拒绝。
+- `deny` 用于不可覆盖边界；`approval` 用于可授予但超出默认权限的具体调用。
+- 审批绑定单个规范化 Tool Call、策略版本、工具契约和执行上下文，不提供永久、命令
+  前缀或整 Run 授权。
+- 第一阶段仅支持同进程等待；SQLite、独立 approvals 命令和跨进程 resume 仍是 roadmap。
+- Patch 导出失败不得覆盖已有 Run 结果或 signal exit semantics，Workspace 最终仍要销毁。
+- `--workspace local` 与显式 `--docker-image` 必须 fail fast；Docker override 仍覆盖设置默认值。
+- 保留当前未提交修改；不提交、不推送，不顺带实现跨进程审批。
 
 ## Validated evidence
 
-- `src/miniagent/cli/bootstrap.py` — 正常返回路径仍无条件调用
-  `persist_workspace_patch()`；Local 分支仍未拒绝 `docker_image`。
-- `src/miniagent/tools/read_file.py` — 当前只拒绝绝对路径和包含 `..` 的路径，未验证
-  symlink 解析后的目标。
-- `rg -n "export_patch|docker_image|PATH_OUTSIDE_WORKSPACE" src tests docs/blueprint.md` —
-  未发现覆盖上述三个回归场景的测试。
-- 修复前基线曾通过 `pytest -q`（53 passed，1 skipped）和 `ty check`，但这些结果早于
-  review comments，不能证明问题已修复。
+- `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest -q` — Policy 运行代码和最终
+  测试改动后为 `69 passed, 1 skipped`；其后仅修改了文档。
+- `ty check` — 最终 Python 实现与测试通过类型检查；其后仅修改了文档。
+- `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run miniagent 'model qwen的providers实现路径是？' --model deepseek-v4-flash`
+  — 最终 Runtime 实现上真实 Qwen 调用成功；四个工具调用逐次审批，返回
+  `./src/miniagent/providers/qwen.py`。裸 `miniagent` 因当前 shell PATH 无入口而失败。
+- `git diff --check` — repository-map 文档更新后的工作树通过 whitespace 检查。
+- 当前代码静态复核确认 `read_file.py` 同时执行词法检查和 `resolve()/is_relative_to()`
+  检查；默认策略覆盖 deny、Local approval、Docker allow 三种读取结果。
 
 ## Not yet validated
 
-- 三个修复及其回归测试均尚未实现。
-- 修改后尚未运行完整测试、类型检查或 CLI 端到端验收。
+- 尚无 Local 和 Docker 各自针对越界 symlink 的专项回归测试；现有测试只覆盖 `..`。
+- BROKEN Workspace patch 导出与 Local/docker-image 冲突尚未修复或验证。
+- 尚未根据最新讨论决定 Local 相对路径读取应继续审批还是自动允许。
+- 当前工作树尚未 commit；跨进程审批和持久化未实现。
 
 ## Remaining work
 
-1. 修复 BROKEN Workspace 的 patch 导出语义，并增加超时/取消后的结果与退出码回归测试。
-2. 阻止 `read_file` 跟随越界 symlink，覆盖 Local 和 Docker Workspace 契约。
-3. 拒绝 Local Workspace 与 Docker 专用 image 的不兼容组合，并保留 Docker override。
-4. 执行要求的完整验证并 review 最终 diff。
+1. 修复正常退出时 patch 导出失败覆盖 Run/退出语义的问题，保留可诊断错误并覆盖取消或
+   BROKEN Workspace 场景。
+2. 为 Local 和 Docker `read_file` 添加越界 symlink 回归测试，确认均返回
+   `DENIED / PATH_OUTSIDE_WORKSPACE`。
+3. 对 Local Workspace 与显式 Docker image 的组合 fail fast，并验证 Docker override。
+4. 与用户确认 Local 相对路径读取策略；若自动允许，保持工具层解析后边界拒绝作为执行
+   防线，并更新设计与测试。
+5. 重新运行完整测试、类型检查、真实 CLI 验收和最终 diff review。
 
 ## Risks, blockers, and open questions
 
-- Patch 导出的修复需要区分“Run 已有结果”和“bootstrap 自身异常”，避免吞掉真正的
-  artifact 或 Workspace 错误。
-- symlink 校验必须在实际 Workspace 内完成，不能依赖宿主机路径推断 Docker 文件系统。
+- 正常退出路径若吞掉 patch 失败而无诊断，会隐藏候选修改丢失；需要保留 Run 结果同时
+  向 CLI 暴露 patch 错误。
+- Local Workspace 的通用 Shell 并非宿主安全边界，不能仅凭命令前缀自动允许。
+- Local `read_file` 已在工具层拒绝解析后越界，但 Policy Engine 在执行前不能证明目标；
+  是否将这种执行层约束视为足够的自动 allow 仍待用户决定。
 
 ## Critical files
 
-- `src/miniagent/cli/bootstrap.py` — Workspace 选择、生命周期与 patch 持久化。
-- `src/miniagent/tools/read_file.py` — 文件路径隔离逻辑。
-- `tests/test_cli_bootstrap.py` — bootstrap 和配置组合回归测试。
-- `tests/test_local_workspace.py`、`tests/test_docker_workspace.py` — Workspace 行为测试。
+- `src/miniagent/policy/{models,engine,approvals}.py` — 当前策略契约与默认规则。
+- `src/miniagent/runtime/loop.py`、`src/miniagent/runtime/state.py` — 策略执行和审批状态。
+- `src/miniagent/cli/bootstrap.py`、`src/miniagent/cli/main.py` — Workspace 生命周期、patch
+  和交互审批。
+- `src/miniagent/tools/read_file.py` — 解析后路径边界。
+- `tests/test_policy.py`、`tests/test_cli_bootstrap.py`、`tests/test_local_workspace.py`、
+  `tests/test_docker_workspace.py` — 下一步回归测试入口。
 
 ## Context to load
 
 1. `AGENTS.md`
 2. `docs/HANDOFF.md`
-3. `docs/repository-map.md`
+3. `docs/policy-engine-design.md`
 4. 上述 Critical Files
 
 ## Next action
 
-先处理最高优先级的 BROKEN Workspace patch 导出问题，读取实现和现有 bootstrap
-测试后确定最小回归测试边界。
+先修复最高优先级的 patch 导出失败语义：读取 bootstrap 的正常/异常退出分支和 CLI
+结果渲染，增加一个证明 patch 失败不会替代既有 RunResult 或 signal exit code 的回归测试。
 
 ```shell
-sed -n '110,190p' src/miniagent/cli/bootstrap.py && sed -n '1,320p' tests/test_cli_bootstrap.py
+sed -n '120,220p' src/miniagent/cli/bootstrap.py && sed -n '120,230p' src/miniagent/cli/main.py && sed -n '1,260p' tests/test_cli_bootstrap.py
 ```
 
 ## Required verification
 
 ```shell
 UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest -q
-UV_CACHE_DIR=/private/tmp/miniagent-uv-cache UV_TOOL_DIR=/private/tmp/miniagent-uv-tools uvx --offline ty check
+ty check
 UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run miniagent 'model qwen的providers实现路径是？' --model deepseek-v4-flash
 git diff --check
 ```

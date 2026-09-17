@@ -2,7 +2,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
 from miniagent.models.tool import (
     ToolArgumentIssue,
@@ -47,6 +47,15 @@ class ToolRegistry:
 
     def __getitem__(self, name: str) -> Tool:
         return self._tools[name]
+
+    def definition(self, name: str) -> ToolDefinition:
+        try:
+            return self._definitions[name].model_copy(deep=True)
+        except KeyError:
+            raise KeyError(f"Tool is not registered: {name}") from None
+
+    def policy_metadata(self, name: str) -> dict[str, JsonValue]:
+        return self[name].policy_metadata.copy()
 
     def definitions(self, allowed_tools: Sequence[str]) -> list[ToolDefinition]:
         duplicates = _duplicates(allowed_tools)

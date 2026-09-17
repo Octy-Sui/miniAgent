@@ -4,7 +4,7 @@
 
 from typing import Any
 
-from pydantic import Field
+from pydantic import Field, JsonValue
 
 from miniagent.environments import Command, ExecutionStatus, Workspace
 from miniagent.models.tool import (
@@ -39,6 +39,10 @@ class ShellTool(Tool):
             description=("Execute a shell command inside the workspace."),
             input_schema=self.arguments_model.model_json_schema(),
         )
+
+    @property
+    def policy_metadata(self) -> dict[str, JsonValue]:
+        return super().policy_metadata | {"timeout_seconds": self.timeout}
 
     async def execute(
         self,

@@ -1,0 +1,238 @@
+import asyncio
+from datetime import UTC, datetime
+from typing import Any, Literal
+from uuid import UUID
+
+import pytest
+
+from miniagent.agents import AgentSpec, ModelTarget
+from miniagent.models.model import FinishReason, Message, ModelRequest, ModelResponse
+from miniagent.models.tool import ToolCall, ToolDefinition, ToolResult, ToolStatus
+from miniagent.policy import (
+    ApprovalOutcome,
+    ApprovalRequest,
+    ApprovalResolution,
+    DefaultPolicyEngine,
+    PolicyContext,
+    PolicyDecision,
+    PolicyEffect,
+    build_policy_request,
+)
+from miniagent.providers import ModelProvider
+from miniagent.runtime import AgentRuntime, RunStatus, RuntimeConfig, TerminationReason
+from miniagent.tools import Tool, ToolArguments
+from miniagent.tools.registry import ToolRegistry
+
+
+class CommandArguments(ToolArguments):
+    command: str
+
+
+class RecordingShell(Tool):
+    arguments_model = CommandArguments
+
+    def __init__(self) -> None:
+        self.executions = 0
+
+    @property
+    def definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name="shell",
+            description="Run a command.",
+            input_schema=self.arguments_model.model_json_schema(),
+        )
+
+    async def execute(
+        self,
+        arguments: dict[str, Any],
+        *,
+        tool_call_id: str,
+    ) -> ToolResult:
+        self.executions += 1
+        return ToolResult(
+            tool_call_id=tool_call_id,
+            status=ToolStatus.SUCCESS,
+            content="executed",
+        )
+
+
+class QueueProvider(ModelProvider):
+    def __init__(self, responses: list[ModelResponse]) -> None:
+        self.responses = responses
+        self.requests: list[ModelRequest] = []
+
+    async def generate(self, request: ModelRequest) -> ModelResponse:
+        self.requests.append(request)
+        return self.responses.pop(0)
+
+
+class ResolvingApprovalHandler:
+    def __init__(self, outcome: ApprovalOutcome) -> None:
+        self.outcome = outcome
+        self.requests: list[ApprovalRequest] = []
+
+    async def resolve(
+        self,
+        request: ApprovalRequest,
+        decision: PolicyDecision,
+    ) -> ApprovalResolution:
+        self.requests.append(request)
+        return ApprovalResolution(
+            approval_id=request.approval_id,
+            outcome=self.outcome,
+            actor_kind="human",
+            actor_id="tester",
+            reason="Test resolution.",
+            resolved_at=datetime.now(UTC),
+        )
+
+
+class BlockingApprovalHandler:
+    async def resolve(
+        self,
+        request: ApprovalRequest,
+        decision: PolicyDecision,
+    ) -> ApprovalResolution:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+@pytest.mark.parametrize(
+    ("path", "workspace_kind", "expected_effect", "expected_rule"),
+    [
+        ("../secret", "local", PolicyEffect.DENY, "path.outside_workspace"),
+        (
+            "src/main.py",
+            "local",
+            PolicyEffect.APPROVAL,
+            "read.unverified_boundary",
+        ),
+        ("src/main.py", "docker", PolicyEffect.ALLOW, "read.workspace"),
+    ],
+)
+def test_default_read_policy(
+    path: str,
+    workspace_kind: Literal["local", "docker"],
+    expected_effect: PolicyEffect,
+    expected_rule: str,
+) -> None:
+    agent = make_agent()
+    definition = ToolDefinition(
+        name="read_file",
+        description="Read a file.",
+        input_schema={"type": "object"},
+    )
+    request = build_policy_request(
+        run_id=UUID("d8d44120-44b0-4a69-ac9e-781ae5e63a4d"),
+        step_number=1,
+        call_index=0,
+        tool_call_id="read",
+        tool_name="read_file",
+        arguments={"path": path},
+        agent=agent,
+        definition=definition,
+        context=PolicyContext(
+            workspace_id="workspace",
+            workspace_kind=workspace_kind,
+            revision="revision",
+        ),
+    )
+
+    evaluation = DefaultPolicyEngine().evaluate(request)
+
+    assert evaluation.effect is expected_effect
+    assert evaluation.decisive_rule_ids == (expected_rule,)
+
+
+async def test_approved_shell_call_executes_once() -> None:
+    tool = RecordingShell()
+    provider = QueueProvider([shell_response(), final_response()])
+    approvals = ResolvingApprovalHandler(ApprovalOutcome.APPROVED)
+    runtime = AgentRuntime(
+        provider=provider,
+        tools=ToolRegistry([tool]),
+        approval_handler=approvals,
+    )
+
+    result = await runtime.run(make_agent(), "task")
+
+    assert result.status is RunStatus.SUCCEEDED
+    assert tool.executions == 1
+    assert result.usage.tool_calls == 1
+    assert len(approvals.requests) == 1
+
+
+async def test_rejected_shell_call_stops_without_execution() -> None:
+    tool = RecordingShell()
+    approvals = ResolvingApprovalHandler(ApprovalOutcome.REJECTED)
+    runtime = AgentRuntime(
+        provider=QueueProvider([shell_response()]),
+        tools=ToolRegistry([tool]),
+        approval_handler=approvals,
+    )
+
+    result = await runtime.run(make_agent(), "task")
+
+    assert result.reason is TerminationReason.APPROVAL_REJECTED
+    assert tool.executions == 0
+    assert result.usage.tool_calls == 0
+
+
+async def test_missing_approval_handler_fails_closed() -> None:
+    tool = RecordingShell()
+    runtime = AgentRuntime(
+        provider=QueueProvider([shell_response()]),
+        tools=ToolRegistry([tool]),
+    )
+
+    result = await runtime.run(make_agent(), "task")
+
+    assert result.reason is TerminationReason.APPROVAL_UNAVAILABLE
+    assert tool.executions == 0
+
+
+async def test_approval_request_expires_without_execution() -> None:
+    tool = RecordingShell()
+    runtime = AgentRuntime(
+        provider=QueueProvider([shell_response()]),
+        tools=ToolRegistry([tool]),
+        approval_handler=BlockingApprovalHandler(),
+        config=RuntimeConfig(approval_timeout_seconds=0.01),
+    )
+
+    result = await runtime.run(make_agent(), "task")
+
+    assert result.reason is TerminationReason.APPROVAL_EXPIRED
+    assert tool.executions == 0
+
+
+def shell_response() -> ModelResponse:
+    return ModelResponse(
+        message=Message(
+            role="assistant",
+            tool_calls=[
+                ToolCall(
+                    id="shell-call",
+                    name="shell",
+                    arguments={"command": "pwd"},
+                )
+            ],
+        ),
+        finish_reason=FinishReason.TOOL_CALL,
+    )
+
+
+def final_response() -> ModelResponse:
+    return ModelResponse(
+        message=Message(role="assistant", content="done"),
+        finish_reason=FinishReason.STOP,
+    )
+
+
+def make_agent() -> AgentSpec:
+    return AgentSpec(
+        name="test",
+        system_prompt="Test.",
+        model=ModelTarget(provider="test", model="test"),
+        allowed_tools=["shell"],
+    )

@@ -7,7 +7,7 @@ import logging
 import re
 from collections.abc import Awaitable
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TypeVar
 from uuid import UUID, uuid4
 
@@ -15,6 +15,20 @@ from miniagent.agents import AgentSpec
 from miniagent.models import PriceConfig
 from miniagent.models.model import Message, ModelRequest, ModelResponse
 from miniagent.models.tool import ToolError, ToolResult, ToolStatus
+from miniagent.policy import (
+    ApprovalHandler,
+    ApprovalOutcome,
+    ApprovalRequest,
+    ApprovalResolution,
+    DefaultPolicyEngine,
+    PolicyContext,
+    PolicyDecision,
+    PolicyEffect,
+    PolicyEngine,
+    build_policy_request,
+    digest_json,
+    make_policy_decision,
+)
 from miniagent.providers import ModelProvider
 from miniagent.runtime.cancellation import CancellationToken
 from miniagent.runtime.evaluator import (
@@ -60,6 +74,9 @@ class AgentRuntime:
         cancellation_token: CancellationToken | None = None,
         evaluator: Evaluator | None = None,
         pricing: PriceConfig | None = None,
+        policy_engine: PolicyEngine | None = None,
+        policy_context: PolicyContext | None = None,
+        approval_handler: ApprovalHandler | None = None,
     ) -> None:
         self.provider = provider
         self.tools = tools
@@ -67,6 +84,13 @@ class AgentRuntime:
         self.cancellation_token = cancellation_token or CancellationToken()
         self.evaluator = evaluator or PassThroughEvaluator()
         self.pricing = pricing
+        self.policy_engine = policy_engine or DefaultPolicyEngine()
+        self.policy_context = policy_context or PolicyContext(
+            workspace_id="runtime",
+            workspace_kind="local",
+            revision="in-process-v1",
+        )
+        self.approval_handler = approval_handler
 
     async def run(
         self,
@@ -163,6 +187,8 @@ class AgentRuntime:
                 state.pending_tool_calls = list(response.message.tool_calls)
                 state.cursor = RunCursor.EXECUTE_TOOL_CALLS
                 results = await self._execute_tool_calls(agent, response, state)
+                if isinstance(results, RunResult):
+                    return results
                 state.pending_tool_calls = []
                 state.cursor = RunCursor.REQUEST_MODEL
                 if tool_step_failed(results):
@@ -203,9 +229,9 @@ class AgentRuntime:
         agent: AgentSpec,
         response: ModelResponse,
         state: RunState,
-    ) -> list[ToolResult]:
+    ) -> list[ToolResult] | RunResult:
         results: list[ToolResult] = []
-        for call in response.message.tool_calls:
+        for call_index, call in enumerate(response.message.tool_calls):
             if self.cancellation_token.is_cancelled:
                 raise _CancellationRequested
 
@@ -226,7 +252,45 @@ class AgentRuntime:
                         error=prepared,
                     )
                 else:
-                    result = await self._execute_tool(call.id, call.name, prepared)
+                    try:
+                        decision = self._decide_policy(
+                            agent,
+                            state,
+                            call_index,
+                            call.id,
+                            call.name,
+                            prepared,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        transition(
+                            state,
+                            RunStatus.FAILED,
+                            reason=TerminationReason.INTERNAL_ERROR,
+                            error=RunError(
+                                code="POLICY_EVALUATION_FAILED",
+                                message=f"{type(exc).__name__}: {exc}",
+                            ),
+                        )
+                        return RunResult.from_state(state)
+                    if decision.effect is PolicyEffect.DENY:
+                        result = self._policy_denied_result(call.id, decision)
+                    elif decision.effect is PolicyEffect.APPROVAL:
+                        approval_result = await self._request_approval(
+                            state,
+                            decision,
+                        )
+                        if isinstance(approval_result, RunResult):
+                            return approval_result
+                        if approval_result is not None:
+                            result = approval_result
+                        else:
+                            state.usage.tool_calls += 1
+                            result = await self._execute_tool(
+                                call.id, call.name, prepared
+                            )
+                    else:
+                        state.usage.tool_calls += 1
+                        result = await self._execute_tool(call.id, call.name, prepared)
 
             results.append(result)
             state.messages.append(
@@ -241,6 +305,224 @@ class AgentRuntime:
             )
 
         return results
+
+    def _decide_policy(
+        self,
+        agent: AgentSpec,
+        state: RunState,
+        call_index: int,
+        tool_call_id: str,
+        tool_name: str,
+        prepared: PreparedToolCall,
+    ) -> PolicyDecision:
+        request = build_policy_request(
+            run_id=state.run_id,
+            step_number=state.steps_started,
+            call_index=call_index,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            arguments=prepared.arguments,
+            agent=agent,
+            definition=self.tools.definition(tool_name),
+            context=self.policy_context,
+            tool_policy_metadata=self.tools.policy_metadata(tool_name),
+        )
+        decision = make_policy_decision(
+            request,
+            self.policy_engine,
+            decided_at=datetime.now(UTC),
+        )
+        state.policy_decisions.append(decision)
+        return decision
+
+    async def _request_approval(
+        self,
+        state: RunState,
+        decision: PolicyDecision,
+    ) -> ToolResult | RunResult | None:
+        if self.approval_handler is None:
+            transition(
+                state,
+                RunStatus.FAILED,
+                reason=TerminationReason.APPROVAL_UNAVAILABLE,
+                error=RunError(
+                    code="APPROVAL_UNAVAILABLE",
+                    message="The tool call requires approval, but no handler is configured.",
+                ),
+            )
+            return RunResult.from_state(state)
+
+        now = datetime.now(UTC)
+        approval = ApprovalRequest(
+            approval_id=uuid4(),
+            decision_id=decision.decision_id,
+            run_id=state.run_id,
+            request_digest=decision.request_digest,
+            policy_revision=decision.policy_revision,
+            requested_at=now,
+            expires_at=now + timedelta(seconds=self.config.approval_timeout_seconds),
+        )
+        state.approval_requests.append(approval)
+        transition(
+            state,
+            RunStatus.WAITING_APPROVAL,
+            pending_approval_id=str(approval.approval_id),
+        )
+        try:
+            resolution = await self._await_with_cancellation(
+                asyncio.wait_for(
+                    self.approval_handler.resolve(approval, decision),
+                    timeout=self.config.approval_timeout_seconds,
+                )
+            )
+        except _CancellationRequested:
+            raise
+        except TimeoutError:
+            resolution = ApprovalResolution(
+                approval_id=approval.approval_id,
+                outcome=ApprovalOutcome.EXPIRED,
+                actor_kind="system",
+                actor_id="runtime",
+                reason="The approval request expired.",
+                resolved_at=datetime.now(UTC),
+            )
+        except Exception as exc:  # noqa: BLE001
+            state.approval_resolutions.append(
+                ApprovalResolution(
+                    approval_id=approval.approval_id,
+                    outcome=ApprovalOutcome.INVALIDATED,
+                    actor_kind="system",
+                    actor_id="runtime",
+                    reason="The approval handler failed.",
+                    resolved_at=datetime.now(UTC),
+                )
+            )
+            transition(
+                state,
+                RunStatus.FAILED,
+                reason=TerminationReason.INTERNAL_ERROR,
+                error=RunError(
+                    code="APPROVAL_HANDLER_FAILED",
+                    message=f"{type(exc).__name__}: {exc}",
+                ),
+                pending_approval_id=None,
+            )
+            return RunResult.from_state(state)
+        if resolution.approval_id != approval.approval_id:
+            state.approval_resolutions.append(
+                ApprovalResolution(
+                    approval_id=approval.approval_id,
+                    outcome=ApprovalOutcome.INVALIDATED,
+                    actor_kind="system",
+                    actor_id="runtime",
+                    reason="The approval handler returned a mismatched request ID.",
+                    resolved_at=datetime.now(UTC),
+                )
+            )
+            transition(
+                state,
+                RunStatus.FAILED,
+                reason=TerminationReason.INTERNAL_ERROR,
+                error=RunError(
+                    code="INVALID_APPROVAL_RESOLUTION",
+                    message="Approval resolution does not match the pending request.",
+                ),
+                pending_approval_id=None,
+            )
+            return RunResult.from_state(state)
+
+        if (
+            datetime.now(UTC) >= approval.expires_at
+            or resolution.resolved_at >= approval.expires_at
+        ):
+            resolution = ApprovalResolution(
+                approval_id=approval.approval_id,
+                outcome=ApprovalOutcome.EXPIRED,
+                actor_kind="system",
+                actor_id="runtime",
+                reason="The approval request expired.",
+                resolved_at=datetime.now(UTC),
+            )
+        state.approval_resolutions.append(resolution)
+        outcome = resolution.outcome
+        if outcome is not ApprovalOutcome.APPROVED:
+            if outcome is ApprovalOutcome.REJECTED:
+                reason = TerminationReason.APPROVAL_REJECTED
+            elif outcome is ApprovalOutcome.EXPIRED:
+                reason = TerminationReason.APPROVAL_EXPIRED
+            else:
+                reason = TerminationReason.INTERNAL_ERROR
+            transition(
+                state,
+                RunStatus.FAILED,
+                reason=reason,
+                error=RunError(
+                    code=reason.value.upper(),
+                    message=f"Tool approval was {outcome.value}.",
+                ),
+                pending_approval_id=None,
+            )
+            return RunResult.from_state(state)
+
+        transition(
+            state,
+            RunStatus.RUNNING,
+            cursor=RunCursor.EXECUTE_TOOL_CALLS,
+            pending_approval_id=None,
+        )
+        if (
+            self.policy_engine.revision != decision.policy_revision
+            or digest_json(decision.request.model_dump(mode="json"))
+            != decision.request_digest
+        ):
+            return self._policy_denied_result(
+                decision.request.tool_call_id,
+                decision.model_copy(
+                    update={
+                        "reason_code": "APPROVAL_INVALIDATED",
+                        "reason": "The approved policy request changed before execution.",
+                    }
+                ),
+            )
+        try:
+            evaluation = self.policy_engine.evaluate(decision.request)
+        except Exception as exc:  # noqa: BLE001
+            transition(
+                state,
+                RunStatus.FAILED,
+                reason=TerminationReason.INTERNAL_ERROR,
+                error=RunError(
+                    code="POLICY_EVALUATION_FAILED",
+                    message=f"{type(exc).__name__}: {exc}",
+                ),
+            )
+            return RunResult.from_state(state)
+        if evaluation.effect is PolicyEffect.DENY:
+            changed = make_policy_decision(
+                decision.request,
+                self.policy_engine,
+                decided_at=datetime.now(UTC),
+            )
+            return self._policy_denied_result(
+                decision.request.tool_call_id,
+                changed,
+            )
+        return None
+
+    @staticmethod
+    def _policy_denied_result(
+        tool_call_id: str,
+        decision: PolicyDecision,
+    ) -> ToolResult:
+        return ToolResult(
+            tool_call_id=tool_call_id,
+            status=ToolStatus.DENIED,
+            content=f"Tool call denied by policy: {decision.reason}",
+            error=ToolError(
+                code="POLICY_DENIED",
+                message=decision.reason_code,
+            ),
+        )
 
     async def _execute_tool(
         self,
@@ -408,9 +690,21 @@ class AgentRuntime:
         return RunResult.from_state(state)
 
     def _cancelled_result(self, state: RunState) -> RunResult:
+        if state.pending_approval_id is not None:
+            state.approval_resolutions.append(
+                ApprovalResolution(
+                    approval_id=UUID(state.pending_approval_id),
+                    outcome=ApprovalOutcome.INVALIDATED,
+                    actor_kind="system",
+                    actor_id="runtime",
+                    reason="The run was cancelled.",
+                    resolved_at=datetime.now(UTC),
+                )
+            )
         transition(
             state,
             RunStatus.CANCELLED,
             reason=TerminationReason.CANCEL_REQUESTED,
+            pending_approval_id=None,
         )
         return RunResult.from_state(state)

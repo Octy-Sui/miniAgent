@@ -54,6 +54,12 @@ def evaluate_model_response(response: ModelResponse) -> ModelDecision | None:
     if response.finish_reason is FinishReason.TOOL_CALL:
         # Task仍在执行, FinishReason原因TOOL_CALL, tool_calls字段不为空, 不满足退出条件
         if response.message.tool_calls:
+            call_ids = [call.id for call in response.message.tool_calls]
+            if len(call_ids) != len(set(call_ids)):
+                return _invalid_response(
+                    "MODEL_DUPLICATE_TOOL_CALL_ID",
+                    "Model returned duplicate tool call IDs.",
+                )
             return None
         # Task失败, 模型返回FinishReason原因TOOL_CALL, 但是tool_calls字段为空
         return _invalid_response(

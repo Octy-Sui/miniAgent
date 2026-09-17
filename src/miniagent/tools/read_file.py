@@ -66,7 +66,9 @@ class ReadFileTool(Tool):
                     "-c",
                     (
                         "import pathlib,sys; "
-                        "path=pathlib.Path(sys.argv[1]); "
+                        "root=pathlib.Path.cwd().resolve(); "
+                        "path=pathlib.Path(sys.argv[1]).resolve(); "
+                        "sys.exit(3) if not path.is_relative_to(root) else None; "
                         "sys.exit(2) if not path.is_file() else None; "
                         "content=path.read_bytes(); "
                         "sys.stdout.write(content.decode('utf-8'))"
@@ -75,6 +77,20 @@ class ReadFileTool(Tool):
                 ]
             )
         )
+        if result.exit_code == 3:
+            return ToolResult(
+                tool_call_id=tool_call_id,
+                status=ToolStatus.DENIED,
+                content=f"Access denied: {path}",
+                error=ToolError(
+                    code="PATH_OUTSIDE_WORKSPACE",
+                    message="Resolved path escapes workspace.",
+                ),
+                output=ToolOutputInfo(
+                    stdout_truncated=result.stdout_truncated,
+                    stderr_truncated=result.stderr_truncated,
+                ),
+            )
         if result.exit_code == 2:
             return ToolResult(
                 tool_call_id=tool_call_id,

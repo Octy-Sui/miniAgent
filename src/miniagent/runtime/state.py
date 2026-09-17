@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from miniagent.agents import AgentSpec
 from miniagent.models.model import Message
 from miniagent.models.tool import ToolCall, ToolOutputLimits
+from miniagent.policy import ApprovalRequest, ApprovalResolution, PolicyDecision
 
 
 class RunStatus(StrEnum):
@@ -105,6 +106,8 @@ class TerminationReason(StrEnum):
     EVALUATION_FAILED = "evaluation_failed"
     RECOVERY_EXHAUSTED = "recovery_exhausted"
     APPROVAL_REJECTED = "approval_rejected"
+    APPROVAL_EXPIRED = "approval_expired"
+    APPROVAL_UNAVAILABLE = "approval_unavailable"
     CANCEL_REQUESTED = "cancel_requested"
     INTERNAL_ERROR = "internal_error"
 
@@ -112,6 +115,7 @@ class TerminationReason(StrEnum):
 class RuntimeConfig(BaseModel):
     max_steps: int = Field(default=50, ge=1)
     max_consecutive_failures: int = Field(default=3, ge=1)
+    approval_timeout_seconds: float = Field(default=300.0, gt=0)
     tool_output_limits: ToolOutputLimits = Field(default_factory=ToolOutputLimits)
 
 
@@ -197,6 +201,9 @@ class RunState(BaseModel):
     completed_tool_call_ids: set[str] = Field(default_factory=set)
 
     pending_approval_id: str | None = None
+    policy_decisions: list[PolicyDecision] = Field(default_factory=list)
+    approval_requests: list[ApprovalRequest] = Field(default_factory=list)
+    approval_resolutions: list[ApprovalResolution] = Field(default_factory=list)
     checkpoint_id: str | None = None
     recovery_attempts: int = Field(default=0, ge=0)
 
@@ -220,6 +227,13 @@ class InvalidRunTransition(ValueError):
     pass
 
 
+class _PendingApprovalUnchanged:
+    pass
+
+
+_PENDING_APPROVAL_UNCHANGED = _PendingApprovalUnchanged()
+
+
 def transition(
     state: RunState,
     target: RunStatus,
@@ -227,6 +241,9 @@ def transition(
     cursor: RunCursor | None = None,
     reason: TerminationReason | None = None,
     error: RunError | None = None,
+    pending_approval_id: str | None | _PendingApprovalUnchanged = (
+        _PENDING_APPROVAL_UNCHANGED
+    ),
 ) -> None:
     if target not in ALLOWED_TRANSITIONS[state.status]:
         raise InvalidRunTransition(
@@ -243,6 +260,8 @@ def transition(
     now = datetime.now(UTC)
     candidate.status = target
     candidate.cursor = cursor
+    if not isinstance(pending_approval_id, _PendingApprovalUnchanged):
+        candidate.pending_approval_id = pending_approval_id
     candidate.updated_at = now
     candidate.version += 1
 
@@ -263,6 +282,7 @@ def transition(
     state.finished_at = candidate.finished_at
     state.termination_reason = candidate.termination_reason
     state.error = candidate.error
+    state.pending_approval_id = candidate.pending_approval_id
 
 
 def validate_state(state: RunState) -> None:

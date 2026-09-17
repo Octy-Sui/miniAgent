@@ -24,6 +24,7 @@ from miniagent.environments import (
     WorkspaceKind,
 )
 from miniagent.models import PriceConfig, Settings, load_price_config
+from miniagent.policy import ApprovalHandler, PolicyContext, digest_json
 from miniagent.providers import ModelProvider
 from miniagent.providers.qwen import QwenProvider
 from miniagent.runtime import AgentRuntime, CancellationToken, RunResult
@@ -91,6 +92,7 @@ class BootstrapConfig:
     source_dir: Path
     workspace_kind: WorkspaceKind | None = None
     docker_image: str | None = None
+    approval_handler: ApprovalHandler | None = None
 
 
 @dataclass(slots=True)
@@ -101,6 +103,8 @@ class BootstrappedAgent:
     provider: ModelProvider
     tools: ToolRegistry
     pricing: PriceConfig
+    policy_context: PolicyContext
+    approval_handler: ApprovalHandler | None = None
     patch_artifact: ArtifactRef | None = None
 
     async def run(
@@ -112,6 +116,8 @@ class BootstrappedAgent:
             tools=self.tools,
             cancellation_token=cancellation_token,
             pricing=self.pricing,
+            policy_context=self.policy_context,
+            approval_handler=self.approval_handler,
         )
         return await runtime.run(self.agent, self.task, run_id=self.run_id)
 
@@ -158,6 +164,20 @@ async def bootstrap(config: BootstrapConfig) -> AsyncIterator[BootstrappedAgent]
             provider=build_provider(config.agent, settings),
             tools=build_tools(instance),
             pricing=load_price_config(settings.model_pricing_file),
+            policy_context=PolicyContext(
+                workspace_id=instance.workspace_id,
+                workspace_kind=workspace_config.kind.value,
+                revision=digest_json(
+                    {
+                        "kind": workspace_config.kind.value,
+                        "workspace_id": instance.workspace_id,
+                        "docker_image": (
+                            workspace_config.docker_image or settings.docker_image
+                        ),
+                    }
+                ),
+            ),
+            approval_handler=config.approval_handler,
         )
         try:
             yield bootstrapped_agent

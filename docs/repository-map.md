@@ -23,6 +23,7 @@ miniagent CLI
   → AgentRuntime
       → QwenProvider.generate(ModelRequest)
       → ToolRegistry.prepare(ToolCall)
+      → PolicyEngine → allow / deny / same-process approval
       → ReadFileTool / ShellTool → Workspace.execute(Command)
       → render_tool_result(ToolResult) → bounded JSON tool message
       → termination decision → PassThroughEvaluator
@@ -41,13 +42,14 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；CLI signal 和 exit s
 | wired | Qwen/OpenAI-compatible model request and tool-call translation | `src/miniagent/providers/qwen.py`, `src/miniagent/providers/__init__.py` |
 | wired | Step loop、tool allowlist、termination、usage/cost、cancellation | `src/miniagent/runtime/loop.py`, `src/miniagent/runtime/termination.py`, `src/miniagent/runtime/usage.py` |
 | wired | Tool Registry、严格参数校验、有界 JSON 工具消息和结构化错误 | `src/miniagent/tools/registry.py`, `src/miniagent/runtime/tool_output.py`, `tests/test_tool_contracts.py` |
+| wired | Tool Call policy allow/deny、同进程人工审批、CLI 审批交互 | `src/miniagent/policy/`, `src/miniagent/runtime/loop.py`, `tests/test_policy.py` |
 | wired | Local/Docker Workspace create、execute、patch export、destroy | `src/miniagent/environments/`, `tests/test_local_workspace.py`, `tests/test_docker_workspace.py` |
 | wired | `read_file` and unrestricted shell fallback inside the selected Workspace | `src/miniagent/tools/`, `src/miniagent/cli/bootstrap.py` |
 | wired | Content-addressed file artifacts and CLI patch persistence | `src/miniagent/artifacts/`, `src/miniagent/cli/bootstrap.py` |
 | wired | Evaluator interface with default pass-through implementation | `src/miniagent/runtime/evaluator.py`, `src/miniagent/runtime/loop.py` |
 | contract-only | Workspace checkpoint/restore implementations, not orchestrated by the Run loop | `src/miniagent/environments/local.py`, `src/miniagent/environments/docker.py` |
 | contract-only | Event store, snapshots, and recovery decision protocols | `src/miniagent/runtime/events.py`, `src/miniagent/runtime/snapshots.py`, `src/miniagent/runtime/recovery.py` |
-| roadmap | SQLite persistence、approval policy、context compaction、dashboard、SWE-bench orchestration | `docs/blueprint.md` |
+| roadmap | SQLite persistence、跨进程审批恢复、context compaction、dashboard、SWE-bench orchestration | `docs/blueprint.md`, `docs/policy-engine-design.md` |
 
 ## Task routes
 
@@ -64,6 +66,7 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；CLI signal 和 exit s
 | Local execution/isolation | `src/miniagent/environments/local.py` | `src/miniagent/artifacts/`, `src/miniagent/tools/` | `tests/test_local_workspace.py` |
 | Docker execution/isolation | `src/miniagent/environments/docker.py` | `src/miniagent/environments/workspace.py` | `tests/test_docker_workspace.py` |
 | Tool registration, arguments, result/error behavior | `src/miniagent/tools/registry.py`, `src/miniagent/tools/read_file.py`, `src/miniagent/tools/shell.py` | `src/miniagent/models/tool.py`, `src/miniagent/runtime/tool_output.py`, selected Workspace | `tests/test_tool_contracts.py`, `tests/test_local_workspace.py`, `tests/test_runtime.py` |
+| Policy and same-process approval | `src/miniagent/policy/` | `src/miniagent/runtime/loop.py`, `src/miniagent/cli/main.py`, `src/miniagent/runtime/state.py` | `tests/test_policy.py` |
 | Patch/artifact persistence | `src/miniagent/artifacts/` | `src/miniagent/cli/bootstrap.py`, Workspace `export_patch()` | `tests/test_cli_bootstrap.py`, `tests/test_local_workspace.py`, `tests/test_docker_workspace.py` |
 | Recovery/event/snapshot contracts | `src/miniagent/runtime/recovery.py` | `src/miniagent/runtime/events.py`, `src/miniagent/runtime/snapshots.py`, `src/miniagent/runtime/state.py` | `tests/test_protocol_models.py` |
 | Codex repository context | `.agents/skills/repo-map/SKILL.md` | `AGENTS.md`, `docs/repository-map.md` | `$repo-map refresh`, skill validator |
@@ -73,8 +76,9 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；CLI signal 和 exit s
 - A `Step` is one model request plus every tool call in that response; canonical terms
   live in `docs/CONTEXT.md`.
 - `AgentRuntime` validates the Agent tool allowlist before starting and serially executes
-  tool calls in response order. `ToolRegistry` strictly validates arguments before tool
-  code runs, and Runtime sends bounded structured results back to the model
+  tool calls in response order. `ToolRegistry` strictly validates arguments, then the
+  Policy Engine allows, denies, or requests approval before tool code runs. Runtime sends
+  bounded structured results back to the model
   (`src/miniagent/runtime/loop.py`, `src/miniagent/tools/registry.py`,
   `src/miniagent/runtime/tool_output.py`).
 - A model final answer becomes `SUCCEEDED/TASK_VERIFIED` only after evaluator success,

@@ -19,6 +19,7 @@ from miniagent.models.model import (
 from miniagent.models.pricing import ModelPrice
 from miniagent.models.tool import ToolCall, ToolDefinition, ToolResult, ToolStatus
 from miniagent.providers import ModelProvider
+from miniagent.policy import PolicyEffect, PolicyEvaluation, RiskLevel
 from miniagent.runtime import (
     AgentRuntime,
     CancellationToken,
@@ -121,6 +122,20 @@ class RecordingEvaluator(Evaluator):
     async def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
         self.requests.append(request)
         return self.result
+
+
+class AllowPolicyEngine:
+    revision = "test-allow-v1"
+
+    def evaluate(self, request: object) -> PolicyEvaluation:
+        return PolicyEvaluation(
+            effect=PolicyEffect.ALLOW,
+            risk=RiskLevel.LOW,
+            matched_rule_ids=("test.allow",),
+            decisive_rule_ids=("test.allow",),
+            reason_code="TEST_ALLOWED",
+            reason="Allowed by the test policy.",
+        )
 
 
 def final_response(content: str = "finished") -> ModelResponse:
@@ -266,6 +281,7 @@ class TestAgentRuntime:
         runtime = AgentRuntime(
             provider=provider,
             tools=registry(MismatchedResultTool()),
+            policy_engine=AllowPolicyEngine(),
         )
 
         assert (

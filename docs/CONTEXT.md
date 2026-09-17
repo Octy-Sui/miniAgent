@@ -28,6 +28,18 @@ _Avoid_: Step, command
 The outcome of one Tool Call, including its execution status, observations, and any failure information. Incomplete observations do not by themselves mean that execution failed.
 _Avoid_: Model response, final output
 
+**Policy Decision**:
+A determination of whether a specific Tool Call is permitted, prohibited, or requires human approval under the applicable rules and execution conditions.
+_Avoid_: Tool result, approval response
+
+**Approval Request**:
+A pending request for human authorization of one specific Tool Call under stated execution conditions. Approval does not override a policy prohibition or authorize other calls.
+_Avoid_: Permission grant, run approval
+
+**Approval Resolution**:
+The recorded disposition of an Approval Request, distinguishing a human approval or rejection from expiry or invalidation.
+_Avoid_: Policy decision, tool result
+
 **Agent Segment**:
 A consecutive sequence of Steps executed by the same active Agent within a Run.
 _Avoid_: Sub-run

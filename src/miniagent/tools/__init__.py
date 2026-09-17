@@ -5,7 +5,7 @@
 from abc import ABC, abstractmethod
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 from miniagent.models.tool import ToolDefinition, ToolResult
 
@@ -20,6 +20,11 @@ class Tool(ABC):
     @property
     @abstractmethod
     def definition(self) -> ToolDefinition: ...
+
+    @property
+    def policy_metadata(self) -> dict[str, JsonValue]:
+        tool_type = type(self)
+        return {"implementation": f"{tool_type.__module__}.{tool_type.__qualname__}"}
 
     @abstractmethod
     async def execute(
