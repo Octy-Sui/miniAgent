@@ -35,7 +35,7 @@ class PolicyEngine(Protocol):
 class DefaultPolicyEngine:
     @property
     def revision(self) -> str:
-        return "default-v1"
+        return "default-v2"
 
     def evaluate(self, request: PolicyRequest) -> PolicyEvaluation:
         matches: list[tuple[str, PolicyEffect, RiskLevel, str, str]] = []
@@ -63,7 +63,7 @@ class DefaultPolicyEngine:
                             "The requested path escapes the workspace.",
                         )
                     )
-                elif request.workspace_kind == "docker":
+                else:
                     matches.append(
                         (
                             "read.workspace",
@@ -73,26 +73,27 @@ class DefaultPolicyEngine:
                             "Reading a relative workspace path is allowed.",
                         )
                     )
-                else:
-                    matches.append(
-                        (
-                            "read.unverified_boundary",
-                            PolicyEffect.APPROVAL,
-                            RiskLevel.UNKNOWN,
-                            "READ_REQUIRES_APPROVAL",
-                            "This workspace cannot prove the resolved path boundary.",
-                        )
-                    )
         elif request.tool_name == "shell":
-            matches.append(
-                (
-                    "shell.human_review",
-                    PolicyEffect.APPROVAL,
-                    RiskLevel.UNKNOWN,
-                    "SHELL_REQUIRES_APPROVAL",
-                    "General shell execution requires human approval.",
+            if request.workspace_kind == "docker":
+                matches.append(
+                    (
+                        "shell.docker_workspace",
+                        PolicyEffect.ALLOW,
+                        RiskLevel.MEDIUM,
+                        "DOCKER_SHELL_ALLOWED",
+                        "Shell execution in the isolated Docker workspace is allowed.",
+                    )
                 )
-            )
+            else:
+                matches.append(
+                    (
+                        "shell.local_human_review",
+                        PolicyEffect.APPROVAL,
+                        RiskLevel.UNKNOWN,
+                        "SHELL_REQUIRES_APPROVAL",
+                        "Shell execution in a local workspace requires human approval.",
+                    )
+                )
         else:
             matches.append(
                 (

@@ -176,16 +176,16 @@ class ApprovalResolution(BaseModel):
 | 规则 ID | 条件 | effect / risk |
 | --- | --- | --- |
 | `path.outside_workspace` | `read_file` 为绝对路径或含 `..` 路径段 | deny / high |
-| `read.workspace` | `read_file` 通过路径检查，且后端提供经过验证的目标访问边界 | allow / low |
-| `read.unverified_boundary` | `read_file` 无法验证符号链接目标等访问边界 | approval / unknown |
-| `shell.human_review` | 任意通用 Shell 调用 | approval / unknown |
+| `read.workspace` | `read_file` 通过相对路径检查 | allow / low |
+| `shell.docker_workspace` | 通用 Shell 在隔离的 Docker Workspace 中执行 | allow / medium |
+| `shell.local_human_review` | 通用 Shell 在 Local Workspace 中执行 | approval / unknown |
 | `default.deny` | 没有规则匹配 | deny / unknown |
 
 `default.deny` 只在零匹配时生效，否则会吞掉所有允许规则。硬性禁止规则可以和其他规则同时匹配，并优先决定结果。
 
-当前 `read_file` 在工具层同时检查词法路径和解析后的符号链接目标，但 Local Workspace 的策略输入仍不能在执行前证明目标边界，因此进入人工审批；Docker Workspace 可自动允许相对路径读取。人工批准意味着操作者接受所展示环境中的该次行为，不会额外建立隔离。
+当前 `read_file` 在工具层同时检查词法路径和解析后的符号链接目标，因此 Local 和 Docker Workspace 都自动允许相对路径读取；解析后越界仍返回拒绝结果。
 
-当前 Shell 使用 `/bin/sh -lc` 执行任意字符串。`pytest`、`git` 等前缀不能证明命令无副作用；项目测试本身也可以执行任意代码，因此本期默认需要审批。这比蓝图中“沙箱内测试自动执行”的目标保守。未来通过专用工具与足够的后端约束实现自动允许，而非用正则识别“安全 Shell”。
+当前 Shell 使用 `/bin/sh -lc` 执行任意字符串。Docker Workspace 默认关闭网络、不挂载宿主路径、丢弃 capabilities、禁止提权并限制资源，因此允许通用 Shell；Local Workspace 进程仍可访问宿主用户有权访问的路径和网络，继续逐次审批。策略不通过命令前缀或正则推断安全性，因为项目测试本身也可以执行任意代码。
 
 不增加隐式 AllowAll 回退。接入默认策略会改变现有 CLI 的自动执行行为，必须同时提供审批交互或明确的不可用错误，不能将该行为变化藏在依赖默认值中。
 
