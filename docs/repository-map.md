@@ -1,6 +1,6 @@
 # miniAgent Repository Map
 
-<!-- repo-map: provisional-against 73a0837 | mapped 2026-09-17 -->
+<!-- repo-map: verified-against 13c87be | mapped 2026-09-17 -->
 
 本文件是按需读取的 implementation map。状态含义：
 
@@ -22,7 +22,9 @@ miniagent CLI
   → LocalWorkspace or DockerWorkspace
   → AgentRuntime
       → QwenProvider.generate(ModelRequest)
+      → ToolRegistry.prepare(ToolCall)
       → ReadFileTool / ShellTool → Workspace.execute(Command)
+      → render_tool_result(ToolResult) → bounded JSON tool message
       → termination decision → PassThroughEvaluator
   → RunResult + optional workspace patch artifact
   → Workspace.destroy()
@@ -71,7 +73,10 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；CLI signal 和 exit s
 - A `Step` is one model request plus every tool call in that response; canonical terms
   live in `docs/CONTEXT.md`.
 - `AgentRuntime` validates the Agent tool allowlist before starting and serially executes
-  tool calls in response order (`src/miniagent/runtime/loop.py`).
+  tool calls in response order. `ToolRegistry` strictly validates arguments before tool
+  code runs, and Runtime sends bounded structured results back to the model
+  (`src/miniagent/runtime/loop.py`, `src/miniagent/tools/registry.py`,
+  `src/miniagent/runtime/tool_output.py`).
 - A model final answer becomes `SUCCEEDED/TASK_VERIFIED` only after evaluator success,
   but the default evaluator passes the candidate through without independent checks
   (`src/miniagent/runtime/evaluator.py`).
@@ -97,8 +102,9 @@ ty check
 uv run miniagent --help
 ```
 
-Run one focused test with `uv run pytest tests/test_runtime.py` or a node ID. Live CLI
-tasks require configured credentials and may invoke external model/network services.
+Run focused tool-loop tests with
+`uv run pytest tests/test_runtime.py tests/test_tool_contracts.py`. Live CLI tasks
+require configured credentials and may invoke external model/network services.
 
 ## Sources of truth
 

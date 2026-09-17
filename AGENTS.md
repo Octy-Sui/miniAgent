@@ -1,5 +1,5 @@
 <!-- repo-map:start -->
-<!-- repo-map: provisional-against 73a0837 | mapped 2026-09-17 -->
+<!-- repo-map: verified-against 13c87be | mapped 2026-09-17 -->
 # Repository Orientation
 
 miniAgent 是 Python 3.13 的最小 Agent Runtime：模型在有界 Step loop 中调用工具，
@@ -10,9 +10,10 @@ Workspace 生命周期。
 
 `miniagent` CLI (`src/miniagent/cli/main.py`) → bootstrap/workspace
 (`src/miniagent/cli/bootstrap.py`) → `AgentRuntime`
-(`src/miniagent/runtime/loop.py`) → provider + tools → evaluator → `RunResult` and
-optional patch artifact. Default composition wires `QwenProvider`, `read_file`,
-`shell`, Local/Docker Workspace, and `PassThroughEvaluator`.
+(`src/miniagent/runtime/loop.py`) → provider + `ToolRegistry`/tools → evaluator →
+`RunResult` and optional patch artifact. Default composition wires `QwenProvider`,
+strict tool argument validation, bounded structured tool results, `read_file`, `shell`,
+Local/Docker Workspace, and `PassThroughEvaluator`.
 
 `src/miniagent/runtime/events.py`, `src/miniagent/runtime/snapshots.py`, and
 `src/miniagent/runtime/recovery.py` currently define contracts and validation models;
