@@ -1,5 +1,5 @@
 <!-- repo-map:start -->
-<!-- repo-map: verified-against 773641b | mapped 2026-09-17 -->
+<!-- repo-map: provisional-against 73a0837 | mapped 2026-09-17 -->
 # Repository Orientation
 
 miniAgent 是 Python 3.13 的最小 Agent Runtime：模型在有界 Step loop 中调用工具，
@@ -16,8 +16,8 @@ optional patch artifact. Default composition wires `QwenProvider`, `read_file`,
 
 `src/miniagent/runtime/events.py`, `src/miniagent/runtime/snapshots.py`, and
 `src/miniagent/runtime/recovery.py` currently define contracts and validation models;
-they are not wired into `AgentRuntime`. Treat `blueprint.md` as roadmap, not proof of
-current behavior.
+they are not wired into `AgentRuntime`. Treat `docs/blueprint.md` as roadmap, not
+proof of current behavior.
 
 ## Start here
 
@@ -31,8 +31,8 @@ current behavior.
 
 ## Source of truth and verified commands
 
-Code and tests define current behavior. `CONTEXT.md` defines canonical domain terms;
-keep implementation details out of it. Use `docs/repository-map.md` for navigation.
+Code and tests define current behavior. `docs/CONTEXT.md` defines canonical domain
+terms; keep implementation details out of it. Use `docs/repository-map.md` for navigation.
 
 - Tests: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest -q`
 - Type check: `ty check`

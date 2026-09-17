@@ -1,0 +1,7 @@
+interface:
+  display_name: "Handoff"
+  short_description: "Save and resume durable project task state"
+  default_prompt: "Use $handoff to create, inspect, or resume this project's active task handoff."
+
+policy:
+  allow_implicit_invocation: false

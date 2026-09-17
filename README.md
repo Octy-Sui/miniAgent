@@ -28,7 +28,7 @@ flowchart LR
 
 命令行入口负责选择 Agent、构造 Provider 和工具，并将它们交给 `AgentRuntime`。Runtime 执行模型循环，但不依赖具体 Agent 或具体 Provider 的实现。
 
-一次 Step 包含一次模型请求，以及该响应产生的全部 Tool Call。项目术语的精确定义见 [CONTEXT.md](./CONTEXT.md)。
+一次 Step 包含一次模型请求，以及该响应产生的全部 Tool Call。项目术语的精确定义见 [CONTEXT.md](./docs/CONTEXT.md)。
 
 ## 环境要求
 
@@ -231,4 +231,4 @@ uv run --with ty ty check \
 - 事件持久化、Checkpoint、崩溃恢复和上下文压缩。
 - 独立 Evaluator 和任务成功验证。
 
-长期设计和阶段性路线见 [Recoverable Coding Agent 项目蓝图](./recoverable-coding-agent-project-blueprint.md)。
+长期设计和阶段性路线见 [Recoverable Coding Agent 项目蓝图](./docs/blueprint.md)。

@@ -1,6 +1,6 @@
 # miniAgent Repository Map
 
-<!-- repo-map: verified-against 773641b | mapped 2026-09-17 -->
+<!-- repo-map: provisional-against 73a0837 | mapped 2026-09-17 -->
 
 本文件是按需读取的 implementation map。状态含义：
 
@@ -44,7 +44,7 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；CLI signal 和 exit s
 | wired | Evaluator interface with default pass-through implementation | `src/miniagent/runtime/evaluator.py`, `src/miniagent/runtime/loop.py` |
 | contract-only | Workspace checkpoint/restore implementations, not orchestrated by the Run loop | `src/miniagent/environments/local.py`, `src/miniagent/environments/docker.py` |
 | contract-only | Event store, snapshots, and recovery decision protocols | `src/miniagent/runtime/events.py`, `src/miniagent/runtime/snapshots.py`, `src/miniagent/runtime/recovery.py` |
-| roadmap | SQLite persistence、approval policy、context compaction、dashboard、SWE-bench orchestration | `blueprint.md` |
+| roadmap | SQLite persistence、approval policy、context compaction、dashboard、SWE-bench orchestration | `docs/blueprint.md` |
 
 ## Task routes
 
@@ -68,7 +68,7 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；CLI signal 和 exit s
 ## Load-bearing invariants and gotchas
 
 - A `Step` is one model request plus every tool call in that response; canonical terms
-  live in `CONTEXT.md`.
+  live in `docs/CONTEXT.md`.
 - `AgentRuntime` validates the Agent tool allowlist before starting and serially executes
   tool calls in response order (`src/miniagent/runtime/loop.py`).
 - A model final answer becomes `SUCCEEDED/TASK_VERIFIED` only after evaluator success,
@@ -103,9 +103,9 @@ tasks require configured credentials and may invoke external model/network servi
 
 1. Current code and behavioral tests.
 2. This map for navigation; revalidate claims before relying on them for a change.
-3. `CONTEXT.md` for canonical domain language only.
+3. `docs/CONTEXT.md` for canonical domain language only.
 4. `README.md` for user-facing overview.
-5. `blueprint.md` for intended future design, not current wiring.
+5. `docs/blueprint.md` for intended future design, not current wiring.
 
 Use `$repo-map refresh` after entry points, dependency direction, commands, module
 ownership, or implementation status changes.
