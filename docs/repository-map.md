@@ -1,6 +1,6 @@
 # miniAgent Repository Map
 
-<!-- mapped: 2026-09-17 | head: 3e68cc7 | worktree: dirty -->
+<!-- repo-map: verified-against 773641b | mapped 2026-09-17 -->
 
 本文件是按需读取的 implementation map。状态含义：
 
@@ -63,6 +63,7 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；CLI signal 和 exit s
 | Tool result/error behavior | `src/miniagent/tools/read_file.py`, `src/miniagent/tools/shell.py` | `src/miniagent/models/tool.py`, selected Workspace | `tests/test_local_workspace.py`, `tests/test_runtime.py` |
 | Patch/artifact persistence | `src/miniagent/artifacts/` | `src/miniagent/cli/bootstrap.py`, Workspace `export_patch()` | `tests/test_cli_bootstrap.py`, `tests/test_local_workspace.py`, `tests/test_docker_workspace.py` |
 | Recovery/event/snapshot contracts | `src/miniagent/runtime/recovery.py` | `src/miniagent/runtime/events.py`, `src/miniagent/runtime/snapshots.py`, `src/miniagent/runtime/state.py` | `tests/test_protocol_models.py` |
+| Codex repository context | `.agents/skills/repo-map/SKILL.md` | `AGENTS.md`, `docs/repository-map.md` | `$repo-map refresh`, skill validator |
 
 ## Load-bearing invariants and gotchas
 

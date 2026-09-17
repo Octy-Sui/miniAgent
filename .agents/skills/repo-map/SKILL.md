@@ -31,11 +31,13 @@ Wrap the root block in exact markers so manual instructions remain untouched:
 
 ```markdown
 <!-- repo-map:start -->
-<!-- mapped: YYYY-MM-DD | head: <short-sha> | worktree: clean|dirty -->
+<!-- repo-map: verified-against <short-sha> | mapped YYYY-MM-DD -->
 # Repository Orientation
 ...
 <!-- repo-map:end -->
 ```
+
+Use the same metadata comment near the top of `docs/repository-map.md`.
 
 Keep the root block under about 50 lines and the detailed map under about 150 lines.
 If removing a line would not make a future agent more likely to make a mistake,
@@ -84,11 +86,28 @@ detailed map. On REFRESH, replace only the marked root block and make the smalle
 accurate detailed-map diff. On FOCUS, update only the scoped routes and any global
 summary made inaccurate by the findings.
 
-Stamp a clean map with the date and current HEAD. If relevant working-tree changes
-exist, map the actual working tree and stamp it `dirty`; the next refresh must then
-perform full revalidation. Also perform full revalidation when the old SHA cannot be
-resolved. Otherwise inspect `<stamped-sha>..HEAD`, recheck affected claims, and rerun
-all retained command-shaped claims.
+Treat `verified-against` as the committed code baseline whose repository facts were
+checked. It is not the commit containing the map and is not expected to equal the
+current HEAD after the map is committed. This avoids a self-referential stamp that
+can never match its own commit ID.
+
+For REFRESH, resolve the stamped revision and inspect both
+`<verified-against>..HEAD` and relevant working-tree changes. Ignore changes limited
+to these map-maintenance paths when deciding whether repository facts are stale:
+
+- the managed block in `AGENTS.md`;
+- `docs/repository-map.md`;
+- `.agents/skills/repo-map/`.
+
+If no other paths changed, make no output or stamp change. If committed repository
+facts changed, revalidate affected claims and advance `verified-against` to the
+current HEAD only after validation succeeds. An invalid or missing revision requires
+full revalidation.
+
+If relevant uncommitted changes exist, map the actual working tree but use
+`provisional-against <short-sha>` instead of `verified-against`; a later refresh must
+fully revalidate after those changes are committed. Changes limited to the three
+map-maintenance paths above do not make a map provisional.
 
 Before finishing:
 

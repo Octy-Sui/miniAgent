@@ -1,5 +1,5 @@
 <!-- repo-map:start -->
-<!-- mapped: 2026-09-17 | head: 3e68cc7 | worktree: dirty -->
+<!-- repo-map: verified-against 773641b | mapped 2026-09-17 -->
 # Repository Orientation
 
 miniAgent 是 Python 3.13 的最小 Agent Runtime：模型在有界 Step loop 中调用工具，
