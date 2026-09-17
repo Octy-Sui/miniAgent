@@ -1,3 +1,45 @@
+<!-- repo-map:start -->
+<!-- mapped: 2026-09-17 | head: 3e68cc7 | worktree: dirty -->
+# Repository Orientation
+
+miniAgent 是 Python 3.13 的最小 Agent Runtime：模型在有界 Step loop 中调用工具，
+Runtime 负责状态、终止、usage/cost、cancellation 和 evaluation；CLI 负责依赖装配与
+Workspace 生命周期。
+
+## Current execution path
+
+`miniagent` CLI (`src/miniagent/cli/main.py`) → bootstrap/workspace
+(`src/miniagent/cli/bootstrap.py`) → `AgentRuntime`
+(`src/miniagent/runtime/loop.py`) → provider + tools → evaluator → `RunResult` and
+optional patch artifact. Default composition wires `QwenProvider`, `read_file`,
+`shell`, Local/Docker Workspace, and `PassThroughEvaluator`.
+
+`src/miniagent/runtime/events.py`, `src/miniagent/runtime/snapshots.py`, and
+`src/miniagent/runtime/recovery.py` currently define contracts and validation models;
+they are not wired into `AgentRuntime`. Treat `blueprint.md` as roadmap, not proof of
+current behavior.
+
+## Start here
+
+- CLI/config/composition: `src/miniagent/cli/`, `src/miniagent/models/settings.py`
+- Run lifecycle/termination/cancellation/usage: `src/miniagent/runtime/`
+- Model protocol/provider/pricing: `src/miniagent/models/`, `src/miniagent/providers/`
+- Workspace isolation/tools/artifacts: `src/miniagent/environments/`,
+  `src/miniagent/tools/`, `src/miniagent/artifacts/`
+- Behavioral coverage: matching `tests/test_*.py` modules
+- Detailed task routes and implementation status: `docs/repository-map.md`
+
+## Source of truth and verified commands
+
+Code and tests define current behavior. `CONTEXT.md` defines canonical domain terms;
+keep implementation details out of it. Use `docs/repository-map.md` for navigation.
+
+- Tests: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest -q`
+- Type check: `ty check`
+- CLI surface: `uv run miniagent --help`
+
+<!-- repo-map:end -->
+
 # Python Style Guide
 
 1. Target Python 3.13.x.

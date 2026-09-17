@@ -1,0 +1,7 @@
+interface:
+  display_name: "Repo Map"
+  short_description: "Create and refresh evidence-backed repo maps"
+  default_prompt: "Use $repo-map to refresh this repository's Codex orientation."
+
+policy:
+  allow_implicit_invocation: false
