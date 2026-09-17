@@ -19,6 +19,14 @@ from miniagent.runtime.events import (
     RunEventType,
 )
 from miniagent.runtime.loop import AgentRuntime
+from miniagent.runtime.persistence import (
+    EnvironmentReference,
+    PersistedDockerWorkspaceSpec,
+    PersistedLocalWorkspaceSpec,
+    PersistedWorkspaceSpec,
+    RunRecoveryContext,
+    persist_workspace_spec,
+)
 from miniagent.runtime.recovery import (
     RecoveryAction,
     RecoveryController,
@@ -59,6 +67,7 @@ __all__ = [
     "TERMINAL_STATUSES",
     "AgentRuntime",
     "CancellationToken",
+    "EnvironmentReference",
     "EvaluationCheck",
     "EvaluationPlan",
     "EvaluationRequest",
@@ -70,6 +79,9 @@ __all__ = [
     "NewRunEvent",
     "NewRunSnapshot",
     "PassThroughEvaluator",
+    "PersistedDockerWorkspaceSpec",
+    "PersistedLocalWorkspaceSpec",
+    "PersistedWorkspaceSpec",
     "RecoveryAction",
     "RecoveryController",
     "RecoveryDecision",
@@ -81,6 +93,7 @@ __all__ = [
     "RunError",
     "RunEvent",
     "RunEventType",
+    "RunRecoveryContext",
     "RunResult",
     "RunSnapshot",
     "RunState",
@@ -92,6 +105,7 @@ __all__ = [
     "TerminationReason",
     "add_request_usage",
     "calculate_request_cost",
+    "persist_workspace_spec",
     "transition",
     "validate_state",
 ]

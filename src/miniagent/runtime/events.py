@@ -2,8 +2,9 @@
 # Created: 2026-09-11 18:44:27
 # Author : octy Sui
 
+from collections.abc import Awaitable
 from enum import StrEnum
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue
@@ -32,8 +33,10 @@ class RunEventType(StrEnum):
     CHECKPOINT_CREATED = "checkpoint_created"
     ROLLBACK_COMPLETED = "rollback_completed"
     CONTEXT_COMPACTED = "context_compacted"
+    POLICY_DECIDED = "policy_decided"
     APPROVAL_REQUESTED = "approval_requested"
     APPROVAL_RESOLVED = "approval_resolved"
+    APPROVAL_INVALIDATED = "approval_invalidated"
     SNAPSHOT_CREATED = "snapshot_created"
     EVALUATION_COMPLETED = "evaluation_completed"
     RUN_FINISHED = "run_finished"
@@ -42,6 +45,7 @@ class RunEventType(StrEnum):
 class NewRunEvent(BaseModel):
     model_config = ConfigDict(frozen=True)
 
+    schema_version: Literal[1] = 1
     run_id: UUID
     type: RunEventType
     payload: dict[str, JsonValue] = Field(default_factory=dict)
@@ -58,12 +62,12 @@ class RunEvent(NewRunEvent):
 
 
 class EventStore(Protocol):
-    async def append(
+    def append(
         self,
         event: NewRunEvent,
         *,
         expected_sequence: int,
-    ) -> RunEvent: ...
+    ) -> Awaitable[RunEvent]: ...
 
     async def list_events(
         self,

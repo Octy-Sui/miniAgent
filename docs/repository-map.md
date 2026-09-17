@@ -5,6 +5,7 @@
 本文件是按需读取的 implementation map。状态含义：
 
 - `wired`：已从当前 composition root 或 Run execution path 接入。
+- `implemented`：已有可用实现和测试，但尚未接入当前 composition root 或 Run execution path。
 - `contract-only`：已有类型、协议或独立实现，但当前执行链未使用。
 - `roadmap`：只在设计文档中描述。
 
@@ -48,8 +49,9 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；CLI signal 和 exit s
 | wired | Content-addressed file artifacts and CLI patch persistence | `src/miniagent/artifacts/`, `src/miniagent/cli/bootstrap.py` |
 | wired | Evaluator interface with default pass-through implementation | `src/miniagent/runtime/evaluator.py`, `src/miniagent/runtime/loop.py` |
 | contract-only | Workspace checkpoint/restore implementations, not orchestrated by the Run loop | `src/miniagent/environments/local.py`, `src/miniagent/environments/docker.py` |
-| contract-only | Event store, snapshots, and recovery decision protocols | `src/miniagent/runtime/events.py`, `src/miniagent/runtime/snapshots.py`, `src/miniagent/runtime/recovery.py` |
-| roadmap | SQLite persistence、跨进程审批恢复、context compaction、dashboard、SWE-bench orchestration | `docs/blueprint.md`, `docs/policy-engine-design.md` |
+| implemented | SQLite Run/Event/Snapshot/Approval 存储、原子提交和单 Run 连续事件序列 | `src/miniagent/storage/`, `tests/test_sqlite_storage.py` |
+| contract-only | Recovery decision protocol and persistent Runtime integration | `src/miniagent/runtime/recovery.py`, `docs/sqlite-storage-design.md` |
+| roadmap | 跨进程审批恢复、context compaction、dashboard、SWE-bench orchestration | `docs/blueprint.md`, `docs/policy-engine-design.md` |
 
 ## Task routes
 
@@ -68,7 +70,8 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；CLI signal 和 exit s
 | Tool registration, arguments, result/error behavior | `src/miniagent/tools/registry.py`, `src/miniagent/tools/read_file.py`, `src/miniagent/tools/shell.py` | `src/miniagent/models/tool.py`, `src/miniagent/runtime/tool_output.py`, selected Workspace | `tests/test_tool_contracts.py`, `tests/test_local_workspace.py`, `tests/test_runtime.py` |
 | Policy and same-process approval | `src/miniagent/policy/` | `src/miniagent/runtime/loop.py`, `src/miniagent/cli/main.py`, `src/miniagent/runtime/state.py` | `tests/test_policy.py` |
 | Patch/artifact persistence | `src/miniagent/artifacts/` | `src/miniagent/cli/bootstrap.py`, Workspace `export_patch()` | `tests/test_cli_bootstrap.py`, `tests/test_local_workspace.py`, `tests/test_docker_workspace.py` |
-| Recovery/event/snapshot contracts | `src/miniagent/runtime/recovery.py` | `src/miniagent/runtime/events.py`, `src/miniagent/runtime/snapshots.py`, `src/miniagent/runtime/state.py` | `tests/test_protocol_models.py` |
+| SQLite Run/Event/Snapshot/Approval persistence | `src/miniagent/storage/sqlite.py` | `src/miniagent/storage/models.py`, `src/miniagent/runtime/events.py`, `src/miniagent/runtime/snapshots.py` | `tests/test_sqlite_storage.py` |
+| Recovery contracts | `src/miniagent/runtime/recovery.py` | `src/miniagent/runtime/state.py`, `docs/sqlite-storage-design.md` | `tests/test_protocol_models.py` |
 | Codex repository context | `.agents/skills/repo-map/SKILL.md` | `AGENTS.md`, `docs/repository-map.md` | `$repo-map refresh`, skill validator |
 
 ## Load-bearing invariants and gotchas

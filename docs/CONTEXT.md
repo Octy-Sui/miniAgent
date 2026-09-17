@@ -60,6 +60,10 @@ _Avoid_: Runtime object, process state
 An immutable, ordered fact about something that happened during a Run. Run Events are the audit history from which current state can be explained or reconstructed.
 _Avoid_: Message, log line
 
+**Run Event Sequence**:
+The position of a committed Run Event within its Run, starting at one and increasing by one for each subsequent event. It orders that Run's history independently of timestamps, Steps, and state transitions.
+_Avoid_: Step number, state version, global event order
+
 **Run Snapshot**:
 A versioned copy of Run State at a known Run Event sequence, used to resume without replaying the complete event history.
 _Avoid_: Workspace checkpoint, event
