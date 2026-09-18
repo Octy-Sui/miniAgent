@@ -1,5 +1,5 @@
 <!-- repo-map:start -->
-<!-- repo-map: verified-against 13c87be | mapped 2026-09-17 -->
+<!-- repo-map: verified-against 0c2c0bd | mapped 2026-09-18 -->
 # Repository Orientation
 
 miniAgent 是 Python 3.13 的最小 Agent Runtime：模型在有界 Step loop 中调用工具，
@@ -15,10 +15,10 @@ Workspace 生命周期。
 strict tool argument validation, bounded structured tool results, `read_file`, `shell`,
 Local/Docker Workspace, and `PassThroughEvaluator`.
 
-`src/miniagent/runtime/events.py`, `src/miniagent/runtime/snapshots.py`, and
-`src/miniagent/runtime/recovery.py` currently define contracts and validation models;
-they are not wired into `AgentRuntime`. Treat `docs/blueprint.md` as roadmap, not
-proof of current behavior.
+SQLite Run/Event/Snapshot/Approval storage and Event Span-scope persistence are
+implemented, but neither storage nor `src/miniagent/runtime/tracing.py` is wired into
+`AgentRuntime`. Recovery remains contract-only. Treat `docs/blueprint.md` as roadmap,
+not proof of current behavior.
 
 ## Start here
 
@@ -37,7 +37,7 @@ terms; keep implementation details out of it. Use `docs/repository-map.md` for n
 
 - Tests: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest -q`
 - Type check: `ty check`
-- CLI surface: `uv run miniagent --help`
+- CLI surface: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run miniagent --help`
 
 <!-- repo-map:end -->
 

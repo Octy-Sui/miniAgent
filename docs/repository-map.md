@@ -1,6 +1,6 @@
 # miniAgent Repository Map
 
-<!-- repo-map: verified-against 13c87be | mapped 2026-09-17 -->
+<!-- repo-map: verified-against 0c2c0bd | mapped 2026-09-18 -->
 
 本文件是按需读取的 implementation map。状态含义：
 
@@ -72,6 +72,7 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；CLI signal 和 exit s
 | Policy and same-process approval | `src/miniagent/policy/` | `src/miniagent/runtime/loop.py`, `src/miniagent/cli/main.py`, `src/miniagent/runtime/state.py` | `tests/test_policy.py` |
 | Patch/artifact persistence | `src/miniagent/artifacts/` | `src/miniagent/cli/bootstrap.py`, Workspace `export_patch()` | `tests/test_cli_bootstrap.py`, `tests/test_local_workspace.py`, `tests/test_docker_workspace.py` |
 | SQLite Run/Event/Snapshot/Approval persistence | `src/miniagent/storage/sqlite.py` | `src/miniagent/storage/models.py`, `src/miniagent/runtime/events.py`, `src/miniagent/runtime/snapshots.py` | `tests/test_sqlite_storage.py` |
+| Run Trace/Span contracts and Event span scope | `src/miniagent/runtime/tracing.py` | `src/miniagent/runtime/events.py`, `src/miniagent/storage/sqlite.py` | `tests/test_protocol_models.py`, `tests/test_sqlite_storage.py` |
 | Recovery contracts | `src/miniagent/runtime/recovery.py` | `src/miniagent/runtime/state.py`, `docs/sqlite-storage-design.md` | `tests/test_protocol_models.py` |
 | Codex repository context | `.agents/skills/repo-map/SKILL.md` | `AGENTS.md`, `docs/repository-map.md` | `$repo-map refresh`, skill validator |
 
@@ -97,6 +98,10 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；CLI signal 和 exit s
 - Command timeout/cancellation can mark a Workspace `BROKEN`; later operations enforce
   backend state (`src/miniagent/environments/local.py`,
   `src/miniagent/environments/docker.py`).
+- A Run Trace reuses `run_id.hex` as `trace_id`; `sequence` orders persisted events,
+  while Span parentage expresses the logical hierarchy. Trace construction and export
+  are not yet part of `AgentRuntime` (`src/miniagent/runtime/tracing.py`,
+  `src/miniagent/runtime/events.py`).
 - `Settings` requires OpenAI-compatible credentials and reads `.env`; never commit
   secrets (`src/miniagent/models/settings.py`, `.gitignore`).
 
@@ -107,7 +112,7 @@ Verified on the mapped working tree:
 ```shell
 UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest -q
 ty check
-uv run miniagent --help
+UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run miniagent --help
 ```
 
 Run focused tool-loop tests with
