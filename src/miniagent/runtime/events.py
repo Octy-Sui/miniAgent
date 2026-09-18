@@ -7,9 +7,17 @@ from enum import StrEnum
 from typing import Literal, Protocol
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    model_validator,
+)
 
 from miniagent.models.artifact import ArtifactRef
+from miniagent.runtime.tracing import SpanId
 
 
 class EventSequenceConflictError(RuntimeError):
@@ -22,6 +30,8 @@ class EventSequenceConflictError(RuntimeError):
 class RunEventType(StrEnum):
     RUN_STARTED = "run_started"
     STATE_TRANSITIONED = "state_transitioned"
+    STEP_STARTED = "step_started"
+    STEP_COMPLETED = "step_completed"
     MODEL_REQUESTED = "model_requested"
     MODEL_RESPONDED = "model_responded"
     TOOL_CALLED = "tool_called"
@@ -43,16 +53,32 @@ class RunEventType(StrEnum):
 
 
 class NewRunEvent(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     run_id: UUID
     type: RunEventType
     payload: dict[str, JsonValue] = Field(default_factory=dict)
-    parent_event_id: UUID | None = None
     artifacts: list[ArtifactRef] = Field(default_factory=list)
-    trace_id: str | None = None
-    span_id: str | None = None
+    step_number: int | None = Field(default=None, ge=1)
+    span_id: SpanId | None = None
+    parent_span_id: SpanId | None = None
+
+    @model_validator(mode="after")
+    def validate_trace_scope(self) -> "NewRunEvent":
+        if self.parent_span_id is not None and self.span_id is None:
+            raise ValueError("Parent span requires a current span")
+        if self.parent_span_id == self.span_id and self.span_id is not None:
+            raise ValueError("Event span cannot be its own parent")
+        if self.type in {
+            RunEventType.STEP_STARTED,
+            RunEventType.STEP_COMPLETED,
+        }:
+            if self.step_number is None:
+                raise ValueError("Step event requires a step number")
+            if self.span_id is None:
+                raise ValueError("Step event requires a span")
+        return self
 
 
 class RunEvent(NewRunEvent):

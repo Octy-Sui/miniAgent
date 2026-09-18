@@ -436,29 +436,26 @@ async def test_store_reopens_existing_database(tmp_path: Path) -> None:
     assert (await reopened.list_events(state.run_id))[0].type is RunEventType.RUN_STARTED
 
 
-async def test_event_parent_cannot_reference_another_run(
+async def test_event_trace_scope_round_trips(
     store: SQLiteRunStore,
 ) -> None:
-    first = make_state()
-    second = make_state()
-    await store.create(first)
-    await store.create(second)
-    parent = await store.append(
-        NewRunEvent(run_id=first.run_id, type=RunEventType.RUN_STARTED),
+    state = make_state()
+    await store.create(state)
+
+    stored = await store.append(
+        NewRunEvent(
+            run_id=state.run_id,
+            type=RunEventType.STEP_STARTED,
+            step_number=1,
+            span_id="2222222222222222",
+            parent_span_id="1111111111111111",
+        ),
         expected_sequence=0,
     )
 
-    with pytest.raises(ValueError, match="Parent event"):
-        await store.append(
-            NewRunEvent(
-                run_id=second.run_id,
-                type=RunEventType.STATE_TRANSITIONED,
-                parent_event_id=parent.event_id,
-            ),
-            expected_sequence=0,
-        )
-
-    assert await store.latest_sequence(second.run_id) == 0
+    assert stored.step_number == 1
+    assert stored.span_id == "2222222222222222"
+    assert stored.parent_span_id == "1111111111111111"
 
 
 async def test_approval_resolution_and_invalidation_are_scoped_to_run(
@@ -736,11 +733,20 @@ async def test_concurrent_initialization_serializes_migration(tmp_path: Path) ->
     await asyncio.gather(*(store.initialize() for store in stores))
 
     with sqlite3.connect(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert connection.execute(
             "SELECT count(*) FROM sqlite_master WHERE name = 'runs'"
         ).fetchone()[0] == 1
+
+
+async def test_older_database_schema_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "runs.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA user_version = 1")
+
+    with pytest.raises(UnsupportedStorageVersionError, match="expected 2"):
+        await SQLiteRunStore(path).initialize()
 
 
 async def test_snapshot_change_requires_matching_final_event(
@@ -833,7 +839,7 @@ async def test_newer_related_record_versions_are_reported_as_unsupported(
         with sqlite3.connect(path) as connection:
             connection.execute("DROP TRIGGER run_events_no_update")
             connection.execute(
-                "UPDATE run_events SET schema_version = 2 WHERE run_id = ?",
+                "UPDATE run_events SET schema_version = 3 WHERE run_id = ?",
                 (str(state.run_id),),
             )
         operation = store.list_events(state.run_id)

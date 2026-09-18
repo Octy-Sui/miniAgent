@@ -56,6 +56,13 @@ from miniagent.runtime.state import (
     transition,
     validate_state,
 )
+from miniagent.runtime.tracing import (
+    RunTrace,
+    SpanCategory,
+    SpanId,
+    TraceSpan,
+    TraceSpanStatus,
+)
 from miniagent.runtime.usage import (
     RequestCost,
     add_request_usage,
@@ -98,11 +105,16 @@ __all__ = [
     "RunSnapshot",
     "RunState",
     "RunStatus",
+    "RunTrace",
     "RunUsage",
     "RuntimeConfig",
     "SnapshotStore",
     "SnapshotVersionConflictError",
+    "SpanCategory",
+    "SpanId",
     "TerminationReason",
+    "TraceSpan",
+    "TraceSpanStatus",
     "add_request_usage",
     "calculate_request_cost",
     "persist_workspace_spec",

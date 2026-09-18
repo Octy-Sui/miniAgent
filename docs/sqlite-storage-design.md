@@ -28,7 +28,7 @@
 | `run_snapshots.version` | 本 Run 的 Snapshot 保存次数 | 每次成功保存 +1 |
 | `approvals.version` | 审批记录修订计数 | 创建为 1；解决或授权失效 +1 |
 | `schema_version` | JSON 数据格式版本 | 仅随格式演进改变 |
-| `PRAGMA user_version` | 数据库结构迁移版本 | 迁移提交后增加 |
+| `PRAGMA user_version` | 当前数据库结构版本 | 初始化时写入；发布前不提供旧开发库升级 |
 
 Run、审批的业务更新必须产生事件，因此可以用事件头保护整份 Run 数据，不再额外引入一个含义重复的 Run 写版本。Snapshot 本身使用独立 CAS。
 
@@ -82,13 +82,12 @@ CREATE TABLE run_events (
     occurred_at TEXT NOT NULL,
     payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
     artifacts_json TEXT NOT NULL CHECK (json_valid(artifacts_json)),
-    parent_event_id TEXT,
-    trace_id TEXT,
+    step_number INTEGER CHECK (step_number >= 1),
     span_id TEXT,
+    parent_span_id TEXT,
     PRIMARY KEY (run_id, sequence),
     UNIQUE (run_id, event_id),
-    FOREIGN KEY (run_id, parent_event_id)
-        REFERENCES run_events(run_id, event_id)
+    CHECK (parent_span_id IS NULL OR span_id IS NOT NULL)
 );
 
 CREATE TABLE run_snapshots (
@@ -151,11 +150,44 @@ CREATE INDEX approvals_run_history
 - `runs.state_json` 是当前持久状态，status/时间是同事务维护的查询投影。读时验证列与 JSON 一致；终态必须具有合法 RunResult，不额外保存另一份可漂移的 result_json。
 - Event 和 Snapshot 只追加，增加禁止 UPDATE/DELETE 的保护触发器；V1 无删历史或 Run 级联删除接口。
 - 存储入口在同一事务中显式分配连续序列、插入事件并推进事件头。主键和唯一约束阻止重复序号；直接 SQL 写入不属于受支持的写入契约。
-- parent 必须属于相同 Run 且序号小于子事件；复合外键保证作用域，应用层在插入前检查顺序，禁止前向引用和自引用。
+- Event 不保存通用 `parent_event_id`。领域关联使用 tool_call_id、approval_id、checkpoint_id、snapshot_id 等具体身份；操作层级使用 span_id 和 parent_span_id。
 - Snapshot 允许创建 Run 后、第一条事件前的 sequence=0，因此不直接外键引用 Event；事务入口拒绝未来序号和版本跳跃。
 - Approval 创建时验证 request、decision 的 ID、run_id、digest、policy_revision 一致且 effect=approval；解决事件必须匹配 approval_id。不可覆盖 request、decision 或已有 resolution。
 - 不把 Tool Call ID 当作全 Run 唯一身份。沿用 PolicyRequest 的 `(run_id, step_number, call_index)` 定位调用，同时核对 tool_call_id 和请求摘要。
 - 大型输出放 Artifact Store，事件只存有界事实和 ArtifactRef。恢复所需数据应保存在受控持久状态或 Artifact 中；不能用脱敏摘要替代工具参数后仍宣称可恢复。
+
+### 3.1 Run Trace 与存储边界
+
+V1 不增加独立的 Trace 表或 Trace Store。Run Trace 是按 `run_id`、Event
+sequence、`span_id` 和 `parent_span_id` 查询 Run Event，并结合 Trace Span
+模型形成的可观测性投影，
+不是另一份权威历史。Event sequence 仍是 Run 内事实顺序的唯一依据；Trace
+的时间和父子关系不能用于决定恢复位置、状态迁移或外部副作用是否已经完成。
+
+目标关联语义如下：
+
+- Run Trace 复用 Run 的 128-bit 身份，标准 Trace ID 由 `run_id.hex` 派生；
+  Event 不重复保存 trace_id。
+- STEP Span 携带明确的 step_number；MODEL 和 TOOL 属于 STEP，APPROVAL_WAIT
+  属于 TOOL。Workspace 生命周期与 Evaluation 属于 RUN。
+- 创建 Checkpoint 时其 Span 属于 RUN；恢复或回滚 Checkpoint 时属于 RECOVERY；
+  Checkpoint 不计为 Tool Call。
+- Event 不保存 `parent_event_id`。Span 使用 `parent_span_id` 表达单一父操作，
+  领域因果关系继续使用有语义的业务身份。父 Span 表示逻辑归属，不强制时间包含。
+- Span 时间交叠或子 Span 超出父 Span 时保留并输出 Trace，将异常留给线上诊断；
+  Trace 时间质量不能阻塞 Run 主线。
+- Event payload 和 Span 属性必须有界并在写入前脱敏。完整请求、响应、日志和
+  Trace 导出写入 Artifact Store，数据库只保存摘要与 ArtifactRef。
+- Trace Artifact 是从已提交 Event 和 Span 数据生成的派生导出，不参与
+  Snapshot 校验或恢复。导出失败可以重试，不能回滚或改写已提交的 Run 事实。
+
+当前 M1 已实现 Span Category、Trace Span、Run Trace 契约，以及 Event 上
+step_number、span_id、parent_span_id 的 SQLite 往返保存。产品尚未上线且
+Runtime 尚未接入该数据库，因此不维护旧开发 schema 的自动升级；版本不匹配时
+明确拒绝打开并重建开发数据库。
+Runtime 尚未创建 Span、传播 Span Context，也没有 Trace 导出、查询接口或
+Dashboard。补齐这些能力前，只能声明 Trace 契约和关联字段可用，不能声明
+端到端 Tracing 已实现。
 
 ## 4. 严格递增序列与事务入口
 
@@ -238,14 +270,14 @@ Approval 表保存请求与唯一回应；`outcome IS NULL` 表示未解决。�
 
 ## 7. SQLite 生命周期与错误
 
-- 初始化时先以 `BEGIN IMMEDIATE` 串行化版本检查与逐语句 migration，提交后在 busy timeout 内重试并验证 WAL 模式；不得使用会隐式提交当前事务的 `executescript()`。每个连接启用 `foreign_keys=ON`、设置 `busy_timeout`（建议初始 5000ms）和 `synchronous=FULL`。foreign_keys 是连接级设置，不能仅初始化时执行一次。[SQLite 外键文档](https://www.sqlite.org/foreignkeys.html)。
+- 初始化时先以 `BEGIN IMMEDIATE` 串行化版本检查和首次建表，提交后在 busy timeout 内重试并验证 WAL 模式；发布前只接受空库或当前 schema，旧开发库直接拒绝并要求重建。不得使用会隐式提交当前事务的 `executescript()`。每个连接启用 `foreign_keys=ON`、设置 `busy_timeout`（建议初始 5000ms）和 `synchronous=FULL`。foreign_keys 是连接级设置，不能仅初始化时执行一次。[SQLite 外键文档](https://www.sqlite.org/foreignkeys.html)。
 - 数据库放在 Workspace 之外的持久目录；使用本地文件系统。WAL 要求共享数据库的进程在同一主机，不支持网络文件系统这一部署方式。[SQLite WAL 限制](https://www.sqlite.org/wal.html)。
 - 使用显式事务模式，避免 Python 隐式事务与 BEGIN 重叠。异步接口将整个同步事务作为一个工作单元交给线程，在该线程中创建、使用并关闭连接，不跨线程共享连接。
 - 不在事务中等待模型、工具、人工输入或 Artifact 写入。序列 CAS 冲突不透明重试业务；busy 超时与 CAS 冲突分开报告。
 - asyncio 调用方取消不能保证工作线程停止。必须等待/核对事务最终结果后释放 Run 执行所有权；重新读取 Run，禁止假定取消等于回滚。数据库事务中途异常显式回滚，保持连接资源释放。
 - `RunNotFoundError`、`EventSequenceConflictError`、`SnapshotVersionConflictError`、`ApprovalConflictError`、格式不支持、持久状态损坏和存储 I/O 错误分开。只有明确可翻译的约束冲突才映射业务异常，不能把所有 IntegrityError 都解释为 CAS 失败。
 - 磁盘满或提交失败时禁止继续执行外部操作。若无法落盘终态，CLI 报存储错误，重启后从最后提交点检查；不能宣称失败状态已经持久化。
-- 迁移通过 user_version 顺序执行，每次在事务内更新结构和版本；高于程序支持的版本拒绝打开，不自动降级。SQLite 启动能力检查包含 JSON 函数与所用 SQL 语法；备份采用 SQLite backup API，不能只复制仍在使用的主数据库文件。
+- `user_version` 不匹配时拒绝打开，不做自动升级或降级。产品上线并承诺持久数据兼容后，再独立设计和验收迁移链。SQLite 启动能力检查包含 JSON 函数与所用 SQL 语法；备份采用 SQLite backup API，不能只复制仍在使用的主数据库文件。
 - list_events 使用 `sequence > after_sequence ORDER BY sequence ASC`，limit 必须为正数，保留现有 None=不限量契约；用户界面使用分页。已知空 Run 的 latest_sequence 返回 0，未知 Run 明确报错。
 
 ## 8. 开发拆分与验收
@@ -264,7 +296,7 @@ Approval 表保存请求与唯一回应；`outcome IS NULL` 表示未解决。�
 1. 同 Run 两连接携带相同 expected，只一个成功；竞争方重读后可继续形成 1..N；不同 Run 独立编号。
 2. 批量写入中途约束失败后事件、事件头、审批和状态全部回滚，下一次提交复用未提交序号。
 3. 子进程在 COMMIT 前被终止：重开无半笔数据；COMMIT 后、响应前终止：数据完整且重试不重复审批。
-4. 跨 Run parent、未来 Snapshot、Snapshot 状态不匹配、错误 Snapshot 版本、修改历史记录均被拒绝。
+4. 非法 Span 层级、未来 Snapshot、Snapshot 状态不匹配、错误 Snapshot 版本、修改历史记录均被拒绝。
 5. approve/reject、approve/expire、approve/cancel 竞争符合状态机；批准后取消保留历史批准并阻止执行。
 6. 审批重复提交返回原回应；执行前过期、策略/参数/Workspace 改变均不复用授权。
 7. 同 Step 第二个调用暂停，恢复不重放第一个调用；保留失败统计、消息、usage 与调用位置。

@@ -50,6 +50,7 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；CLI signal 和 exit s
 | wired | Evaluator interface with default pass-through implementation | `src/miniagent/runtime/evaluator.py`, `src/miniagent/runtime/loop.py` |
 | contract-only | Workspace checkpoint/restore implementations, not orchestrated by the Run loop | `src/miniagent/environments/local.py`, `src/miniagent/environments/docker.py` |
 | implemented | SQLite Run/Event/Snapshot/Approval 存储、原子提交和单 Run 连续事件序列 | `src/miniagent/storage/`, `tests/test_sqlite_storage.py` |
+| contract-only | Run Trace/Span 层级契约及 Event Span Scope 的 SQLite 往返持久化；Runtime 尚未生成 Span、导出 Trace 或提供查询界面 | `src/miniagent/runtime/tracing.py`, `src/miniagent/runtime/events.py`, `src/miniagent/storage/sqlite.py` |
 | contract-only | Recovery decision protocol and persistent Runtime integration | `src/miniagent/runtime/recovery.py`, `docs/sqlite-storage-design.md` |
 | roadmap | 跨进程审批恢复、context compaction、dashboard、SWE-bench orchestration | `docs/blueprint.md`, `docs/policy-engine-design.md` |
 

@@ -64,6 +64,18 @@ _Avoid_: Message, log line
 The position of a committed Run Event within its Run, starting at one and increasing by one for each subsequent event. It orders that Run's history independently of timestamps, Steps, and state transitions.
 _Avoid_: Step number, state version, global event order
 
+**Run Trace**:
+A queryable observability view, identified by its Run's stable identity, that correlates ordered Run Events with timed operation spans to explain causality, timing, and outcomes. It is derived from durable facts and is not recovery state.
+_Avoid_: Run event, run snapshot, log
+
+**Trace Span**:
+A timed operation within a Run Trace, such as a model request, Tool Call, Workspace command, or Evaluation. Its parent expresses logical ownership, not a requirement that parent and child time ranges contain one another.
+_Avoid_: Step, run event
+
+**Span Category**:
+The role a Trace Span plays in the Run hierarchy, distinct from a telemetry protocol's transport-oriented span kind.
+_Avoid_: Span kind, event type
+
 **Run Snapshot**:
 A versioned copy of Run State at a known Run Event sequence, used to resume without replaying the complete event history.
 _Avoid_: Workspace checkpoint, event
@@ -89,8 +101,12 @@ A restorable identity for the code state of a Workspace at a safe boundary.
 _Avoid_: Run snapshot, artifact
 
 **Artifact**:
-An immutable, addressable large output produced by a Run, such as a patch, complete command output, test report, or trace.
+An immutable, addressable large output produced by a Run, such as a patch, complete command output, test report, or trace export.
 _Avoid_: Event payload, message
+
+**Trace Artifact**:
+An immutable exported serialization of a Run Trace stored as an Artifact for retention or transport. It is not the authoritative Run Event history or a recovery source.
+_Avoid_: Run trace, event store
 
 **Recovery Decision**:
 A deterministic instruction describing how the Runtime should respond to failure, stagnation, regression, interruption, or budget pressure.

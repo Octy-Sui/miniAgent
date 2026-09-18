@@ -29,13 +29,12 @@ CREATE TABLE run_events (
     occurred_at TEXT NOT NULL,
     payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
     artifacts_json TEXT NOT NULL CHECK (json_valid(artifacts_json)),
-    parent_event_id TEXT,
-    trace_id TEXT,
+    step_number INTEGER CHECK (step_number >= 1),
     span_id TEXT,
+    parent_span_id TEXT,
     PRIMARY KEY (run_id, sequence),
     UNIQUE (run_id, event_id),
-    FOREIGN KEY (run_id, parent_event_id)
-        REFERENCES run_events(run_id, event_id)
+    CHECK (parent_span_id IS NULL OR span_id IS NOT NULL)
 );
 
 CREATE TABLE run_snapshots (
@@ -117,4 +116,4 @@ BEGIN
     SELECT RAISE(ABORT, 'run snapshots are immutable');
 END;
 
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;

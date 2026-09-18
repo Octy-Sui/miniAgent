@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -24,10 +24,14 @@ from miniagent.runtime import (
     RecoveryLevel,
     RecoveryRequest,
     RecoveryTrigger,
+    RunTrace,
     RunEvent,
     RunEventType,
     RunState,
     RuntimeConfig,
+    SpanCategory,
+    TraceSpan,
+    TraceSpanStatus,
 )
 
 
@@ -165,3 +169,115 @@ def test_new_event_accepts_structured_payload() -> None:
         type=RunEventType.MODEL_RESPONDED,
         payload={"usage": {"input_tokens": 10}},
     ).payload["usage"] == {"input_tokens": 10}
+
+
+def test_step_event_requires_number_and_span_scope_is_validated() -> None:
+    with pytest.raises(ValidationError, match="step number"):
+        NewRunEvent(run_id=uuid4(), type=RunEventType.STEP_STARTED)
+
+    with pytest.raises(ValidationError, match="current span"):
+        NewRunEvent(
+            run_id=uuid4(),
+            type=RunEventType.MODEL_REQUESTED,
+            parent_span_id="2222222222222222",
+        )
+
+
+def test_run_trace_uses_run_id_as_trace_id() -> None:
+    now = datetime.now(UTC)
+    run_id = uuid4()
+    trace = RunTrace(
+        run_id=run_id,
+        spans=[
+            TraceSpan(
+                span_id="1111111111111111",
+                category=SpanCategory.RUN,
+                name="miniagent.run",
+                status=TraceSpanStatus.IN_PROGRESS,
+                start_sequence=1,
+                started_at=now,
+            ),
+            TraceSpan(
+                span_id="2222222222222222",
+                parent_span_id="1111111111111111",
+                category=SpanCategory.STEP,
+                name="miniagent.step",
+                status=TraceSpanStatus.IN_PROGRESS,
+                start_sequence=2,
+                started_at=now,
+                step_number=1,
+            ),
+            TraceSpan(
+                span_id="3333333333333333",
+                parent_span_id="2222222222222222",
+                category=SpanCategory.MODEL,
+                name="miniagent.model.generate",
+                status=TraceSpanStatus.IN_PROGRESS,
+                start_sequence=3,
+                started_at=now,
+            ),
+        ],
+    )
+
+    assert trace.trace_id == run_id.hex
+
+
+def test_run_trace_rejects_invalid_span_hierarchy() -> None:
+    now = datetime.now(UTC)
+
+    with pytest.raises(ValidationError, match="tool span cannot be a child of run"):
+        RunTrace(
+            run_id=uuid4(),
+            spans=[
+                TraceSpan(
+                    span_id="1111111111111111",
+                    category=SpanCategory.RUN,
+                    name="miniagent.run",
+                    status=TraceSpanStatus.IN_PROGRESS,
+                    start_sequence=1,
+                    started_at=now,
+                ),
+                TraceSpan(
+                    span_id="2222222222222222",
+                    parent_span_id="1111111111111111",
+                    category=SpanCategory.TOOL,
+                    name="miniagent.tool.execute",
+                    status=TraceSpanStatus.IN_PROGRESS,
+                    start_sequence=2,
+                    started_at=now,
+                ),
+            ],
+        )
+
+
+def test_run_trace_preserves_non_contained_span_timing() -> None:
+    now = datetime.now(UTC)
+    trace = RunTrace(
+        run_id=uuid4(),
+        spans=[
+            TraceSpan(
+                span_id="1111111111111111",
+                category=SpanCategory.RUN,
+                name="miniagent.run",
+                status=TraceSpanStatus.OK,
+                start_sequence=2,
+                end_sequence=10,
+                started_at=now + timedelta(seconds=1),
+                ended_at=now + timedelta(seconds=2),
+            ),
+            TraceSpan(
+                span_id="2222222222222222",
+                parent_span_id="1111111111111111",
+                category=SpanCategory.STEP,
+                name="miniagent.step",
+                status=TraceSpanStatus.OK,
+                start_sequence=1,
+                end_sequence=11,
+                started_at=now,
+                ended_at=now + timedelta(seconds=3),
+                step_number=1,
+            ),
+        ],
+    )
+
+    assert trace.spans[1].end_sequence == 11

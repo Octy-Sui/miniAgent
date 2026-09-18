@@ -41,7 +41,7 @@ from miniagent.storage.models import (
     UnsupportedStorageVersionError,
 )
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _ARTIFACTS_ADAPTER = TypeAdapter(list[ArtifactRef])
 _T = TypeVar("_T")
 
@@ -196,18 +196,18 @@ class SQLiteRunStore:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-                if version > _SCHEMA_VERSION:
+                if version not in (0, _SCHEMA_VERSION):
                     raise UnsupportedStorageVersionError(
-                        f"Database schema version {version} is newer than supported "
-                        f"version {_SCHEMA_VERSION}"
+                        f"Database schema version {version} is unsupported; "
+                        f"expected {_SCHEMA_VERSION}"
                     )
                 if version == 0:
-                    migration = (
+                    schema = (
                         files("miniagent.storage.migrations")
                         .joinpath("001_initial.sql")
                         .read_text(encoding="utf-8")
                     )
-                    self._execute_script(connection, migration)
+                    self._execute_script(connection, schema)
                 connection.execute("COMMIT")
             except BaseException:
                 if connection.in_transaction:
@@ -226,7 +226,7 @@ class SQLiteRunStore:
                     connection.execute(sql)
                 statement = ""
         if statement.strip():
-            raise ValueError("SQLite migration ends with an incomplete statement")
+            raise ValueError("SQLite schema ends with an incomplete statement")
 
     def _enable_wal(self, connection: sqlite3.Connection) -> None:
         deadline = monotonic() + self.busy_timeout_ms / 1_000
@@ -455,7 +455,6 @@ class SQLiteRunStore:
         for offset, event in enumerate(events):
             occurred_at = self._clock()
             sequence = start_sequence + offset
-            self._validate_parent(connection, event, child_sequence=sequence)
             stored_event = RunEvent(
                 **event.model_dump(),
                 event_id=uuid4(),
@@ -467,7 +466,7 @@ class SQLiteRunStore:
                 INSERT INTO run_events (
                     run_id, sequence, event_id, schema_version, type,
                     occurred_at, payload_json, artifacts_json,
-                    parent_event_id, trace_id, span_id
+                    step_number, span_id, parent_span_id
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -479,33 +478,13 @@ class SQLiteRunStore:
                     _timestamp(occurred_at),
                     _dump_json(event.payload),
                     _ARTIFACTS_ADAPTER.dump_json(event.artifacts).decode(),
-                    str(event.parent_event_id) if event.parent_event_id else None,
-                    event.trace_id,
+                    event.step_number,
                     event.span_id,
+                    event.parent_span_id,
                 ),
             )
             stored.append(stored_event)
         return stored
-
-    def _validate_parent(
-        self,
-        connection: sqlite3.Connection,
-        event: NewRunEvent,
-        *,
-        child_sequence: int,
-    ) -> None:
-        if event.parent_event_id is None:
-            return
-        row = connection.execute(
-            "SELECT run_id, sequence FROM run_events WHERE event_id = ?",
-            (str(event.parent_event_id),),
-        ).fetchone()
-        if (
-            row is None
-            or row["run_id"] != str(event.run_id)
-            or row["sequence"] >= child_sequence
-        ):
-            raise ValueError("Parent event must be an earlier event in the same run")
 
     def _apply_approval_changes(
         self,
@@ -798,9 +777,9 @@ class SQLiteRunStore:
                 occurred_at=row["occurred_at"],
                 payload=json.loads(row["payload_json"]),
                 artifacts=_ARTIFACTS_ADAPTER.validate_json(row["artifacts_json"]),
-                parent_event_id=row["parent_event_id"],
-                trace_id=row["trace_id"],
+                step_number=row["step_number"],
                 span_id=row["span_id"],
+                parent_span_id=row["parent_span_id"],
             )
         except (ValidationError, ValueError, json.JSONDecodeError) as exc:
             raise CorruptStoredDataError(f"Invalid stored event: {exc}") from exc
@@ -1003,9 +982,11 @@ class SQLiteRunStore:
 
     @staticmethod
     def _require_supported_data_version(kind: str, version: int) -> None:
-        if version > 1:
+        supported = 2 if kind == "event" else 1
+        if version > supported:
             raise UnsupportedStorageVersionError(
-                f"Stored {kind} schema version {version} is newer than supported version 1"
+                f"Stored {kind} schema version {version} is newer than supported "
+                f"version {supported}"
             )
         if version < 1:
             raise CorruptStoredDataError(

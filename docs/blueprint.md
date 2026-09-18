@@ -394,18 +394,33 @@ project:
 
 Policy 决策必须记录：规则 ID、风险级别、工具输入摘要、审批人、决定和时间。
 
-### 5.7 Event Store 与 State Store
+### 5.7 Event Store、State Store 与 Run Trace
 
 V1 使用 SQLite。完整大输出写入 Artifact 文件，数据库只保存引用和摘要。
+
+四类信息的边界如下：
+
+| 概念 | 权威内容 | 用途 |
+|---|---|---|
+| Run Event | 按 Run 严格排序的单条不可变事实 | 审计、解释和后续回放 |
+| Run Snapshot | 已知 Event sequence 上的完整 Run State 副本 | 避免从头回放并加速恢复 |
+| Artifact | 不适合放入数据库的大型不可变字节内容 | 保存 Patch、完整输出、报告、Checkpoint 和 Trace 导出 |
+| Run Trace | 关联 Event 与 Trace Span 得到的可观测性视图 | 因果分析、耗时诊断、查询和展示 |
+
+Run Trace 不是第四套事实存储。Event Store 是审计事实的权威来源；Run
+Trace 是其结合 Span 关联信息形成的查询投影。Trace Artifact 是 Run Trace
+的导出副本，不能替代 Event Store，也不能作为恢复 Run State 的依据。
 
 事件至少包括：
 
 ```text
 run_started
+step_started
 model_requested
 model_responded
 tool_called
 tool_completed
+step_completed
 file_changed
 test_completed
 retry_scheduled
@@ -421,10 +436,50 @@ run_finished
 每条 Event 建议包含：
 
 - `event_id`、`run_id`、`sequence`、`timestamp`。
-- `event_type`、`parent_event_id`。
+- `event_type` 和可选的 `step_number`。
 - 脱敏后的 payload。
 - Artifact 引用。
-- Trace/span ID。
+- `span_id` 和 `parent_span_id`。
+
+Trace 关联规则：
+
+- Run Trace 与 Run 使用同一个 128-bit 身份；对外 Trace ID 是 `run_id` 的
+  32 位小写十六进制表示，不在 Event 中重复保存 `trace_id`，也不增加
+  `external_trace_id`。
+- 模型请求、Tool Call、Workspace 命令和 Evaluation 等有耗时的操作各自形成
+  Trace Span；相关 Event 携带 `span_id`，父子关系使用 `parent_span_id`。
+- Event 不使用通用 `parent_event_id`。Tool Call、Approval、Checkpoint、Snapshot
+  等领域关系由各自有语义的 ID 表达；Span 层级只表达逻辑归属关系，不要求父
+  Span 的时间范围包含子 Span。
+- Event sequence 是 Run 内事实顺序的权威来源；时间戳和 Span 关系只用于观察，
+  不参与状态恢复或副作用幂等判断。
+- 父子 Span 出现时间交叠、子 Span 超出父 Span 等异常时仍输出 Trace；异常用于
+  线上诊断，不能阻塞 Run 主线或导致整个 Trace 丢失。
+- 原始模型内容、完整工具输出和其他大型 Span 数据写入 Artifact Store，Event
+  和 Span 只保存脱敏摘要与 ArtifactRef。
+- Trace 导出可在 Run 结束后或按需从 Event Store 生成 JSON/JSONL Artifact；
+  导出失败不得改变已经持久化的 Run 结果。
+
+`SpanCategory` 描述 Span 在 miniAgent 中的领域角色，不能与 OpenTelemetry 的
+`SpanKind` 混用。V1 层级为：
+
+```text
+RUN
+├── WORKSPACE create/recover/destroy
+├── STEP N
+│   ├── MODEL
+│   └── TOOL call_index=N
+│       └── APPROVAL_WAIT
+├── CHECKPOINT create
+├── RECOVERY
+│   └── CHECKPOINT restore
+└── EVALUATION
+```
+
+STEP Span 从模型请求开始，覆盖该响应产生的全部 Tool Call，并携带明确的
+`step_number`；MODEL 与 TOOL 是其子 Span。Checkpoint 不是 Tool：在安全边界
+创建时直属 RUN，在恢复或回滚时直属 RECOVERY。只有未来由显式 Tool 发起时，
+CHECKPOINT 才能成为 TOOL 的子 Span，但其 Category 仍是 CHECKPOINT。
 
 状态快照保存：
 
@@ -442,7 +497,7 @@ run_finished
 
 1. **Working Context**：近期模型轮次和工具摘要。
 2. **Task Memory**：确认事实、假设、失败策略、修改文件和测试状态。
-3. **Event Trace**：完整原始事件，供审计和查询。
+3. **Run Trace**：由完整原始 Event 和 Trace Span 形成的可观测性视图，供审计、查询和诊断。
 
 压缩触发条件：
 
@@ -458,6 +513,9 @@ run_finished
 - 失败策略写入 `rejected_hypotheses`。
 - 摘要保留来源 Event ID。
 - 原始 Event 永不因上下文压缩而删除。
+
+Context 压缩只改变提供给模型的 Working Context，不删除 Run Trace 的来源
+Event，也不把 Trace Artifact 提升为恢复状态。
 
 ### 5.9 Recovery Controller
 
