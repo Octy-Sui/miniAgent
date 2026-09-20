@@ -29,13 +29,14 @@ class EventSequenceConflictError(RuntimeError):
 
 class RunEventType(StrEnum):
     RUN_STARTED = "run_started"
-    STATE_TRANSITIONED = "state_transitioned"
     STEP_STARTED = "step_started"
     STEP_COMPLETED = "step_completed"
     MODEL_REQUESTED = "model_requested"
     MODEL_RESPONDED = "model_responded"
-    TOOL_CALLED = "tool_called"
-    TOOL_COMPLETED = "tool_completed"
+    TOOL_START = "tool_start"
+    TOOL_END = "tool_end"
+    TOOL_EXECUTION_START = "tool_execution_start"
+    TOOL_EXECUTION_END = "tool_execution_end"
     FILE_CHANGED = "file_changed"
     TEST_COMPLETED = "test_completed"
     RETRY_SCHEDULED = "retry_scheduled"
@@ -43,13 +44,18 @@ class RunEventType(StrEnum):
     CHECKPOINT_CREATED = "checkpoint_created"
     ROLLBACK_COMPLETED = "rollback_completed"
     CONTEXT_COMPACTED = "context_compacted"
-    POLICY_DECIDED = "policy_decided"
     APPROVAL_REQUESTED = "approval_requested"
     APPROVAL_RESOLVED = "approval_resolved"
     APPROVAL_INVALIDATED = "approval_invalidated"
-    SNAPSHOT_CREATED = "snapshot_created"
     EVALUATION_COMPLETED = "evaluation_completed"
     RUN_FINISHED = "run_finished"
+
+    # Retained so existing event logs remain readable.
+    STATE_TRANSITIONED = "state_transitioned"
+    TOOL_CALLED = "tool_called"
+    TOOL_COMPLETED = "tool_completed"
+    POLICY_DECIDED = "policy_decided"
+    SNAPSHOT_CREATED = "snapshot_created"
 
 
 class NewRunEvent(BaseModel):

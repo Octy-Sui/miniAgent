@@ -240,7 +240,7 @@ async def commit(change: RunCommit) -> CommitResult: ...
 
 `load_latest` 按 version 降序读取一条，未知 Run 抛 RunNotFoundError，存在但无 Snapshot 返回 None。允许同一事件头多次保存；不使用 event_sequence 作为 Snapshot 主键。
 
-Runtime 的安全边界使用协调提交：先构造结果、迁移等事件和 `snapshot_created` 元事件，再通过 `RunCommit` 一次写入。Runtime 预分配 snapshot_id；存储校验期望 Snapshot 版本并分配下一版本，且要求事件批次最后一项是引用该 snapshot_id 和版本的 `snapshot_created`。Snapshot.event_sequence 使用本事务的最终事件序号，全部同事务提交。独立 save 不隐式追加事件，避免隐藏地使调用方 CAS 过期。
+Runtime 的安全边界使用协调提交：先构造业务事件，再通过 `RunCommit` 同时写入 State 和可选 Snapshot。Runtime 预分配 snapshot_id，存储校验期望 Snapshot 版本并分配下一版本。Snapshot.event_sequence 使用本事务最后一个业务事件的序号；创建 Snapshot 不额外生成元事件或消耗事件序号。独立 save 同样不追加事件，避免隐藏地使调用方 CAS 过期。
 
 “保存的状态一致”与“外部操作可以安全重启”是两个条件。进入执行中也可以保存诊断状态，但恢复必须检查未完成调用。RunRecoveryContext 应带完整 Checkpoint 身份与 Artifact 引用；创建 Checkpoint 在数据库事务之外完成，成功后再提交引用。崩溃可能留下未引用 Artifact，允许后续清理，不能出现指向尚未完成文件的已提交安全边界。
 
@@ -248,11 +248,11 @@ V1 恢复只读取最新原子 `RunRecord`，并校验其执行记录和 Workspa
 
 ## 6. Approval 事务及竞争规则
 
-Approval 表保存请求与唯一回应；`outcome IS NULL` 表示未解决。批准后变更环境导致授权失效，追加 `approval_invalidated` 事件和独立失效指针，保留原 `approved` 回应。未解决时失效则记录 outcome=invalidated。新增 `policy_decided` 和 `approval_invalidated` 事件类型并更新调用方。
+Approval 表保存请求与唯一回应；`outcome IS NULL` 表示未解决。批准后变更环境导致授权失效，追加 `approval_invalidated` 事件和独立失效指针，保留原 `approved` 回应。未解决时失效则记录 outcome=invalidated。
 
 | Runtime / 审批协调命令 | 生成一个 RunCommit，其中包含 |
 | --- | --- |
-| 请求审批 | policy_decided、approval_requested、进入 WAITING_APPROVAL 的状态及事件、Approval 行、暂停 Snapshot |
+| 请求审批 | tool_start、approval_requested、进入 WAITING_APPROVAL 的状态、Approval 行、暂停 Snapshot |
 | approve | 唯一人类 resolution、approval_resolved、RunState 审批历史；Run 仍等待 resume |
 | reject / expire | resolution、拒绝 Tool Result、相关事件、清空 pending ID、终态及 Snapshot |
 | cancel | 未决请求 invalidated，或使已批准授权失效；清空 pending ID、CANCELLED 和终态事件/Snapshot |
@@ -264,7 +264,7 @@ Approval 表保存请求与唯一回应；`outcome IS NULL` 表示未解决。�
 
 幂等检查先于过期及事件头 CAS：同 approval_id、同 actor_kind/actor_id、同 outcome/reason 的重复提交返回带当前 RunRecord 和已有 ApprovalRecord 的幂等 CommitResult，不应用重试携带的目标状态、Event 或 Snapshot，也不改变时间；其他操作者或相反结果返回 ApprovalConflictError。返回原批准只证明历史已记录，不代表仍可执行。取消后迟到的新批准必须失败。
 
-跨进程 resume 必须补充执行认领；四张表不提供外部副作用 exactly-once。后续最小增加 `tool_executions`，主键 `(run_id, step_number, call_index)`，保存 tool_call_id、decision_id、approval_id、请求摘要、执行状态、claim_token、结果及关联事件。CAS `ready → executing` 与 Run 更新、tool_called 同事务提交；完成事件和结果同事务提交。
+跨进程 resume 必须补充执行认领；四张表不提供外部副作用 exactly-once。后续最小增加 `tool_executions`，主键 `(run_id, step_number, call_index)`，保存 tool_call_id、decision_id、approval_id、请求摘要、执行状态、claim_token、结果及关联事件。CAS `ready → executing` 与 Run 更新、tool_execution_start 同事务提交；完成事件和结果同事务提交。
 
 同 Run 的执行所有权还需覆盖模型请求与整个恢复过程。首版可使用同主机 Run 独占进程锁，恢复前取得并持有到暂停/终态；不能只锁数据库事务。不能仅凭 lease 到期自动重放工具：`executing` 遗留表示结果未知，停止自动执行并要求核对外部状态。若引入租约，需要 fencing 和明确的旧执行者退出机制，作为后续独立设计。
 

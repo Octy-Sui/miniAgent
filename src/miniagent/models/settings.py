@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     workspace_backend: Literal["local", "docker"] = "local"
     local_workspace_root: Path = Path.home() / ".miniagent" / "workspaces"
     artifact_root: Path = Path.home() / ".miniagent" / "artifacts"
+    run_database_path: Path = Path.home() / ".miniagent" / "runs.sqlite3"
     docker_image: str | None = None
 
     model_config = SettingsConfigDict(

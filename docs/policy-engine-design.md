@@ -247,9 +247,9 @@ SQLite 落地时，在同一事务内保存审批/执行记录、Run State 和�
 
 ## 6. 审计契约
 
-拟新增 `policy_decided` 事件记录每次 allow/deny/approval 的 decision ID、调用身份、策略版本、规则 ID、风险、脱敏输入摘要、effect 和时间。现有 `approval_requested`、`approval_resolved` 分别引用请求和回应，记录操作者、决定及时间；增加 `approval_invalidated` 表达批准后授权失效，避免篡改历史回应。
+PolicyDecision 保存在 RunState 和 Approval 行中。`approval_requested`、`approval_resolved` 分别引用请求和回应，记录操作者、决定及时间；`approval_invalidated` 表达批准后授权失效，避免篡改历史回应。
 
-`tool_called` 只在实际启动执行时写入，并引用决策及可选审批。`tool_completed` 表达调用最终结果，包括从未执行的 deny；通过缺少 `tool_called` 区分禁止执行与执行失败。待审批不是完成，不写 `tool_completed`。
+`tool_start` 和 `tool_end` 包围策略判断、可选审批和结果生成的完整调用生命周期。只有实际调用工具时才写入 `tool_execution_start` 和 `tool_execution_end`；deny 或参数错误只有外层生命周期事件。等待审批发生在 `tool_start` 与 `tool_end` 之间。
 
 策略决策当时没有审批人，因此不强求一个记录同时包含蓝图列出的所有字段；通过 decision ID / approval ID 联结决策与回应即可获得完整审计链。
 

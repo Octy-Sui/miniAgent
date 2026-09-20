@@ -208,12 +208,7 @@ async def test_commit_atomically_updates_state_context_events_and_snapshot(
             events=[
                 NewRunEvent(
                     run_id=state.run_id,
-                    type=RunEventType.STATE_TRANSITIONED,
-                ),
-                NewRunEvent(
-                    run_id=state.run_id,
-                    type=RunEventType.SNAPSHOT_CREATED,
-                    payload={"snapshot_id": str(snapshot_id), "version": 1},
+                    type=RunEventType.RUN_STARTED,
                 ),
             ],
             expected_sequence=0,
@@ -222,12 +217,12 @@ async def test_commit_atomically_updates_state_context_events_and_snapshot(
         )
     )
 
-    assert [event.sequence for event in result.events] == [1, 2]
+    assert [event.sequence for event in result.events] == [1]
     assert result.record.state.status is RunStatus.PREPARING
     assert result.record.recovery_context == context
-    assert result.record.last_event_sequence == 2
+    assert result.record.last_event_sequence == 1
     assert result.snapshot is not None
-    assert result.snapshot.event_sequence == 2
+    assert result.snapshot.event_sequence == 1
     assert result.snapshot.recovery_context == context
     assert await store.load_latest(state.run_id) == result.snapshot
 
@@ -684,8 +679,7 @@ async def test_recovery_context_never_serializes_environment_values(
             events=[
                 NewRunEvent(
                     run_id=state.run_id,
-                    type=RunEventType.SNAPSHOT_CREATED,
-                    payload={"snapshot_id": str(snapshot_id), "version": 1},
+                    type=RunEventType.RUN_STARTED,
                 )
             ],
             expected_sequence=0,
@@ -749,32 +743,31 @@ async def test_older_database_schema_is_rejected(tmp_path: Path) -> None:
         await SQLiteRunStore(path).initialize()
 
 
-async def test_snapshot_change_requires_matching_final_event(
+async def test_snapshot_change_does_not_require_a_metadata_event(
     store: SQLiteRunStore,
 ) -> None:
     state = make_state()
     await store.create(state)
 
-    with pytest.raises(ValueError, match="snapshot_created"):
-        await store.commit(
-            RunCommit(
-                state=state,
-                events=[
-                    NewRunEvent(
-                        run_id=state.run_id,
-                        type=RunEventType.STATE_TRANSITIONED,
-                    )
-                ],
-                expected_sequence=0,
-                snapshot=SnapshotChange(
-                    snapshot_id=uuid4(),
-                    expected_version=0,
-                ),
-            )
+    result = await store.commit(
+        RunCommit(
+            state=state,
+            events=[
+                NewRunEvent(
+                    run_id=state.run_id,
+                    type=RunEventType.RUN_STARTED,
+                )
+            ],
+            expected_sequence=0,
+            snapshot=SnapshotChange(
+                snapshot_id=uuid4(),
+                expected_version=0,
+            ),
         )
+    )
 
-    assert await store.latest_sequence(state.run_id) == 0
-    assert await store.load_latest(state.run_id) is None
+    assert await store.latest_sequence(state.run_id) == 1
+    assert await store.load_latest(state.run_id) == result.snapshot
 
 
 async def test_newer_record_versions_are_reported_as_unsupported(

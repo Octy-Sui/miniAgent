@@ -418,8 +418,10 @@ run_started
 step_started
 model_requested
 model_responded
-tool_called
-tool_completed
+tool_start
+tool_execution_start
+tool_execution_end
+tool_end
 step_completed
 file_changed
 test_completed
@@ -436,7 +438,8 @@ run_finished
 每条 Event 建议包含：
 
 - `event_id`、`run_id`、`sequence`、`timestamp`。
-- `event_type` 和可选的 `step_number`。
+- `event_type` 和可选的 `step_number`；`step_started` 到对应
+  `step_completed` 之间的全部事件都携带该 Step 编号。
 - 脱敏后的 payload。
 - Artifact 引用。
 - `span_id` 和 `parent_span_id`。
@@ -469,7 +472,8 @@ RUN
 ├── STEP N
 │   ├── MODEL
 │   └── TOOL call_index=N
-│       └── APPROVAL_WAIT
+│       ├── APPROVAL_WAIT
+│       └── TOOL_EXECUTION
 ├── CHECKPOINT create
 ├── RECOVERY
 │   └── CHECKPOINT restore
@@ -477,7 +481,8 @@ RUN
 ```
 
 STEP Span 从模型请求开始，覆盖该响应产生的全部 Tool Call，并携带明确的
-`step_number`；MODEL 与 TOOL 是其子 Span。Checkpoint 不是 Tool：在安全边界
+`step_number`；MODEL 与 TOOL 是其子 Span，APPROVAL_WAIT 和 TOOL_EXECUTION
+是 TOOL 的子 Span。Checkpoint 不是 Tool：在安全边界
 创建时直属 RUN，在恢复或回滚时直属 RECOVERY。只有未来由显式 Tool 发起时，
 CHECKPOINT 才能成为 TOOL 的子 Span，但其 Category 仍是 CHECKPOINT。
 

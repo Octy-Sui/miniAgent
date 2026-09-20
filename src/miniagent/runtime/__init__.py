@@ -35,6 +35,7 @@ from miniagent.runtime.recovery import (
     RecoveryRequest,
     RecoveryTrigger,
 )
+from miniagent.runtime.recording import RunPersistenceError, RuntimeStore
 from miniagent.runtime.snapshots import (
     NewRunSnapshot,
     RunSnapshot,
@@ -100,6 +101,8 @@ __all__ = [
     "RunError",
     "RunEvent",
     "RunEventType",
+    "RunPersistenceError",
+    "RuntimeStore",
     "RunRecoveryContext",
     "RunResult",
     "RunSnapshot",

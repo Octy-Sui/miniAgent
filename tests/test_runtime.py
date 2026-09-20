@@ -1,6 +1,7 @@
 import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -29,6 +30,7 @@ from miniagent.runtime import (
     InvalidRunTransition,
     RunCursor,
     RunError,
+    RunEventType,
     RunResult,
     RunState,
     RunStatus,
@@ -36,6 +38,7 @@ from miniagent.runtime import (
     TerminationReason,
     transition,
 )
+from miniagent.storage import SQLiteRunStore
 from miniagent.tools import Tool, ToolArguments
 from miniagent.tools.registry import ToolRegistry
 
@@ -254,6 +257,103 @@ class TestRunState:
 
 
 class TestAgentRuntime:
+    async def test_persists_execution_boundaries_to_sqlite(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        store = SQLiteRunStore(tmp_path / "runs.sqlite3")
+        await store.initialize()
+        run_id = uuid4()
+        tool = SuccessfulTool()
+        runtime = AgentRuntime(
+            provider=QueueProvider([tool_response(), final_response()]),
+            tools=registry(tool),
+            policy_engine=AllowPolicyEngine(),
+            run_store=store,
+        )
+
+        result = await runtime.run(
+            agent(allowed_tools=["ok"]),
+            "task",
+            run_id=run_id,
+        )
+
+        record = await store.get(run_id)
+        events = await store.list_events(run_id)
+        assert record.state.status is RunStatus.SUCCEEDED
+        assert record.state.final_output == result.output
+        assert [event.sequence for event in events] == list(
+            range(1, len(events) + 1)
+        )
+        assert {event.type for event in events} >= {
+            RunEventType.RUN_STARTED,
+            RunEventType.MODEL_REQUESTED,
+            RunEventType.MODEL_RESPONDED,
+            RunEventType.TOOL_START,
+            RunEventType.TOOL_END,
+            RunEventType.TOOL_EXECUTION_START,
+            RunEventType.TOOL_EXECUTION_END,
+            RunEventType.RUN_FINISHED,
+        }
+        event_types = [event.type for event in events]
+        assert event_types.index(RunEventType.TOOL_START) < event_types.index(
+            RunEventType.TOOL_EXECUTION_START
+        )
+        assert event_types.index(
+            RunEventType.TOOL_EXECUTION_START
+        ) < event_types.index(RunEventType.TOOL_EXECUTION_END)
+        assert event_types.index(RunEventType.TOOL_EXECUTION_END) < event_types.index(
+            RunEventType.TOOL_END
+        )
+        assert not {
+            RunEventType.STATE_TRANSITIONED,
+            RunEventType.SNAPSHOT_CREATED,
+            RunEventType.POLICY_DECIDED,
+        } & set(event_types)
+        tool_start = next(
+            event for event in events if event.type is RunEventType.TOOL_START
+        )
+        tool_end = next(
+            event for event in events if event.type is RunEventType.TOOL_END
+        )
+        execution_start = next(
+            event
+            for event in events
+            if event.type is RunEventType.TOOL_EXECUTION_START
+        )
+        execution_end = next(
+            event
+            for event in events
+            if event.type is RunEventType.TOOL_EXECUTION_END
+        )
+        step_start = max(
+            (
+                event
+                for event in events
+                if event.type is RunEventType.STEP_STARTED
+                and event.sequence < tool_start.sequence
+            ),
+            key=lambda event: event.sequence,
+        )
+        assert tool_start.span_id == tool_end.span_id
+        assert tool_start.parent_span_id == tool_end.parent_span_id
+        assert tool_start.parent_span_id == step_start.span_id
+        assert execution_start.span_id == execution_end.span_id
+        assert execution_start.span_id != tool_start.span_id
+        assert execution_start.parent_span_id == tool_start.span_id
+        assert execution_end.parent_span_id == tool_start.span_id
+        active_step_number = None
+        for event in events:
+            if event.type is RunEventType.STEP_STARTED:
+                assert active_step_number is None
+                active_step_number = event.step_number
+            if active_step_number is not None:
+                assert event.step_number == active_step_number
+            if event.type is RunEventType.STEP_COMPLETED:
+                active_step_number = None
+        assert active_step_number is None
+        assert await store.load_latest(run_id) is not None
+
     async def test_invalid_tool_arguments_are_returned_without_execution(
         self,
     ) -> None:

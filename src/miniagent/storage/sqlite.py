@@ -662,17 +662,7 @@ class SQLiteRunStore:
                 expected=change.snapshot.expected_version,
                 actual=actual,
             )
-        event = change.events[-1]
         expected_version = actual + 1
-        if (
-            event.type is not RunEventType.SNAPSHOT_CREATED
-            or event.payload.get("snapshot_id") != str(change.snapshot.snapshot_id)
-            or event.payload.get("version") != expected_version
-        ):
-            raise ValueError(
-                "Snapshot commit requires a final snapshot_created event "
-                "referencing its ID and version"
-            )
         snapshot = RunSnapshot(
             snapshot_id=change.snapshot.snapshot_id,
             version=expected_version,

@@ -36,7 +36,7 @@ SQLite M1 已实现但尚未提交，第一次 review 的 8 项问题已修复�
 - 调用方取消后可以返回 `CancelledError`，但必须等对应 SQLite 操作达到最终结果后才能释放 Run 所有权；重复取消也不能打断清理等待。
 - 持久化恢复模型不保存环境值，只保存引用；持久化 Docker spec 必须与运行时 `DockerWorkspaceSpec` 接受相同的 workdir 集合并使用相同规范化结果。
 - Approval 的读取和变更绑定 `run_id + approval_id`，过期判断使用事务内可信时间，幂等比较忽略首次写入后固定的 `resolved_at`。
-- Snapshot 提交必须带有匹配所分配 ID/version 的末尾 `SNAPSHOT_CREATED` 事件。
+- Snapshot 与当前批次最后一个业务事件共享事务和 event_sequence，不生成独立 Snapshot 元事件。
 - Local Shell 始终审批。Docker Shell 只有在可信装配层证明隔离条件完整且安全时才允许；不能仅相信可伪装的 `workspace_kind`，未知事实必须 fail closed。
 - 不解析 Shell 文本来推断安全性，不把环境值写入 PolicyContext 或日志，不新增策略 DSL。
 - 不修改 README。保留最小依赖和 Python 3.13/Pydantic 约定；本 handoff 不授权提交、推送或其他外部操作。

@@ -36,6 +36,7 @@ class SpanCategory(StrEnum):
     STEP = "step"
     MODEL = "model"
     TOOL = "tool"
+    TOOL_EXECUTION = "tool_execution"
     APPROVAL_WAIT = "approval_wait"
     CHECKPOINT = "checkpoint"
     RECOVERY = "recovery"
@@ -102,6 +103,7 @@ _ALLOWED_PARENTS: dict[SpanCategory, frozenset[SpanCategory]] = {
     SpanCategory.STEP: frozenset({SpanCategory.RUN}),
     SpanCategory.MODEL: frozenset({SpanCategory.STEP}),
     SpanCategory.TOOL: frozenset({SpanCategory.STEP}),
+    SpanCategory.TOOL_EXECUTION: frozenset({SpanCategory.TOOL}),
     SpanCategory.APPROVAL_WAIT: frozenset({SpanCategory.TOOL}),
     SpanCategory.CHECKPOINT: frozenset(
         {SpanCategory.RUN, SpanCategory.RECOVERY, SpanCategory.TOOL}

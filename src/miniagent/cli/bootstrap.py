@@ -24,10 +24,22 @@ from miniagent.environments import (
     WorkspaceKind,
 )
 from miniagent.models import PriceConfig, Settings, load_price_config
-from miniagent.policy import ApprovalHandler, PolicyContext, digest_json
+from miniagent.policy import (
+    ApprovalHandler,
+    DefaultPolicyEngine,
+    PolicyContext,
+    digest_json,
+)
 from miniagent.providers import ModelProvider
 from miniagent.providers.qwen import QwenProvider
-from miniagent.runtime import AgentRuntime, CancellationToken, RunResult
+from miniagent.runtime import (
+    AgentRuntime,
+    CancellationToken,
+    RunRecoveryContext,
+    RunResult,
+    persist_workspace_spec,
+)
+from miniagent.storage import SQLiteRunStore
 from miniagent.tools.read_file import ReadFileTool
 from miniagent.tools.registry import ToolRegistry
 from miniagent.tools.shell import ShellTool
@@ -57,23 +69,28 @@ class WorkspaceConfig:
 
 async def create_workspace(config: WorkspaceConfig) -> Workspace:
     artifact_store = FileArtifactStore(config.settings.artifact_root)
-    if config.kind is WorkspaceKind.LOCAL:
+    spec = build_workspace_spec(config)
+    if isinstance(spec, LocalWorkspaceSpec):
         return await LocalWorkspaceBackend(
             root=config.settings.local_workspace_root,
             artifact_store=artifact_store,
-        ).create(
-            LocalWorkspaceSpec(
-                run_id=config.run_id,
-                source_dir=config.source_dir,
-            )
-        )
+        ).create(spec)
 
+    return await DockerWorkspaceBackend(artifact_store=artifact_store).create(spec)
+
+
+def build_workspace_spec(
+    config: WorkspaceConfig,
+) -> LocalWorkspaceSpec | DockerWorkspaceSpec:
+    if config.kind is WorkspaceKind.LOCAL:
+        return LocalWorkspaceSpec(
+            run_id=config.run_id,
+            source_dir=config.source_dir,
+        )
     image = config.docker_image or config.settings.docker_image
     if image is None:
         raise ValueError("Docker workspace requires --docker-image or DOCKER_IMAGE")
-    return await DockerWorkspaceBackend(artifact_store=artifact_store).create(
-        DockerWorkspaceSpec(run_id=config.run_id, image=image)
-    )
+    return DockerWorkspaceSpec(run_id=config.run_id, image=image)
 
 
 @asynccontextmanager
@@ -105,12 +122,16 @@ class BootstrappedAgent:
     pricing: PriceConfig
     policy_context: PolicyContext
     approval_handler: ApprovalHandler | None = None
+    run_store: SQLiteRunStore | None = None
+    recovery_context: RunRecoveryContext | None = None
     patch_artifact: ArtifactRef | None = None
 
     async def run(
         self,
         cancellation_token: CancellationToken,
     ) -> RunResult:
+        if self.run_store is not None:
+            await self.run_store.initialize()
         runtime = AgentRuntime(
             provider=self.provider,
             tools=self.tools,
@@ -118,8 +139,14 @@ class BootstrappedAgent:
             pricing=self.pricing,
             policy_context=self.policy_context,
             approval_handler=self.approval_handler,
+            run_store=self.run_store,
         )
-        return await runtime.run(self.agent, self.task, run_id=self.run_id)
+        return await runtime.run(
+            self.agent,
+            self.task,
+            run_id=self.run_id,
+            recovery_context=self.recovery_context,
+        )
 
 
 async def persist_workspace_patch(
@@ -157,6 +184,7 @@ async def bootstrap(config: BootstrapConfig) -> AsyncIterator[BootstrappedAgent]
         docker_image=config.docker_image,
     )
     async with workspace(workspace_config) as instance:
+        persisted_spec = persist_workspace_spec(build_workspace_spec(workspace_config))
         bootstrapped_agent = BootstrappedAgent(
             agent=config.agent,
             task=config.task,
@@ -178,6 +206,12 @@ async def bootstrap(config: BootstrapConfig) -> AsyncIterator[BootstrappedAgent]
                 ),
             ),
             approval_handler=config.approval_handler,
+            run_store=SQLiteRunStore(settings.run_database_path),
+            recovery_context=RunRecoveryContext(
+                workspace_id=instance.workspace_id,
+                workspace_spec=persisted_spec,
+                policy_revision=DefaultPolicyEngine().revision,
+            ),
         )
         try:
             yield bootstrapped_agent
