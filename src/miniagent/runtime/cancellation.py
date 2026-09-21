@@ -3,6 +3,16 @@
 # Author : octy Sui
 
 import asyncio
+from collections.abc import Awaitable
+from contextlib import suppress
+from typing import TypeVar
+
+
+T = TypeVar("T")
+
+
+class CancellationRequested(Exception):
+    pass
 
 
 class CancellationToken:
@@ -18,3 +28,36 @@ class CancellationToken:
 
     async def wait(self) -> None:
         await self._event.wait()
+
+
+async def await_with_cancellation(
+    awaitable: Awaitable[T],
+    token: CancellationToken,
+) -> T:
+    if token.is_cancelled:
+        if asyncio.iscoroutine(awaitable):
+            awaitable.close()
+        raise CancellationRequested
+
+    operation = asyncio.ensure_future(awaitable)
+    cancellation = asyncio.create_task(token.wait())
+
+    try:
+        done, _ = await asyncio.wait(
+            {operation, cancellation},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if operation in done:
+            return operation.result()
+
+        operation.cancel()
+        with suppress(asyncio.CancelledError):
+            await operation
+        raise CancellationRequested
+    finally:
+        for task in (operation, cancellation):
+            if not task.done():
+                task.cancel()
+        for task in (operation, cancellation):
+            with suppress(asyncio.CancelledError):
+                await task

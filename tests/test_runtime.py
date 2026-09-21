@@ -438,6 +438,29 @@ class TestAgentRuntime:
         assert result.usage.cached_input_cost_usd == Decimal("0.0000090")
         assert result.usage.cost_usd == Decimal("0.0001530")
 
+    async def test_model_usage_accumulates_without_pricing(self) -> None:
+        response = final_response()
+        response.usage = Usage(
+            input_tokens=80,
+            cached_input_tokens=20,
+            output_tokens=10,
+            reasoning_output_tokens=5,
+            total_tokens=90,
+        )
+        runtime = AgentRuntime(
+            provider=QueueProvider([response]),
+            tools=registry(),
+        )
+
+        result = await runtime.run(agent(), "task")
+
+        assert result.usage.input_tokens == 80
+        assert result.usage.cached_input_tokens == 20
+        assert result.usage.output_tokens == 10
+        assert result.usage.reasoning_output_tokens == 5
+        assert result.usage.total_tokens == 90
+        assert result.usage.cost_usd == Decimal(0)
+
     async def test_model_stop_is_evaluated_before_run_succeeds(self) -> None:
         evaluator = RecordingEvaluator(
             EvaluationResult(passed=True, output="verified output")

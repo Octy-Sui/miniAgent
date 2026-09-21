@@ -44,9 +44,7 @@ def calculate_request_cost(
         input_cost = Decimal(usage.input_tokens) * price.input_per_token
         cached_input_cost = Decimal(0)
     else:
-        input_cost = (
-            Decimal(usage.uncached_input_tokens) * price.input_per_token
-        )
+        input_cost = Decimal(usage.uncached_input_tokens) * price.input_per_token
         cached_input_cost = (
             Decimal(usage.cached_input_tokens) * price.cached_input_per_token
         )
@@ -67,7 +65,7 @@ def calculate_request_cost(
 def add_request_usage(
     current: RunUsage,
     usage: Usage,
-    cost: RequestCost,
+    cost: RequestCost | None = None,
 ) -> RunUsage:
     return RunUsage(
         model_requests=current.model_requests,
@@ -81,13 +79,22 @@ def add_request_usage(
         total_tokens=current.total_tokens + usage.total_tokens,
         cached_input_priced_separately=(
             current.cached_input_priced_separately
-            or cost.cached_input_priced_separately
+            or (cost.cached_input_priced_separately if cost is not None else False)
         ),
-        input_cost_usd=current.input_cost_usd + cost.input_cost,
+        input_cost_usd=(
+            current.input_cost_usd
+            + (cost.input_cost if cost is not None else Decimal(0))
+        ),
         cached_input_cost_usd=(
-            current.cached_input_cost_usd + cost.cached_input_cost
+            current.cached_input_cost_usd
+            + (cost.cached_input_cost if cost is not None else Decimal(0))
         ),
-        output_cost_usd=current.output_cost_usd + cost.output_cost,
-        cost_usd=current.cost_usd + cost.total_cost,
+        output_cost_usd=(
+            current.output_cost_usd
+            + (cost.output_cost if cost is not None else Decimal(0))
+        ),
+        cost_usd=(
+            current.cost_usd + (cost.total_cost if cost is not None else Decimal(0))
+        ),
         active_duration_ms=current.active_duration_ms,
     )

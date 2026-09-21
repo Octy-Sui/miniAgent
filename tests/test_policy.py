@@ -22,6 +22,7 @@ from miniagent.policy import (
 from miniagent.providers import ModelProvider
 from miniagent.runtime import (
     AgentRuntime,
+    CancellationToken,
     RunEventType,
     RunStatus,
     RuntimeConfig,
@@ -96,11 +97,15 @@ class ResolvingApprovalHandler:
 
 
 class BlockingApprovalHandler:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+
     async def resolve(
         self,
         request: ApprovalRequest,
         decision: PolicyDecision,
     ) -> ApprovalResolution:
+        self.started.set()
         await asyncio.Event().wait()
         raise AssertionError("unreachable")
 
@@ -355,6 +360,25 @@ async def test_approval_request_expires_without_execution() -> None:
 
     assert result.reason is TerminationReason.APPROVAL_EXPIRED
     assert tool.executions == 0
+
+
+async def test_cancelling_in_memory_approval_returns_cancelled_result() -> None:
+    token = CancellationToken()
+    approvals = BlockingApprovalHandler()
+    runtime = AgentRuntime(
+        provider=QueueProvider([shell_response()]),
+        tools=ToolRegistry([RecordingShell()]),
+        approval_handler=approvals,
+        cancellation_token=token,
+    )
+    run = asyncio.create_task(runtime.run(make_agent(), "task"))
+    await approvals.started.wait()
+
+    token.cancel()
+    result = await asyncio.wait_for(run, timeout=1)
+
+    assert result.status is RunStatus.CANCELLED
+    assert result.reason is TerminationReason.CANCEL_REQUESTED
 
 
 def shell_response() -> ModelResponse:
