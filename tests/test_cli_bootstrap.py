@@ -1,7 +1,6 @@
 import subprocess
 from pathlib import Path
 from typing import cast
-from uuid import uuid4
 
 import pytest
 
@@ -9,16 +8,22 @@ from miniagent.agents.default import DEFAULT_AGENT
 from miniagent.artifacts import FileArtifactStore
 from miniagent.cli.bootstrap import (
     BootstrapConfig,
-    WorkspaceConfig,
     bootstrap,
-    workspace,
 )
 from miniagent.environments import (
     LocalWorkspace,
     LocalWorkspaceState,
-    WorkspaceKind,
 )
-from miniagent.models import Settings
+from miniagent.models.model import (
+    FinishReason,
+    Message,
+    ModelRequest,
+    ModelResponse,
+    Usage,
+)
+from miniagent.providers import ModelProvider
+from miniagent.runtime import CancellationToken, RunStatus
+from miniagent.tools.shell import ShellTool
 
 
 def create_source_repository(path: Path) -> Path:
@@ -32,47 +37,36 @@ def create_source_repository(path: Path) -> Path:
     return path
 
 
-async def test_workspace_context_destroys_workspace_after_error(
-    tmp_path: Path,
-) -> None:
-    settings = Settings(
-        openai_api_key="test",
-        openai_base_url="https://example.com",
-        local_workspace_root=tmp_path / "workspaces",
-        artifact_root=tmp_path / "artifacts",
-    )
-    created_workspace = None
-    config = WorkspaceConfig(
-        kind=WorkspaceKind.LOCAL,
-        run_id=uuid4(),
-        source_dir=create_source_repository(tmp_path / "source"),
-        settings=settings,
-    )
+class StaticProvider(ModelProvider):
+    def __init__(self, finish_reason: FinishReason) -> None:
+        self.finish_reason = finish_reason
 
-    with pytest.raises(RuntimeError, match="run failed"):
-        async with workspace(config) as active_workspace:
-            created_workspace = active_workspace
-            raise RuntimeError("run failed")
-
-    assert created_workspace is not None
-    local_workspace = cast(LocalWorkspace, created_workspace)
-    assert local_workspace.state is LocalWorkspaceState.DESTROYED
-    assert not local_workspace.root.exists()
+    async def generate(self, request: ModelRequest) -> ModelResponse:
+        return ModelResponse(
+            message=Message(role="assistant", content="finished"),
+            finish_reason=self.finish_reason,
+            usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
+        )
 
 
-async def test_bootstrap_persists_workspace_patch_before_destroy(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    artifact_root = tmp_path / "artifacts"
+def configure_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "test")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://example.com")
     monkeypatch.setenv("LOCAL_WORKSPACE_ROOT", str(tmp_path / "workspaces"))
-    monkeypatch.setenv("ARTIFACT_ROOT", str(artifact_root))
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path / "artifacts"))
+    monkeypatch.setenv("RUN_DATABASE_PATH", str(tmp_path / "runs.sqlite3"))
     monkeypatch.setenv(
         "MODEL_PRICING_FILE",
         str(Path.cwd() / "config" / "model_pricing.toml"),
     )
+
+
+async def test_bootstrap_persists_patch_and_retains_workspace_without_run_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    configure_settings(tmp_path, monkeypatch)
     config = BootstrapConfig(
         agent=DEFAULT_AGENT,
         task="create a result file",
@@ -80,6 +74,7 @@ async def test_bootstrap_persists_workspace_patch_before_destroy(
     )
 
     async with bootstrap(config) as agent:
+        workspace = cast(ShellTool, agent.tools["shell"]).workspace
         result = await agent.tools["shell"].execute(
             {"command": "printf result > result.txt"},
             tool_call_id="write-result",
@@ -90,3 +85,44 @@ async def test_bootstrap_persists_workspace_patch_before_destroy(
     patch = await FileArtifactStore(artifact_root).read(agent.patch_artifact)
     assert b"result.txt" in patch
     assert not (config.source_dir / "result.txt").exists()
+    assert cast(LocalWorkspace, workspace).state is LocalWorkspaceState.ACTIVE
+    await workspace.destroy()
+
+
+@pytest.mark.parametrize(
+    ("finish_reason", "expected_status", "expected_destroyed"),
+    [
+        (FinishReason.STOP, RunStatus.SUCCEEDED, True),
+        (FinishReason.LENGTH, RunStatus.FAILED, False),
+    ],
+)
+async def test_bootstrap_destroys_workspace_only_after_successful_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    finish_reason: FinishReason,
+    expected_status: RunStatus,
+    expected_destroyed: bool,
+) -> None:
+    configure_settings(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "miniagent.cli.bootstrap.build_provider",
+        lambda agent, settings: StaticProvider(finish_reason),
+    )
+    config = BootstrapConfig(
+        agent=DEFAULT_AGENT,
+        task="finish",
+        source_dir=create_source_repository(tmp_path / "source"),
+    )
+
+    async with bootstrap(config) as agent:
+        workspace = cast(ShellTool, agent.tools["shell"]).workspace
+        result = await agent.run(CancellationToken())
+
+    local_workspace = cast(LocalWorkspace, workspace)
+    assert result.status is expected_status
+    assert (local_workspace.state is LocalWorkspaceState.DESTROYED) is (
+        expected_destroyed
+    )
+    assert local_workspace.root.exists() is not expected_destroyed
+    if not expected_destroyed:
+        await local_workspace.destroy()

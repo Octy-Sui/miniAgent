@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from typing import Protocol
 from uuid import UUID, uuid4
 
-from miniagent.runtime.events import NewRunEvent, RunEventType
+from miniagent.runtime.events import NewRunEvent
 from miniagent.runtime.persistence import RunRecoveryContext
 from miniagent.runtime.state import RunState
 from miniagent.storage.models import (

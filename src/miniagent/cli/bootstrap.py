@@ -37,6 +37,7 @@ from miniagent.runtime import (
     CancellationToken,
     RunRecoveryContext,
     RunResult,
+    RunStatus,
     persist_workspace_spec,
 )
 from miniagent.storage import SQLiteRunStore
@@ -125,11 +126,13 @@ class BootstrappedAgent:
     run_store: SQLiteRunStore | None = None
     recovery_context: RunRecoveryContext | None = None
     patch_artifact: ArtifactRef | None = None
+    run_result: RunResult | None = None
 
     async def run(
         self,
         cancellation_token: CancellationToken,
     ) -> RunResult:
+        self.run_result = None
         if self.run_store is not None:
             await self.run_store.initialize()
         runtime = AgentRuntime(
@@ -141,12 +144,13 @@ class BootstrappedAgent:
             approval_handler=self.approval_handler,
             run_store=self.run_store,
         )
-        return await runtime.run(
+        self.run_result = await runtime.run(
             self.agent,
             self.task,
             run_id=self.run_id,
             recovery_context=self.recovery_context,
         )
+        return self.run_result
 
 
 async def persist_workspace_patch(
@@ -183,49 +187,59 @@ async def bootstrap(config: BootstrapConfig) -> AsyncIterator[BootstrappedAgent]
         settings=settings,
         docker_image=config.docker_image,
     )
-    async with workspace(workspace_config) as instance:
-        persisted_spec = persist_workspace_spec(build_workspace_spec(workspace_config))
-        bootstrapped_agent = BootstrappedAgent(
-            agent=config.agent,
-            task=config.task,
-            run_id=run_id,
-            provider=build_provider(config.agent, settings),
-            tools=build_tools(instance),
-            pricing=load_price_config(settings.model_pricing_file),
-            policy_context=PolicyContext(
-                workspace_id=instance.workspace_id,
-                workspace_kind=workspace_config.kind.value,
-                revision=digest_json(
-                    {
-                        "kind": workspace_config.kind.value,
-                        "workspace_id": instance.workspace_id,
-                        "docker_image": (
-                            workspace_config.docker_image or settings.docker_image
-                        ),
-                    }
-                ),
+    instance = await create_workspace(workspace_config)
+    persisted_spec = persist_workspace_spec(build_workspace_spec(workspace_config))
+    bootstrapped_agent = BootstrappedAgent(
+        agent=config.agent,
+        task=config.task,
+        run_id=run_id,
+        provider=build_provider(config.agent, settings),
+        tools=build_tools(instance),
+        pricing=load_price_config(settings.model_pricing_file),
+        policy_context=PolicyContext(
+            workspace_id=instance.workspace_id,
+            workspace_kind=workspace_config.kind.value,
+            revision=digest_json(
+                {
+                    "kind": workspace_config.kind.value,
+                    "workspace_id": instance.workspace_id,
+                    "docker_image": (
+                        workspace_config.docker_image or settings.docker_image
+                    ),
+                }
             ),
-            approval_handler=config.approval_handler,
-            run_store=SQLiteRunStore(settings.run_database_path),
-            recovery_context=RunRecoveryContext(
-                workspace_id=instance.workspace_id,
-                workspace_spec=persisted_spec,
-                policy_revision=DefaultPolicyEngine().revision,
-            ),
-        )
+        ),
+        approval_handler=config.approval_handler,
+        run_store=SQLiteRunStore(settings.run_database_path),
+        recovery_context=RunRecoveryContext(
+            workspace_id=instance.workspace_id,
+            workspace_spec=persisted_spec,
+            policy_revision=DefaultPolicyEngine().revision,
+        ),
+    )
+    patch_exported = False
+    try:
+        yield bootstrapped_agent
+    except BaseException as exc:
         try:
-            yield bootstrapped_agent
-        except BaseException as exc:
-            try:
-                bootstrapped_agent.patch_artifact = await persist_workspace_patch(
-                    instance,
-                    FileArtifactStore(settings.artifact_root),
-                )
-            except Exception as patch_error:  # noqa: BLE001
-                exc.add_note(f"Workspace patch export also failed: {patch_error}")
-            raise
-        else:
             bootstrapped_agent.patch_artifact = await persist_workspace_patch(
                 instance,
                 FileArtifactStore(settings.artifact_root),
             )
+            patch_exported = True
+        except Exception as patch_error:  # noqa: BLE001
+            exc.add_note(f"Workspace patch export also failed: {patch_error}")
+        raise
+    else:
+        bootstrapped_agent.patch_artifact = await persist_workspace_patch(
+            instance,
+            FileArtifactStore(settings.artifact_root),
+        )
+        patch_exported = True
+    finally:
+        if (
+            patch_exported
+            and bootstrapped_agent.run_result is not None
+            and bootstrapped_agent.run_result.status is RunStatus.SUCCEEDED
+        ):
+            await instance.destroy()
