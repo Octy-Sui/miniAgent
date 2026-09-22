@@ -1,5 +1,4 @@
 from collections.abc import Sequence
-from typing import Protocol
 from uuid import UUID, uuid4
 
 from miniagent.runtime.events import NewRunEvent
@@ -7,17 +6,12 @@ from miniagent.runtime.persistence import RunRecoveryContext
 from miniagent.runtime.state import RunState
 from miniagent.storage.models import (
     ApprovalChange,
-    ApprovalStore,
     CommitResult,
     RunCommit,
     RunRecord,
-    RunStore,
+    RuntimeStore,
     SnapshotChange,
 )
-
-
-class RuntimeStore(RunStore, ApprovalStore, Protocol):
-    pass
 
 
 class RunPersistenceError(RuntimeError):

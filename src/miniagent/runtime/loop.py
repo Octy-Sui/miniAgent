@@ -160,14 +160,13 @@ class AgentRuntime:
         agent: AgentSpec,
         tools: ToolCallRunner,
     ) -> RunOutcome:
-        state = execution.state
         await execution.begin_step(
             provider=agent.model.provider,
             model=agent.model.model,
         )
         try:
             response = await await_with_cancellation(
-                self.provider.generate(self._build_request(agent, state)),
+                self.provider.generate(self._build_request(agent, execution.state)),
                 self.cancellation_token,
             )
         except CancellationRequested:
@@ -203,10 +202,10 @@ class AgentRuntime:
                 usage=response.usage,
                 pricing=self.pricing,
             )
-        execution.accept_model_response(response, request_cost)
         decision = evaluate_model_response(response)
         await execution.record_model_response(
             response,
+            request_cost,
             pending_tool_calls=(
                 response.message.tool_calls if decision is None else None
             ),
@@ -231,7 +230,7 @@ class AgentRuntime:
         tool_outcome = await tools.execute(
             execution,
             agent,
-            state.pending_tool_calls,
+            execution.state.pending_tool_calls,
         )
         if tool_outcome.termination is not None:
             return TerminateRun(tool_outcome.termination)

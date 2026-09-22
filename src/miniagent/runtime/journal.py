@@ -14,9 +14,7 @@ from miniagent.storage import (
 
 
 class ApprovalCommitExpired(RuntimeError):
-    def __init__(self, state: RunState) -> None:
-        self.state = state
-        super().__init__("Approval expired while committing its resolution")
+    pass
 
 
 class RunJournal:
@@ -103,12 +101,8 @@ class RunJournal:
         except RunPersistenceError as exc:
             if not isinstance(exc.__cause__, ApprovalExpiredError):
                 raise
-            if self.recorder.record is None:
-                raise RuntimeError(
-                    "Approval expiry requires persisted run state"
-                ) from exc
             raise ApprovalCommitExpired(
-                self.recorder.record.state.model_copy(deep=True)
+                "Approval expired while committing its resolution"
             ) from exc
         self._approval_versions[resolution.approval_id] = (
             result.approvals[0].version if result is not None else 2

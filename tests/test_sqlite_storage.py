@@ -189,7 +189,7 @@ async def test_commit_atomically_updates_state_context_events_and_snapshot(
     state = make_state()
     await store.create(state)
     updated = state.model_copy(deep=True)
-    transition(updated, RunStatus.PREPARING)
+    updated = transition(updated, RunStatus.PREPARING)
     context = RunRecoveryContext(
         workspace_id="workspace-1",
         workspace_spec=persist_workspace_spec(
@@ -273,9 +273,9 @@ async def test_approval_resolution_is_atomic_and_idempotent(
         expires_at=now + timedelta(minutes=5),
     )
     waiting = state.model_copy(deep=True)
-    transition(waiting, RunStatus.PREPARING)
-    transition(waiting, RunStatus.RUNNING, cursor=RunCursor.REQUEST_MODEL)
-    transition(
+    waiting = transition(waiting, RunStatus.PREPARING)
+    waiting = transition(waiting, RunStatus.RUNNING, cursor=RunCursor.REQUEST_MODEL)
+    waiting = transition(
         waiting,
         RunStatus.WAITING_APPROVAL,
         pending_approval_id=str(request.approval_id),

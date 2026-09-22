@@ -1,4 +1,6 @@
 import asyncio
+from collections.abc import Sequence
+from copy import deepcopy
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -28,6 +30,7 @@ from miniagent.runtime import (
     EvaluationResult,
     Evaluator,
     InvalidRunTransition,
+    NewRunEvent,
     RunCursor,
     RunError,
     RunEventType,
@@ -38,6 +41,9 @@ from miniagent.runtime import (
     TerminationReason,
     transition,
 )
+from miniagent.runtime.execution import RunExecution
+from miniagent.runtime.journal import RunJournal
+from miniagent.runtime.recording import RunRecorder
 from miniagent.storage import SQLiteRunStore
 from miniagent.tools import Tool, ToolArguments
 from miniagent.tools.registry import ToolRegistry
@@ -141,6 +147,15 @@ class AllowPolicyEngine:
         )
 
 
+class FailingCompleteStepJournal(RunJournal):
+    async def complete_step(
+        self,
+        state: RunState,
+        events: Sequence[NewRunEvent],
+    ) -> None:
+        raise RuntimeError("commit failed")
+
+
 def final_response(content: str = "finished") -> ModelResponse:
     return ModelResponse(
         message=Message(role="assistant", content=content),
@@ -189,15 +204,25 @@ def run_state() -> RunState:
 
 
 class TestRunState:
+    def test_transition_returns_new_state_without_mutating_source(self) -> None:
+        state = run_state()
+
+        prepared = transition(state, RunStatus.PREPARING)
+
+        assert prepared is not state
+        assert prepared.status is RunStatus.PREPARING
+        assert state.status is RunStatus.CREATED
+        assert state.version == 0
+
     def test_valid_lifecycle_reaches_succeeded(self) -> None:
         state = run_state()
 
-        transition(state, RunStatus.PREPARING)
-        transition(state, RunStatus.RUNNING, cursor=RunCursor.REQUEST_MODEL)
+        state = transition(state, RunStatus.PREPARING)
+        state = transition(state, RunStatus.RUNNING, cursor=RunCursor.REQUEST_MODEL)
         state.candidate_output = "candidate"
-        transition(state, RunStatus.EVALUATING)
+        state = transition(state, RunStatus.EVALUATING)
         state.final_output = "verified"
-        transition(
+        state = transition(
             state,
             RunStatus.SUCCEEDED,
             reason=TerminationReason.TASK_VERIFIED,
@@ -224,7 +249,7 @@ class TestRunState:
 
     def test_cancelled_before_start_can_produce_result(self) -> None:
         state = run_state()
-        transition(
+        state = transition(
             state,
             RunStatus.CANCELLED,
             reason=TerminationReason.CANCEL_REQUESTED,
@@ -237,8 +262,8 @@ class TestRunState:
 
     def test_invalid_target_invariants_do_not_mutate_state(self) -> None:
         state = run_state()
-        transition(state, RunStatus.PREPARING)
-        transition(state, RunStatus.RUNNING, cursor=RunCursor.REQUEST_MODEL)
+        state = transition(state, RunStatus.PREPARING)
+        state = transition(state, RunStatus.RUNNING, cursor=RunCursor.REQUEST_MODEL)
 
         with pytest.raises(ValueError, match="candidate output"):
             transition(state, RunStatus.EVALUATING)
@@ -254,6 +279,40 @@ class TestRunState:
         assert state.completed_tool_call_ids == set()
         assert state.pending_approval_id is None
         assert state.checkpoint_id is None
+
+
+class TestRunExecution:
+    async def test_failed_step_commit_preserves_state_and_trace(self) -> None:
+        state = run_state()
+        execution = await RunExecution.start(
+            state,
+            FailingCompleteStepJournal(
+                RunRecorder(
+                    run_id=state.run_id,
+                    store=None,
+                    recovery_context=None,
+                )
+            ),
+        )
+        await execution.begin_step(provider="test", model="test-model")
+        response = tool_response()
+        await execution.record_model_response(
+            response,
+            None,
+            pending_tool_calls=response.message.tool_calls,
+        )
+        previous_state = execution.state
+        state_snapshot = previous_state.model_copy(deep=True)
+        previous_trace = execution.trace
+        trace_snapshot = deepcopy(previous_trace)
+
+        with pytest.raises(RuntimeError, match="commit failed"):
+            await execution.complete_tool_step([])
+
+        assert execution.state is previous_state
+        assert execution.state == state_snapshot
+        assert execution.trace is previous_trace
+        assert execution.trace == trace_snapshot
 
 
 class TestAgentRuntime:

@@ -27,6 +27,7 @@ from miniagent.runtime.persistence import (
     RunRecoveryContext,
     persist_workspace_spec,
 )
+from miniagent.runtime.recording import RunPersistenceError, RuntimeStore
 from miniagent.runtime.recovery import (
     RecoveryAction,
     RecoveryController,
@@ -35,7 +36,6 @@ from miniagent.runtime.recovery import (
     RecoveryRequest,
     RecoveryTrigger,
 )
-from miniagent.runtime.recording import RunPersistenceError, RuntimeStore
 from miniagent.runtime.snapshots import (
     NewRunSnapshot,
     RunSnapshot,
@@ -102,7 +102,6 @@ __all__ = [
     "RunEvent",
     "RunEventType",
     "RunPersistenceError",
-    "RuntimeStore",
     "RunRecoveryContext",
     "RunResult",
     "RunSnapshot",
@@ -111,6 +110,7 @@ __all__ = [
     "RunTrace",
     "RunUsage",
     "RuntimeConfig",
+    "RuntimeStore",
     "SnapshotStore",
     "SnapshotVersionConflictError",
     "SpanCategory",

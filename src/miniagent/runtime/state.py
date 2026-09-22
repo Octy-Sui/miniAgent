@@ -5,6 +5,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -244,7 +245,8 @@ def transition(
     pending_approval_id: str | None | _PendingApprovalUnchanged = (
         _PENDING_APPROVAL_UNCHANGED
     ),
-) -> None:
+) -> RunState:
+    """Return a validated successor without mutating the source state."""
     if target not in ALLOWED_TRANSITIONS[state.status]:
         raise InvalidRunTransition(
             f"Cannot transition run {state.run_id} from {state.status} to {target}"
@@ -256,33 +258,42 @@ def transition(
     if not is_terminal and (reason is not None or error is not None):
         raise ValueError("Non-terminal transition cannot include termination details")
 
-    candidate = state.model_copy()
     now = datetime.now(UTC)
-    candidate.status = target
-    candidate.cursor = cursor
+    changes: dict[str, Any] = {
+        "status": target,
+        "cursor": cursor,
+        "updated_at": now,
+        "version": state.version + 1,
+    }
     if not isinstance(pending_approval_id, _PendingApprovalUnchanged):
-        candidate.pending_approval_id = pending_approval_id
-    candidate.updated_at = now
-    candidate.version += 1
+        changes["pending_approval_id"] = pending_approval_id
 
-    if candidate.started_at is None and target is RunStatus.PREPARING:
-        candidate.started_at = now
+    if state.started_at is None and target is RunStatus.PREPARING:
+        changes["started_at"] = now
 
     if is_terminal:
-        candidate.termination_reason = reason
-        candidate.error = error
-        candidate.finished_at = now
+        changes.update(
+            termination_reason=reason,
+            error=error,
+            finished_at=now,
+        )
 
-    validate_state(candidate)
-    state.status = candidate.status
-    state.cursor = candidate.cursor
-    state.version = candidate.version
-    state.started_at = candidate.started_at
-    state.updated_at = candidate.updated_at
-    state.finished_at = candidate.finished_at
-    state.termination_reason = candidate.termination_reason
-    state.error = candidate.error
-    state.pending_approval_id = candidate.pending_approval_id
+    return update_state(state, **changes)
+
+
+def update_state(state: RunState, **changes: Any) -> RunState:
+    unknown_fields = changes.keys() - RunState.model_fields.keys()
+    if unknown_fields:
+        names = ", ".join(sorted(unknown_fields))
+        raise ValueError(f"Unknown RunState fields: {names}")
+    frozen_fields = [
+        name for name in changes if RunState.model_fields[name].frozen
+    ]
+    if frozen_fields:
+        names = ", ".join(sorted(frozen_fields))
+        raise ValueError(f"Cannot update frozen RunState fields: {names}")
+    candidate = state.model_copy(deep=True, update=changes)
+    return RunState.model_validate(candidate.model_dump(mode="python"))
 
 
 def validate_state(state: RunState) -> None:

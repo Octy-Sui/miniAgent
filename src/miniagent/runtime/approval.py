@@ -167,8 +167,7 @@ class ApprovalCoordinator:
 
         try:
             await execution.resolve_approval(resolution)
-        except ApprovalCommitExpired as exc:
-            execution.replace_state(exc.state)
+        except ApprovalCommitExpired:
             expired = self._system_resolution(
                 request,
                 ApprovalOutcome.EXPIRED,

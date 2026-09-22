@@ -159,7 +159,7 @@ OpenTelemetry 也不能替代 Journal 的事务职责。
 
 ## 最终实现
 
-本次 session 规划的 5 个批次已经全部完成，没有遗留的执行批次。
+本次 session 规划的 6 个批次已经全部完成，没有遗留的执行批次。
 
 ### 完成状态
 
@@ -179,6 +179,9 @@ OpenTelemetry 也不能替代 Journal 的事务职责。
 - [x] 无 Store 和 SQLite Store 模式保持相同业务终止结果。
 - [x] 无 pricing 时仍累计 Model Usage。
 - [x] 无 Store 时 Approval 等待期间取消正常返回 `CANCELLED`。
+- [x] State 和 Trace 通过候选对象提交后发布；Journal 失败不会留下半完成的
+  cursor、usage 或活动 scope。
+- [x] `transition()` 返回完整验证的新 `RunState`，不再原地修改调用方持有的状态。
 
 ### 最终文件职责
 
@@ -202,6 +205,8 @@ OpenTelemetry 也不能替代 Journal 的事务职责。
    事务时序问题。
 4. 建立 `RunJournal`，隐藏 storage change、approval version 和底层 expiry error。
 5. 收敛异步启动、step limit、连续工具失败判断和第一阶段临时接口。
+6. 将 State/Trace 更新改为候选对象事务：完整验证候选状态，Journal 提交成功后再
+   替换执行上下文；模型响应、工具步骤、Approval 和最终收尾使用同一发布顺序。
 
 如后续需求改变本文的职责边界，应先更新“最终目标”，再新增独立执行批次；不要把
 新需求追记为本次 session 未完成项。

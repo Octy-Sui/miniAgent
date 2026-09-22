@@ -38,6 +38,7 @@ from miniagent.storage.models import (
     RunCommit,
     RunNotFoundError,
     RunRecord,
+    RuntimeStore,
     UnsupportedStorageVersionError,
 )
 
@@ -71,7 +72,7 @@ def _dump_json(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
 
 
-class SQLiteRunStore:
+class SQLiteRunStore(RuntimeStore):
     def __init__(
         self,
         path: Path,

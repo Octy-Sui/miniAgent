@@ -74,7 +74,9 @@ class ApprovalRecord(BaseModel):
         if self.request.decision_id != self.decision.decision_id:
             raise ValueError("Approval request must reference its policy decision")
         if self.request.run_id != self.decision.request.run_id:
-            raise ValueError("Approval request and decision must belong to the same run")
+            raise ValueError(
+                "Approval request and decision must belong to the same run"
+            )
         if self.request.request_digest != self.decision.request_digest:
             raise ValueError("Approval request and decision digests must match")
         if self.request.policy_revision != self.decision.policy_revision:
@@ -159,11 +161,15 @@ class RunCommit(BaseModel):
                 if change.request_event_index >= len(self.events):
                     raise ValueError("Approval request event index is out of range")
                 if change.request.decision_id != change.decision.decision_id:
-                    raise ValueError("Approval request must reference its policy decision")
+                    raise ValueError(
+                        "Approval request must reference its policy decision"
+                    )
                 if change.request.request_digest != change.decision.request_digest:
                     raise ValueError("Approval request and decision digests must match")
                 if change.request.policy_revision != change.decision.policy_revision:
-                    raise ValueError("Approval request and decision revisions must match")
+                    raise ValueError(
+                        "Approval request and decision revisions must match"
+                    )
                 if change.decision.effect is not PolicyEffect.APPROVAL:
                     raise ValueError("Approval creation requires an approval decision")
             elif isinstance(change, ResolveApproval):
@@ -189,7 +195,7 @@ class CommitResult(BaseModel):
     idempotent: bool = False
 
 
-class RunStore(Protocol):
+class RuntimeStore(Protocol):
     def create(
         self,
         state: RunState,
@@ -200,9 +206,3 @@ class RunStore(Protocol):
     async def get(self, run_id: UUID) -> RunRecord: ...
 
     def commit(self, change: RunCommit) -> Awaitable[CommitResult]: ...
-
-
-class ApprovalStore(Protocol):
-    async def get_approval(self, approval_id: UUID) -> ApprovalRecord: ...
-
-    async def list_pending_approvals(self) -> list[ApprovalRecord]: ...
