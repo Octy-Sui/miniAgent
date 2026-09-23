@@ -3,15 +3,54 @@
 # Author : octy Sui
 
 from enum import IntEnum, StrEnum
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from miniagent.agents import ModelTarget
-from miniagent.environments import WorkspaceCheckpoint
+from miniagent.environments.config import DockerWorkspaceSpec, LocalWorkspaceSpec
+from miniagent.environments.contracts import WorkspaceCheckpoint
+from miniagent.environments.persistence import PersistedWorkspaceSpec
+from miniagent.models.config import ModelTarget
 from miniagent.runtime.events import RunEvent
-from miniagent.runtime.state import RunError, RunState
+from miniagent.runtime.result import RunError
+from miniagent.runtime.state import RunState
+
+
+class RunRecoveryContext(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    workspace_id: str = Field(min_length=1)
+    workspace_spec: PersistedWorkspaceSpec
+    checkpoint: WorkspaceCheckpoint | None = None
+    policy_revision: str | None = None
+    pricing_revision: str | None = None
+
+    @field_validator("workspace_spec", mode="before")
+    @classmethod
+    def reject_runtime_workspace_spec(cls, value: object) -> object:
+        if isinstance(value, (LocalWorkspaceSpec, DockerWorkspaceSpec)):
+            raise ValueError(
+                "Recovery context requires a sanitized persisted workspace spec"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "RunRecoveryContext":
+        if (
+            self.checkpoint is not None
+            and self.workspace_spec.run_id != self.checkpoint.run_id
+        ):
+            raise ValueError(
+                "Recovery checkpoint and workspace must belong to the same run"
+            )
+        if (
+            self.checkpoint is not None
+            and self.checkpoint.workspace_id != self.workspace_id
+        ):
+            raise ValueError("Recovery checkpoint must identify the current workspace")
+        return self
 
 
 class RecoveryLevel(IntEnum):
@@ -53,11 +92,13 @@ class RecoveryRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_run_scope(self) -> "RecoveryRequest":
-        if any(event.run_id != self.state.run_id for event in self.recent_events):
+        if any(
+            event.run_id != self.state.identity.run_id for event in self.recent_events
+        ):
             raise ValueError("Recovery events must belong to the current run")
         if (
             self.latest_checkpoint is not None
-            and self.latest_checkpoint.run_id != self.state.run_id
+            and self.latest_checkpoint.run_id != self.state.identity.run_id
         ):
             raise ValueError("Recovery checkpoint must belong to the current run")
         return self

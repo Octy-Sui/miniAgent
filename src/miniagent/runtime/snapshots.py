@@ -8,7 +8,7 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
-from miniagent.runtime.persistence import RunRecoveryContext
+from miniagent.runtime.recovery import RunRecoveryContext
 from miniagent.runtime.state import RunState
 
 
@@ -30,7 +30,7 @@ class NewRunSnapshot(BaseModel):
 
     @model_validator(mode="after")
     def validate_run_id(self) -> "NewRunSnapshot":
-        if self.state.run_id != self.run_id:
+        if self.state.identity.run_id != self.run_id:
             raise ValueError("Snapshot and state must belong to the same run")
         if (
             self.recovery_context is not None

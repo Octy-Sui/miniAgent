@@ -3,15 +3,17 @@
 # Author : octy Sui
 
 from miniagent.artifacts.file import FileArtifactStore
-from miniagent.artifacts.store import (
+from miniagent.artifacts.contracts import (
     ArtifactNotFoundError,
+    ArtifactRecord,
+    ArtifactRef,
     ArtifactStore,
     ArtifactWrite,
 )
-from miniagent.models.artifact import ArtifactRef
 
 __all__ = [
     "ArtifactNotFoundError",
+    "ArtifactRecord",
     "ArtifactRef",
     "ArtifactStore",
     "ArtifactWrite",

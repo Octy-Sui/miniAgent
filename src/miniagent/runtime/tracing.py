@@ -14,7 +14,7 @@ from pydantic import (
     model_validator,
 )
 
-from miniagent.models.artifact import ArtifactRef
+from miniagent.artifacts.contracts import ArtifactRef
 
 
 def _validate_span_id(value: str) -> str:

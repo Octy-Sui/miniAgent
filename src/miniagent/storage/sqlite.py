@@ -1,37 +1,34 @@
 import asyncio
-import json
 import sqlite3
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from importlib.resources import files
 from pathlib import Path
 from time import monotonic, sleep
-from typing import Any, TypeVar
+from typing import TypeVar
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, TypeAdapter, ValidationError
-
-from miniagent.models import ArtifactRef
-from miniagent.policy import ApprovalOutcome, ApprovalResolution
+from miniagent.policy import ApprovalOutcome, ApprovalResolution, PolicyRequest
 from miniagent.runtime.events import (
+    ApprovalInvalidated,
+    ApprovalRequested,
+    ApprovalResolved,
     EventSequenceConflictError,
     NewRunEvent,
     RunEvent,
     RunEventType,
 )
-from miniagent.runtime.persistence import RunRecoveryContext
+from miniagent.runtime.recovery import RunRecoveryContext
 from miniagent.runtime.snapshots import (
     NewRunSnapshot,
     RunSnapshot,
     SnapshotVersionConflictError,
 )
 from miniagent.runtime.state import RunState
-from miniagent.storage.models import (
+from miniagent.runtime.store_contracts import (
     ApprovalConflictError,
     ApprovalExpiredError,
-    ApprovalRecord,
     CommitResult,
-    CorruptStoredDataError,
     CreateApproval,
     ResolveApproval,
     RunAlreadyExistsError,
@@ -39,37 +36,53 @@ from miniagent.storage.models import (
     RunNotFoundError,
     RunRecord,
     RuntimeStore,
+    StoredApproval,
     UnsupportedStorageVersionError,
 )
+from miniagent.storage.codecs import (
+    decode_approval,
+    decode_event,
+    decode_run,
+    decode_snapshot,
+    encode_artifacts,
+)
+from miniagent.storage.codecs import (
+    encode_datetime as _timestamp,
+)
+from miniagent.storage.codecs import (
+    encode_model as _dump,
+)
+from miniagent.storage.queries.approvals import (
+    insert_approval,
+    select_approval,
+    select_approval_for_run,
+    select_approval_version,
+    select_pending_approvals,
+)
+from miniagent.storage.queries.approvals import (
+    invalidate_approval as invalidate_approval_row,
+)
+from miniagent.storage.queries.approvals import (
+    resolve_approval as resolve_approval_row,
+)
+from miniagent.storage.queries.events import insert_event, select_events
+from miniagent.storage.queries.runs import (
+    insert_run,
+    latest_positions,
+    run_exists,
+    select_run,
+    update_event_sequence,
+    update_run,
+    update_snapshot_version,
+)
+from miniagent.storage.queries.snapshots import insert_snapshot, select_latest_snapshot
 
-_SCHEMA_VERSION = 2
-_ARTIFACTS_ADAPTER = TypeAdapter(list[ArtifactRef])
+_SCHEMA_VERSION = 1
 _T = TypeVar("_T")
-
-
-def _timestamp(value: datetime) -> str:
-    if value.tzinfo is None:
-        raise ValueError("Stored datetimes must be timezone-aware")
-    return (
-        value.astimezone(UTC)
-        .isoformat(timespec="microseconds")
-        .replace(
-            "+00:00",
-            "Z",
-        )
-    )
 
 
 def _now() -> datetime:
     return datetime.now(UTC)
-
-
-def _dump(model: BaseModel) -> str:
-    return model.model_dump_json()
-
-
-def _dump_json(value: Any) -> str:
-    return json.dumps(value, separators=(",", ":"), sort_keys=True)
 
 
 class SQLiteRunStore(RuntimeStore):
@@ -165,10 +178,10 @@ class SQLiteRunStore(RuntimeStore):
     async def load_latest(self, run_id: UUID) -> RunSnapshot | None:
         return await self._in_thread(lambda: self._load_latest_sync(run_id))
 
-    async def get_approval(self, approval_id: UUID) -> ApprovalRecord:
+    async def get_approval(self, approval_id: UUID) -> StoredApproval:
         return await self._in_thread(lambda: self._get_approval_sync(approval_id))
 
-    async def list_pending_approvals(self) -> list[ApprovalRecord]:
+    async def list_pending_approvals(self) -> list[StoredApproval]:
         return await self._in_thread(self._list_pending_approvals_sync)
 
     async def _in_thread(self, operation: Callable[[], _T]) -> _T:
@@ -264,37 +277,33 @@ class SQLiteRunStore(RuntimeStore):
     ) -> RunRecord:
         if (
             recovery_context is not None
-            and recovery_context.workspace_spec.run_id != state.run_id
+            and recovery_context.workspace_spec.run_id != state.identity.run_id
         ):
             raise ValueError("Recovery context must belong to the current run")
 
         def create(connection: sqlite3.Connection) -> RunRecord:
             try:
-                connection.execute(
-                    """
-                    INSERT INTO runs (
-                        run_id, schema_version, status, state_json,
-                        recovery_context_json, created_at, updated_at, finished_at
-                    ) VALUES (?, 1, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        str(state.run_id),
-                        state.status.value,
-                        _dump(state),
-                        _dump(recovery_context) if recovery_context else None,
-                        _timestamp(state.created_at),
-                        _timestamp(state.updated_at),
-                        _timestamp(state.finished_at) if state.finished_at else None,
+                insert_run(
+                    connection,
+                    run_id=str(state.identity.run_id),
+                    status=state.lifecycle.status.value,
+                    state_json=_dump(state),
+                    recovery_context_json=(
+                        _dump(recovery_context) if recovery_context else None
+                    ),
+                    created_at=_timestamp(state.identity.created_at),
+                    updated_at=_timestamp(state.lifecycle.updated_at),
+                    finished_at=(
+                        _timestamp(state.lifecycle.finished_at)
+                        if state.lifecycle.finished_at
+                        else None
                     ),
                 )
             except sqlite3.IntegrityError as exc:
-                if connection.execute(
-                    "SELECT 1 FROM runs WHERE run_id = ?",
-                    (str(state.run_id),),
-                ).fetchone():
-                    raise RunAlreadyExistsError(state.run_id) from exc
+                if run_exists(connection, state.identity.run_id):
+                    raise RunAlreadyExistsError(state.identity.run_id) from exc
                 raise
-            return self._get_record(connection, state.run_id)
+            return self._get_record(connection, state.identity.run_id)
 
         return self._transaction(create)
 
@@ -307,41 +316,14 @@ class SQLiteRunStore(RuntimeStore):
         connection: sqlite3.Connection,
         run_id: UUID,
     ) -> RunRecord:
-        row = connection.execute(
-            "SELECT * FROM runs WHERE run_id = ?",
-            (str(run_id),),
-        ).fetchone()
+        row = select_run(connection, run_id)
         if row is None:
             raise RunNotFoundError(run_id)
-        self._require_supported_data_version("run", row["schema_version"])
-        try:
-            state = RunState.model_validate_json(row["state_json"])
-            context = (
-                self._load_recovery_context(row["recovery_context_json"])
-                if row["recovery_context_json"] is not None
-                else None
-            )
-            if (
-                state.run_id != run_id
-                or state.status.value != row["status"]
-                or _timestamp(state.created_at) != row["created_at"]
-                or _timestamp(state.updated_at) != row["updated_at"]
-                or (_timestamp(state.finished_at) if state.finished_at else None)
-                != row["finished_at"]
-            ):
-                raise ValueError("Run projection does not match stored state")
-            return RunRecord(
-                state=state,
-                last_event_sequence=row["last_event_sequence"],
-                latest_snapshot_version=row["latest_snapshot_version"],
-                recovery_context=context,
-            )
-        except (ValidationError, ValueError) as exc:
-            raise CorruptStoredDataError(f"Invalid stored run {run_id}: {exc}") from exc
+        return decode_run(row)
 
     def _commit_sync(self, change: RunCommit) -> CommitResult:
         def commit(connection: sqlite3.Connection) -> CommitResult:
-            current = self._get_record(connection, change.state.run_id)
+            current = self._get_record(connection, change.state.identity.run_id)
             idempotent = self._idempotent_resolution(connection, change)
             if idempotent is not None:
                 return CommitResult(
@@ -384,7 +366,7 @@ class SQLiteRunStore(RuntimeStore):
                 latest_snapshot_version=latest_snapshot_version,
             )
             return CommitResult(
-                record=self._get_record(connection, change.state.run_id),
+                record=self._get_record(connection, change.state.identity.run_id),
                 events=events,
                 approvals=approvals,
                 snapshot=snapshot,
@@ -396,7 +378,7 @@ class SQLiteRunStore(RuntimeStore):
         self,
         connection: sqlite3.Connection,
         change: RunCommit,
-    ) -> ApprovalRecord | None:
+    ) -> StoredApproval | None:
         resolution_change = next(
             (
                 item
@@ -407,18 +389,16 @@ class SQLiteRunStore(RuntimeStore):
         )
         if resolution_change is None:
             return None
-        row = connection.execute(
-            "SELECT * FROM approvals WHERE approval_id = ? AND run_id = ?",
-            (
-                str(resolution_change.resolution.approval_id),
-                str(change.state.run_id),
-            ),
-        ).fetchone()
+        row = select_approval_for_run(
+            connection,
+            change.state.identity.run_id,
+            resolution_change.resolution.approval_id,
+        )
         if row is None or row["resolution_json"] is None:
             return None
-        record = self._approval_from_row(row)
-        if record.resolution is not None and self._same_resolution(
-            record.resolution,
+        record = decode_approval(row)
+        if record.approval.resolution is not None and self._same_resolution(
+            record.approval.resolution,
             resolution_change.resolution,
         ):
             return record
@@ -458,18 +438,11 @@ class SQLiteRunStore(RuntimeStore):
             sequence = start_sequence + offset
             stored_event = RunEvent(
                 **event.model_dump(),
-                event_id=uuid4(),
                 sequence=sequence,
                 occurred_at=occurred_at,
             )
-            connection.execute(
-                """
-                INSERT INTO run_events (
-                    run_id, sequence, event_id, schema_version, type,
-                    occurred_at, payload_json, artifacts_json,
-                    step_number, span_id, parent_span_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+            insert_event(
+                connection,
                 (
                     str(event.run_id),
                     stored_event.sequence,
@@ -477,8 +450,8 @@ class SQLiteRunStore(RuntimeStore):
                     event.schema_version,
                     event.type.value,
                     _timestamp(occurred_at),
-                    _dump_json(event.payload),
-                    _ARTIFACTS_ADAPTER.dump_json(event.artifacts).decode(),
+                    _dump(event.payload),
+                    encode_artifacts(event.artifacts),
                     event.step_number,
                     event.span_id,
                     event.parent_span_id,
@@ -492,26 +465,24 @@ class SQLiteRunStore(RuntimeStore):
         connection: sqlite3.Connection,
         change: RunCommit,
         events: list[RunEvent],
-    ) -> list[ApprovalRecord]:
-        records: list[ApprovalRecord] = []
+    ) -> list[StoredApproval]:
+        records: list[StoredApproval] = []
         for approval_change in change.approval_changes:
             if isinstance(approval_change, CreateApproval):
-                event = events[approval_change.request_event_index]
+                event = self._approval_event(
+                    events,
+                    approval_change.request_event_id,
+                )
                 self._validate_approval_event(
                     event,
                     expected_type=RunEventType.APPROVAL_REQUESTED,
                     approval_id=approval_change.request.approval_id,
+                    request=approval_change.decision.request,
                 )
                 request = approval_change.request
                 decision = approval_change.decision
-                connection.execute(
-                    """
-                    INSERT INTO approvals (
-                        approval_id, run_id, decision_id, schema_version,
-                        request_json, decision_json, requested_at, expires_at,
-                        request_event_sequence
-                    ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)
-                    """,
+                insert_approval(
+                    connection,
                     (
                         str(request.approval_id),
                         str(request.run_id),
@@ -520,100 +491,94 @@ class SQLiteRunStore(RuntimeStore):
                         _dump(decision),
                         _timestamp(request.requested_at),
                         _timestamp(request.expires_at),
-                        event.sequence,
+                        str(event.event_id),
                     ),
                 )
                 records.append(
                     self._get_approval_for_run(
                         connection,
-                        change.state.run_id,
+                        change.state.identity.run_id,
                         request.approval_id,
                     )
                 )
             elif isinstance(approval_change, ResolveApproval):
-                event = events[approval_change.resolution_event_index]
+                event = self._approval_event(
+                    events,
+                    approval_change.resolution_event_id,
+                )
                 resolution = approval_change.resolution
+                current = self._get_approval_for_run(
+                    connection,
+                    change.state.identity.run_id,
+                    resolution.approval_id,
+                )
                 self._validate_approval_event(
                     event,
                     expected_type=RunEventType.APPROVAL_RESOLVED,
                     approval_id=resolution.approval_id,
-                )
-                current = self._get_approval_for_run(
-                    connection,
-                    change.state.run_id,
-                    resolution.approval_id,
+                    request=current.approval.decision.request,
                 )
                 if (
                     resolution.outcome is ApprovalOutcome.APPROVED
-                    and self._clock() >= current.request.expires_at
+                    and self._clock() >= current.approval.request.expires_at
                 ):
                     raise ApprovalExpiredError(resolution.approval_id)
-                cursor = connection.execute(
-                    """
-                    UPDATE approvals
-                    SET outcome = ?, resolution_json = ?,
-                        resolution_event_sequence = ?, version = version + 1
-                    WHERE approval_id = ? AND run_id = ?
-                        AND version = ? AND outcome IS NULL
-                    """,
+                rowcount = resolve_approval_row(
+                    connection,
                     (
                         resolution.outcome.value,
                         _dump(resolution),
-                        event.sequence,
+                        str(event.event_id),
                         str(resolution.approval_id),
-                        str(change.state.run_id),
+                        str(change.state.identity.run_id),
                         approval_change.expected_version,
                     ),
                 )
-                if cursor.rowcount != 1:
+                if rowcount != 1:
                     self._raise_approval_conflict(
                         connection,
-                        change.state.run_id,
+                        change.state.identity.run_id,
                         resolution.approval_id,
                         approval_change.expected_version,
                     )
                 records.append(
                     self._get_approval_for_run(
                         connection,
-                        change.state.run_id,
+                        change.state.identity.run_id,
                         resolution.approval_id,
                     )
                 )
             else:
-                event = events[approval_change.invalidated_event_index]
+                event = self._approval_event(
+                    events,
+                    approval_change.invalidated_event_id,
+                )
                 self._validate_approval_event(
                     event,
                     expected_type=RunEventType.APPROVAL_INVALIDATED,
                     approval_id=approval_change.approval_id,
                 )
-                cursor = connection.execute(
-                    """
-                    UPDATE approvals
-                    SET authorization_invalidated_event_sequence = ?,
-                        version = version + 1
-                    WHERE approval_id = ? AND run_id = ? AND version = ?
-                        AND outcome = ?
-                        AND authorization_invalidated_event_sequence IS NULL
-                    """,
+                rowcount = invalidate_approval_row(
+                    connection,
                     (
-                        event.sequence,
+                        str(event.event_id),
                         str(approval_change.approval_id),
-                        str(change.state.run_id),
+                        str(change.state.identity.run_id),
                         approval_change.expected_version,
                         ApprovalOutcome.APPROVED.value,
                     ),
                 )
-                if cursor.rowcount != 1:
+                if rowcount != 1:
                     self._raise_approval_conflict(
                         connection,
-                        change.state.run_id,
+                        change.state.identity.run_id,
                         approval_change.approval_id,
                         approval_change.expected_version,
                     )
                 records.append(
                     self._get_approval_for_run(
                         connection,
-                        change.state.run_id,
+                        change.state.identity.run_id,
                         approval_change.approval_id,
                     )
                 )
@@ -625,11 +590,39 @@ class SQLiteRunStore(RuntimeStore):
         *,
         expected_type: RunEventType,
         approval_id: UUID,
+        request: PolicyRequest | None = None,
     ) -> None:
         if event.type is not expected_type:
             raise ValueError(f"Approval change requires {expected_type.value} event")
-        if event.payload.get("approval_id") != str(approval_id):
+        payload = event.payload
+        if (
+            not isinstance(
+                payload,
+                (ApprovalRequested, ApprovalResolved, ApprovalInvalidated),
+            )
+            or payload.approval_id != approval_id
+        ):
             raise ValueError("Approval event must reference the changed approval")
+        if isinstance(payload, (ApprovalRequested, ApprovalResolved)):
+            if request is None:
+                raise ValueError("Approval event validation requires policy scope")
+            if (
+                event.step_number != request.step_number
+                or payload.call_index != request.call_index
+                or payload.tool_call_id != request.tool_call_id
+                or payload.tool_name != request.tool_name
+            ):
+                raise ValueError("Approval event scope must match its policy request")
+
+    @staticmethod
+    def _approval_event(
+        events: list[RunEvent],
+        event_id: UUID,
+    ) -> RunEvent:
+        matches = [event for event in events if event.event_id == event_id]
+        if len(matches) != 1:
+            raise ValueError("Approval event ID must identify one committed event")
+        return matches[0]
 
     def _raise_approval_conflict(
         self,
@@ -638,10 +631,7 @@ class SQLiteRunStore(RuntimeStore):
         approval_id: UUID,
         expected_version: int,
     ) -> None:
-        row = connection.execute(
-            "SELECT version FROM approvals WHERE approval_id = ? AND run_id = ?",
-            (str(approval_id), str(run_id)),
-        ).fetchone()
+        row = select_approval_version(connection, run_id, approval_id)
         actual = row["version"] if row is not None else "missing"
         raise ApprovalConflictError(
             f"Expected approval {approval_id} version {expected_version}, "
@@ -657,7 +647,10 @@ class SQLiteRunStore(RuntimeStore):
     ) -> RunSnapshot | None:
         if change.snapshot is None:
             return None
-        actual = self._latest_snapshot_version(connection, change.state.run_id)
+        actual = self._latest_snapshot_version(
+            connection,
+            change.state.identity.run_id,
+        )
         if actual != change.snapshot.expected_version:
             raise SnapshotVersionConflictError(
                 expected=change.snapshot.expected_version,
@@ -668,7 +661,7 @@ class SQLiteRunStore(RuntimeStore):
             snapshot_id=change.snapshot.snapshot_id,
             version=expected_version,
             created_at=self._clock(),
-            run_id=change.state.run_id,
+            run_id=change.state.identity.run_id,
             event_sequence=final_sequence,
             state=change.state,
             recovery_context=change.recovery_context,
@@ -685,27 +678,25 @@ class SQLiteRunStore(RuntimeStore):
         last_event_sequence: int,
         latest_snapshot_version: int,
     ) -> None:
-        cursor = connection.execute(
-            """
-            UPDATE runs
-            SET status = ?, state_json = ?, recovery_context_json = ?,
-                last_event_sequence = ?, latest_snapshot_version = ?,
-                updated_at = ?, finished_at = ?
-            WHERE run_id = ?
-            """,
-            (
-                state.status.value,
-                _dump(state),
-                _dump(recovery_context) if recovery_context else None,
-                last_event_sequence,
-                latest_snapshot_version,
-                _timestamp(state.updated_at),
-                _timestamp(state.finished_at) if state.finished_at else None,
-                str(state.run_id),
+        rowcount = update_run(
+            connection,
+            run_id=str(state.identity.run_id),
+            status=state.lifecycle.status.value,
+            state_json=_dump(state),
+            recovery_context_json=(
+                _dump(recovery_context) if recovery_context else None
+            ),
+            last_event_sequence=last_event_sequence,
+            latest_snapshot_version=latest_snapshot_version,
+            updated_at=_timestamp(state.lifecycle.updated_at),
+            finished_at=(
+                _timestamp(state.lifecycle.finished_at)
+                if state.lifecycle.finished_at
+                else None
             ),
         )
-        if cursor.rowcount != 1:
-            raise RunNotFoundError(state.run_id)
+        if rowcount != 1:
+            raise RunNotFoundError(state.identity.run_id)
 
     def _append_sync(
         self,
@@ -728,10 +719,7 @@ class SQLiteRunStore(RuntimeStore):
                 [event],
                 start_sequence=expected_sequence + 1,
             )[0]
-            connection.execute(
-                "UPDATE runs SET last_event_sequence = ? WHERE run_id = ?",
-                (stored.sequence, str(event.run_id)),
-            )
+            update_event_sequence(connection, event.run_id, stored.sequence)
             return stored
 
         return self._transaction(append)
@@ -745,35 +733,13 @@ class SQLiteRunStore(RuntimeStore):
     ) -> list[RunEvent]:
         with self._connect() as connection:
             self._require_run(connection, run_id)
-            sql = (
-                "SELECT * FROM run_events WHERE run_id = ? AND sequence > ? "
-                "ORDER BY sequence ASC"
+            rows = select_events(
+                connection,
+                run_id,
+                after_sequence=after_sequence,
+                limit=limit,
             )
-            parameters: tuple[Any, ...] = (str(run_id), after_sequence)
-            if limit is not None:
-                sql += " LIMIT ?"
-                parameters += (limit,)
-            rows = connection.execute(sql, parameters).fetchall()
-            return [self._event_from_row(row) for row in rows]
-
-    def _event_from_row(self, row: sqlite3.Row) -> RunEvent:
-        self._require_supported_data_version("event", row["schema_version"])
-        try:
-            return RunEvent(
-                run_id=row["run_id"],
-                schema_version=row["schema_version"],
-                sequence=row["sequence"],
-                event_id=row["event_id"],
-                type=row["type"],
-                occurred_at=row["occurred_at"],
-                payload=json.loads(row["payload_json"]),
-                artifacts=_ARTIFACTS_ADAPTER.validate_json(row["artifacts_json"]),
-                step_number=row["step_number"],
-                span_id=row["span_id"],
-                parent_span_id=row["parent_span_id"],
-            )
-        except (ValidationError, ValueError, json.JSONDecodeError) as exc:
-            raise CorruptStoredDataError(f"Invalid stored event: {exc}") from exc
+            return [decode_event(row) for row in rows]
 
     def _save_snapshot_sync(
         self,
@@ -809,10 +775,7 @@ class SQLiteRunStore(RuntimeStore):
                 created_at=self._clock(),
             )
             self._insert_snapshot(connection, stored)
-            connection.execute(
-                "UPDATE runs SET latest_snapshot_version = ? WHERE run_id = ?",
-                (stored.version, str(snapshot.run_id)),
-            )
+            update_snapshot_version(connection, snapshot.run_id, stored.version)
             return stored
 
         return self._transaction(save)
@@ -829,13 +792,8 @@ class SQLiteRunStore(RuntimeStore):
             state=snapshot.state,
             recovery_context=snapshot.recovery_context,
         )
-        connection.execute(
-            """
-            INSERT INTO run_snapshots (
-                run_id, version, snapshot_id, event_sequence,
-                schema_version, snapshot_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
+        insert_snapshot(
+            connection,
             (
                 str(snapshot.run_id),
                 snapshot.version,
@@ -850,48 +808,20 @@ class SQLiteRunStore(RuntimeStore):
     def _load_latest_sync(self, run_id: UUID) -> RunSnapshot | None:
         with self._connect() as connection:
             self._require_run(connection, run_id)
-            row = connection.execute(
-                """
-                SELECT * FROM run_snapshots
-                WHERE run_id = ? ORDER BY version DESC LIMIT 1
-                """,
-                (str(run_id),),
-            ).fetchone()
-            return self._snapshot_from_row(row) if row is not None else None
-
-    def _snapshot_from_row(self, row: sqlite3.Row) -> RunSnapshot:
-        self._require_supported_data_version("snapshot", row["schema_version"])
-        try:
-            envelope = NewRunSnapshot.model_validate_json(row["snapshot_json"])
-            if (
-                str(envelope.run_id) != row["run_id"]
-                or envelope.event_sequence != row["event_sequence"]
-                or envelope.schema_version != row["schema_version"]
-            ):
-                raise ValueError("Snapshot columns do not match stored payload")
-            return RunSnapshot(
-                **envelope.model_dump(),
-                snapshot_id=row["snapshot_id"],
-                version=row["version"],
-                created_at=row["created_at"],
-            )
-        except (ValidationError, ValueError) as exc:
-            raise CorruptStoredDataError(f"Invalid stored snapshot: {exc}") from exc
+            row = select_latest_snapshot(connection, run_id)
+            return decode_snapshot(row) if row is not None else None
 
     def _latest_snapshot_version(
         self,
         connection: sqlite3.Connection,
         run_id: UUID,
     ) -> int:
-        row = connection.execute(
-            "SELECT latest_snapshot_version FROM runs WHERE run_id = ?",
-            (str(run_id),),
-        ).fetchone()
+        row = latest_positions(connection, run_id)
         if row is None:
             raise RunNotFoundError(run_id)
         return int(row["latest_snapshot_version"])
 
-    def _get_approval_sync(self, approval_id: UUID) -> ApprovalRecord:
+    def _get_approval_sync(self, approval_id: UUID) -> StoredApproval:
         with self._connect() as connection:
             return self._get_approval(connection, approval_id)
 
@@ -899,107 +829,31 @@ class SQLiteRunStore(RuntimeStore):
         self,
         connection: sqlite3.Connection,
         approval_id: UUID,
-    ) -> ApprovalRecord:
-        row = connection.execute(
-            "SELECT * FROM approvals WHERE approval_id = ?",
-            (str(approval_id),),
-        ).fetchone()
+    ) -> StoredApproval:
+        row = select_approval(connection, approval_id)
         if row is None:
             raise ApprovalConflictError(f"Approval not found: {approval_id}")
-        return self._approval_from_row(row)
+        return decode_approval(row)
 
     def _get_approval_for_run(
         self,
         connection: sqlite3.Connection,
         run_id: UUID,
         approval_id: UUID,
-    ) -> ApprovalRecord:
-        row = connection.execute(
-            "SELECT * FROM approvals WHERE approval_id = ? AND run_id = ?",
-            (str(approval_id), str(run_id)),
-        ).fetchone()
+    ) -> StoredApproval:
+        row = select_approval_for_run(connection, run_id, approval_id)
         if row is None:
             raise ApprovalConflictError(
                 f"Approval {approval_id} does not belong to run {run_id}"
             )
-        return self._approval_from_row(row)
+        return decode_approval(row)
 
-    def _approval_from_row(self, row: sqlite3.Row) -> ApprovalRecord:
-        self._require_supported_data_version("approval", row["schema_version"])
-        try:
-            record = ApprovalRecord(
-                request=json.loads(row["request_json"]),
-                decision=json.loads(row["decision_json"]),
-                resolution=(
-                    json.loads(row["resolution_json"])
-                    if row["resolution_json"] is not None
-                    else None
-                ),
-                version=row["version"],
-                request_event_sequence=row["request_event_sequence"],
-                resolution_event_sequence=row["resolution_event_sequence"],
-                authorization_invalidated_event_sequence=row[
-                    "authorization_invalidated_event_sequence"
-                ],
-            )
-            if (
-                str(record.request.approval_id) != row["approval_id"]
-                or str(record.request.run_id) != row["run_id"]
-                or str(record.decision.decision_id) != row["decision_id"]
-                or _timestamp(record.request.requested_at) != row["requested_at"]
-                or _timestamp(record.request.expires_at) != row["expires_at"]
-                or (
-                    record.resolution.outcome.value
-                    if record.resolution is not None
-                    else None
-                )
-                != row["outcome"]
-            ):
-                raise ValueError("Approval columns do not match stored payload")
-            return record
-        except (ValidationError, ValueError, json.JSONDecodeError) as exc:
-            raise CorruptStoredDataError(f"Invalid stored approval: {exc}") from exc
-
-    def _list_pending_approvals_sync(self) -> list[ApprovalRecord]:
+    def _list_pending_approvals_sync(self) -> list[StoredApproval]:
         with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT * FROM approvals
-                WHERE outcome IS NULL
-                ORDER BY requested_at, approval_id
-                """
-            ).fetchall()
-            return [self._approval_from_row(row) for row in rows]
-
-    @staticmethod
-    def _require_supported_data_version(kind: str, version: int) -> None:
-        supported = 2 if kind == "event" else 1
-        if version > supported:
-            raise UnsupportedStorageVersionError(
-                f"Stored {kind} schema version {version} is newer than supported "
-                f"version {supported}"
-            )
-        if version < 1:
-            raise CorruptStoredDataError(
-                f"Stored {kind} schema version must be positive, found {version}"
-            )
-
-    @staticmethod
-    def _load_recovery_context(value: str) -> RunRecoveryContext:
-        raw = json.loads(value)
-        version = raw.get("schema_version") if isinstance(raw, dict) else None
-        if version != 2:
-            raise UnsupportedStorageVersionError(
-                f"Stored recovery context schema version {version} is unsupported"
-            )
-        return RunRecoveryContext.model_validate(raw)
+            return [
+                decode_approval(row) for row in select_pending_approvals(connection)
+            ]
 
     def _require_run(self, connection: sqlite3.Connection, run_id: UUID) -> None:
-        if (
-            connection.execute(
-                "SELECT 1 FROM runs WHERE run_id = ?",
-                (str(run_id),),
-            ).fetchone()
-            is None
-        ):
+        if not run_exists(connection, run_id):
             raise RunNotFoundError(run_id)

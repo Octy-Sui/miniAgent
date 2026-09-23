@@ -2,18 +2,16 @@
 # Created: 2026-09-11 00:00:25
 # Author : octy Sui
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict
 
-
-class ModelTarget(BaseModel):
-    provider: str
-    model: str
+from miniagent.models.config import GenerationOptions, ModelTarget
 
 
 class AgentSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     name: str
     system_prompt: str
     model: ModelTarget
-    allowed_tools: list[str] = Field(default_factory=list)
-    temperature: float | None = None
-    max_output_tokens: int | None = Field(default=None, ge=1)
+    generation: GenerationOptions = GenerationOptions()
+    allowed_tools: tuple[str, ...] = ()

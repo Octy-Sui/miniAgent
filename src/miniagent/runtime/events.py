@@ -1,23 +1,14 @@
-# File   : events.py
-# Created: 2026-09-11 18:44:27
-# Author : octy Sui
-
 from collections.abc import Awaitable
 from enum import StrEnum
-from typing import Literal, Protocol
-from uuid import UUID
+from typing import Annotated, Literal, Protocol
+from uuid import UUID, uuid4
 
-from pydantic import (
-    AwareDatetime,
-    BaseModel,
-    ConfigDict,
-    Field,
-    JsonValue,
-    model_validator,
-)
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
-from miniagent.models.artifact import ArtifactRef
+from miniagent.artifacts.contracts import ArtifactRef
+from miniagent.policy import PolicyDecision
 from miniagent.runtime.tracing import SpanId
+from miniagent.tools.contracts import ToolResult
 
 
 class EventSequenceConflictError(RuntimeError):
@@ -37,38 +28,170 @@ class RunEventType(StrEnum):
     TOOL_END = "tool_end"
     TOOL_EXECUTION_START = "tool_execution_start"
     TOOL_EXECUTION_END = "tool_execution_end"
-    FILE_CHANGED = "file_changed"
-    TEST_COMPLETED = "test_completed"
-    RETRY_SCHEDULED = "retry_scheduled"
-    STALL_DETECTED = "stall_detected"
-    CHECKPOINT_CREATED = "checkpoint_created"
-    ROLLBACK_COMPLETED = "rollback_completed"
-    CONTEXT_COMPACTED = "context_compacted"
+    POLICY_DECIDED = "policy_decided"
     APPROVAL_REQUESTED = "approval_requested"
     APPROVAL_RESOLVED = "approval_resolved"
     APPROVAL_INVALIDATED = "approval_invalidated"
+    EVALUATION_START = "evaluation_start"
     EVALUATION_COMPLETED = "evaluation_completed"
     RUN_FINISHED = "run_finished"
 
-    # Retained so existing event logs remain readable.
-    STATE_TRANSITIONED = "state_transitioned"
-    TOOL_CALLED = "tool_called"
-    TOOL_COMPLETED = "tool_completed"
-    POLICY_DECIDED = "policy_decided"
-    SNAPSHOT_CREATED = "snapshot_created"
+
+class _Payload(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class RunStarted(_Payload):
+    type: Literal[RunEventType.RUN_STARTED] = RunEventType.RUN_STARTED
+
+
+class StepStarted(_Payload):
+    type: Literal[RunEventType.STEP_STARTED] = RunEventType.STEP_STARTED
+
+
+class StepCompleted(_Payload):
+    type: Literal[RunEventType.STEP_COMPLETED] = RunEventType.STEP_COMPLETED
+    failed: bool
+    consecutive_failed_steps: int | None = Field(default=None, ge=0)
+    candidate_output: bool = False
+
+
+class ModelRequested(_Payload):
+    type: Literal[RunEventType.MODEL_REQUESTED] = RunEventType.MODEL_REQUESTED
+    provider: str
+    model: str
+
+
+class ModelResponded(_Payload):
+    type: Literal[RunEventType.MODEL_RESPONDED] = RunEventType.MODEL_RESPONDED
+    finish_reason: str
+    tool_call_count: int = Field(ge=0)
+
+
+class ToolScopePayload(_Payload):
+    call_index: int = Field(ge=0)
+    tool_call_id: str
+    tool_name: str
+
+
+class ToolStarted(ToolScopePayload):
+    type: Literal[RunEventType.TOOL_START] = RunEventType.TOOL_START
+
+
+class ToolEnded(ToolScopePayload):
+    type: Literal[RunEventType.TOOL_END] = RunEventType.TOOL_END
+    status: str
+    error_code: str | None = None
+    reason: str | None = None
+    result: ToolResult | None = None
+
+    @model_validator(mode="after")
+    def validate_result(self) -> "ToolEnded":
+        if self.result is None:
+            return self
+        if self.result.tool_call_id != self.tool_call_id:
+            raise ValueError("Tool end result must match its tool call")
+        if self.result.status.value != self.status:
+            raise ValueError("Tool end status must match its result")
+        result_error_code = (
+            self.result.error.code if self.result.error is not None else None
+        )
+        if result_error_code != self.error_code:
+            raise ValueError("Tool end error code must match its result")
+        return self
+
+
+class ToolExecutionStarted(ToolScopePayload):
+    type: Literal[RunEventType.TOOL_EXECUTION_START] = (
+        RunEventType.TOOL_EXECUTION_START
+    )
+
+
+class ToolExecutionEnded(ToolScopePayload):
+    type: Literal[RunEventType.TOOL_EXECUTION_END] = RunEventType.TOOL_EXECUTION_END
+    status: str
+    error_code: str | None = None
+    reason: str | None = None
+
+
+class PolicyDecided(ToolScopePayload):
+    type: Literal[RunEventType.POLICY_DECIDED] = RunEventType.POLICY_DECIDED
+    decision: PolicyDecision
+
+
+class ApprovalRequested(ToolScopePayload):
+    type: Literal[RunEventType.APPROVAL_REQUESTED] = RunEventType.APPROVAL_REQUESTED
+    approval_id: UUID
+    decision_id: UUID
+
+
+class ApprovalResolved(ToolScopePayload):
+    type: Literal[RunEventType.APPROVAL_RESOLVED] = RunEventType.APPROVAL_RESOLVED
+    approval_id: UUID
+    outcome: str
+
+
+class ApprovalInvalidated(_Payload):
+    type: Literal[RunEventType.APPROVAL_INVALIDATED] = (
+        RunEventType.APPROVAL_INVALIDATED
+    )
+    approval_id: UUID
+    reason: str
+
+
+class EvaluationStart(_Payload):
+    type: Literal[RunEventType.EVALUATION_START] = RunEventType.EVALUATION_START
+
+
+class EvaluationCompleted(_Payload):
+    type: Literal[RunEventType.EVALUATION_COMPLETED] = (
+        RunEventType.EVALUATION_COMPLETED
+    )
+    passed: bool
+
+
+class RunFinished(_Payload):
+    type: Literal[RunEventType.RUN_FINISHED] = RunEventType.RUN_FINISHED
+    status: str
+    reason: str
+
+
+type EventPayload = Annotated[
+    RunStarted
+    | StepStarted
+    | StepCompleted
+    | ModelRequested
+    | ModelResponded
+    | ToolStarted
+    | ToolEnded
+    | ToolExecutionStarted
+    | ToolExecutionEnded
+    | PolicyDecided
+    | ApprovalRequested
+    | ApprovalResolved
+    | ApprovalInvalidated
+    | EvaluationStart
+    | EvaluationCompleted
+    | RunFinished,
+    Field(discriminator="type"),
+]
 
 
 class NewRunEvent(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[2] = 2
+    schema_version: Literal[1] = 1
     run_id: UUID
-    type: RunEventType
-    payload: dict[str, JsonValue] = Field(default_factory=dict)
+    event_id: UUID = Field(default_factory=uuid4)
+    payload: EventPayload
     artifacts: list[ArtifactRef] = Field(default_factory=list)
     step_number: int | None = Field(default=None, ge=1)
     span_id: SpanId | None = None
     parent_span_id: SpanId | None = None
+
+    @property
+    def type(self) -> RunEventType:
+        return self.payload.type
 
     @model_validator(mode="after")
     def validate_trace_scope(self) -> "NewRunEvent":
@@ -76,19 +199,20 @@ class NewRunEvent(BaseModel):
             raise ValueError("Parent span requires a current span")
         if self.parent_span_id == self.span_id and self.span_id is not None:
             raise ValueError("Event span cannot be its own parent")
-        if self.type in {
-            RunEventType.STEP_STARTED,
-            RunEventType.STEP_COMPLETED,
-        }:
+        if isinstance(self.payload, (StepStarted, StepCompleted)):
             if self.step_number is None:
                 raise ValueError("Step event requires a step number")
             if self.span_id is None:
                 raise ValueError("Step event requires a span")
+        if isinstance(self.payload, ToolScopePayload):
+            if self.step_number is None:
+                raise ValueError("Tool-scoped event requires a step number")
+            if self.span_id is None:
+                raise ValueError("Tool-scoped event requires a span")
         return self
 
 
 class RunEvent(NewRunEvent):
-    event_id: UUID
     sequence: int = Field(ge=1)
     occurred_at: AwareDatetime
 

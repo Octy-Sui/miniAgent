@@ -1,3 +1,3 @@
-from miniagent.agents.spec import AgentSpec, ModelTarget
+from miniagent.agents.spec import AgentSpec
 
-__all__ = ["AgentSpec", "ModelTarget"]
+__all__ = ["AgentSpec"]

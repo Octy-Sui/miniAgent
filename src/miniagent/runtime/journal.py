@@ -2,10 +2,15 @@ from collections.abc import Sequence
 from uuid import UUID
 
 from miniagent.policy import ApprovalRequest, ApprovalResolution, PolicyDecision
-from miniagent.runtime.events import NewRunEvent, RunEventType
+from miniagent.runtime.events import (
+    ApprovalInvalidated,
+    ApprovalRequested,
+    ApprovalResolved,
+    NewRunEvent,
+)
 from miniagent.runtime.recording import RunPersistenceError, RunRecorder
 from miniagent.runtime.state import RunState
-from miniagent.storage import (
+from miniagent.runtime.store_contracts import (
     ApprovalExpiredError,
     CreateApproval,
     InvalidateApproval,
@@ -61,9 +66,9 @@ class RunJournal:
                 CreateApproval(
                     request=request,
                     decision=decision,
-                    request_event_index=self._event_index(
+                    request_event_id=self._event_id(
                         events,
-                        RunEventType.APPROVAL_REQUESTED,
+                        ApprovalRequested,
                         request.approval_id,
                     ),
                 )
@@ -90,9 +95,9 @@ class RunJournal:
                         expected_version=self._approval_version(
                             resolution.approval_id
                         ),
-                        resolution_event_index=self._event_index(
+                        resolution_event_id=self._event_id(
                             events,
-                            RunEventType.APPROVAL_RESOLVED,
+                            ApprovalResolved,
                             resolution.approval_id,
                         ),
                     )
@@ -121,9 +126,9 @@ class RunJournal:
                 InvalidateApproval(
                     approval_id=approval_id,
                     expected_version=self._approval_version(approval_id),
-                    invalidated_event_index=self._event_index(
+                    invalidated_event_id=self._event_id(
                         events,
-                        RunEventType.APPROVAL_INVALIDATED,
+                        ApprovalInvalidated,
                         approval_id,
                     ),
                 )
@@ -145,9 +150,9 @@ class RunJournal:
                     expected_version=self._approval_version(
                         approval_resolution.approval_id
                     ),
-                    resolution_event_index=self._event_index(
+                    resolution_event_id=self._event_id(
                         events,
-                        RunEventType.APPROVAL_RESOLVED,
+                        ApprovalResolved,
                         approval_resolution.approval_id,
                     ),
                 )
@@ -168,19 +173,19 @@ class RunJournal:
             ) from exc
 
     @staticmethod
-    def _event_index(
+    def _event_id(
         events: Sequence[NewRunEvent],
-        event_type: RunEventType,
+        payload_type: type[ApprovalRequested | ApprovalResolved | ApprovalInvalidated],
         approval_id: UUID,
-    ) -> int:
+    ) -> UUID:
         matches = [
-            index
-            for index, event in enumerate(events)
-            if event.type is event_type
-            and event.payload.get("approval_id") == str(approval_id)
+            event.event_id
+            for event in events
+            if isinstance(event.payload, payload_type)
+            and event.payload.approval_id == approval_id
         ]
         if len(matches) != 1:
             raise ValueError(
-                f"Expected one {event_type.value} event for approval {approval_id}"
+                f"Expected one {payload_type.__name__} event for approval {approval_id}"
             )
         return matches[0]

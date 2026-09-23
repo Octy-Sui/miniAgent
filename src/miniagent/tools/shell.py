@@ -2,26 +2,24 @@
 # Created: 2026-09-09 17:41:33
 # Author : octy Sui
 
-from typing import Any
-
 from pydantic import Field, JsonValue
 
 from miniagent.environments import Command, ExecutionStatus, Workspace
-from miniagent.models.tool import (
+from miniagent.tools.base import Tool, ToolArguments
+from miniagent.tools.contracts import (
     ToolDefinition,
     ToolError,
-    ToolOutputInfo,
     ToolResult,
     ToolStatus,
 )
-from miniagent.tools import Tool, ToolArguments
+from miniagent.tools.execution_result import tool_result_from_execution
 
 
 class ShellArguments(ToolArguments):
     command: str = Field(min_length=1)
 
 
-class ShellTool(Tool):
+class ShellTool(Tool[ShellArguments]):
     arguments_model = ShellArguments
 
     def __init__(
@@ -41,16 +39,16 @@ class ShellTool(Tool):
         )
 
     @property
-    def policy_metadata(self) -> dict[str, JsonValue]:
-        return super().policy_metadata | {"timeout_seconds": self.timeout}
+    def execution_options(self) -> dict[str, JsonValue]:
+        return {"timeout_seconds": self.timeout}
 
     async def execute(
         self,
-        arguments: dict[str, Any],
+        arguments: ShellArguments,
         *,
         tool_call_id: str,
     ) -> ToolResult:
-        command = arguments["command"]
+        command = arguments.command
 
         result = await self.workspace.execute(
             Command(
@@ -59,17 +57,14 @@ class ShellTool(Tool):
             )
         )
         if result.status is ExecutionStatus.TIMEOUT:
-            return ToolResult(
+            return tool_result_from_execution(
+                result,
                 tool_call_id=tool_call_id,
                 status=ToolStatus.TIMEOUT,
                 content=(f"Command timed out after {self.timeout}s:\n{command}"),
                 error=ToolError(
                     code="COMMAND_TIMEOUT",
                     message="Shell command timed out.",
-                ),
-                output=ToolOutputInfo(
-                    stdout_truncated=result.stdout_truncated,
-                    stderr_truncated=result.stderr_truncated,
                 ),
             )
         exit_code = result.exit_code
@@ -81,7 +76,8 @@ class ShellTool(Tool):
             f"\nexit_code: {exit_code}"
         )
 
-        return ToolResult(
+        return tool_result_from_execution(
+            result,
             tool_call_id=tool_call_id,
             status=(ToolStatus.SUCCESS if exit_code == 0 else ToolStatus.ERROR),
             content=content,
@@ -101,9 +97,5 @@ class ShellTool(Tool):
                     code="COMMAND_FAILED",
                     message=(f"Command exited with code {exit_code}"),
                 )
-            ),
-            output=ToolOutputInfo(
-                stdout_truncated=result.stdout_truncated,
-                stderr_truncated=result.stderr_truncated,
             ),
         )

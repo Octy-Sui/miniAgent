@@ -3,19 +3,18 @@
 # Author : octy Sui
 
 from pathlib import PurePosixPath
-from typing import Any
 
 from pydantic import Field
 
 from miniagent.environments import Command, ExecutionStatus, Workspace
-from miniagent.models.tool import (
+from miniagent.tools.base import Tool, ToolArguments
+from miniagent.tools.contracts import (
     ToolDefinition,
     ToolError,
-    ToolOutputInfo,
     ToolResult,
     ToolStatus,
 )
-from miniagent.tools import Tool, ToolArguments
+from miniagent.tools.execution_result import tool_result_from_execution
 
 
 class ReadFileArguments(ToolArguments):
@@ -25,7 +24,7 @@ class ReadFileArguments(ToolArguments):
     )
 
 
-class ReadFileTool(Tool):
+class ReadFileTool(Tool[ReadFileArguments]):
     arguments_model = ReadFileArguments
 
     def __init__(self, workspace: Workspace) -> None:
@@ -41,11 +40,11 @@ class ReadFileTool(Tool):
 
     async def execute(
         self,
-        arguments: dict[str, Any],
+        arguments: ReadFileArguments,
         *,
         tool_call_id: str,
     ) -> ToolResult:
-        path = arguments["path"]
+        path = arguments.path
 
         relative = PurePosixPath(path)
         if relative.is_absolute() or ".." in relative.parts:
@@ -78,7 +77,8 @@ class ReadFileTool(Tool):
             )
         )
         if result.exit_code == 3:
-            return ToolResult(
+            return tool_result_from_execution(
+                result,
                 tool_call_id=tool_call_id,
                 status=ToolStatus.DENIED,
                 content=f"Access denied: {path}",
@@ -86,13 +86,10 @@ class ReadFileTool(Tool):
                     code="PATH_OUTSIDE_WORKSPACE",
                     message="Resolved path escapes workspace.",
                 ),
-                output=ToolOutputInfo(
-                    stdout_truncated=result.stdout_truncated,
-                    stderr_truncated=result.stderr_truncated,
-                ),
             )
         if result.exit_code == 2:
-            return ToolResult(
+            return tool_result_from_execution(
+                result,
                 tool_call_id=tool_call_id,
                 status=ToolStatus.ERROR,
                 content=f"File not found: {path}",
@@ -100,13 +97,10 @@ class ReadFileTool(Tool):
                     code="FILE_NOT_FOUND",
                     message=f"File does not exist: {path}",
                 ),
-                output=ToolOutputInfo(
-                    stdout_truncated=result.stdout_truncated,
-                    stderr_truncated=result.stderr_truncated,
-                ),
             )
         if "UnicodeDecodeError" in result.stderr:
-            return ToolResult(
+            return tool_result_from_execution(
+                result,
                 tool_call_id=tool_call_id,
                 status=ToolStatus.ERROR,
                 content=f"Cannot read binary file: {path}",
@@ -114,13 +108,10 @@ class ReadFileTool(Tool):
                     code="DECODE_ERROR",
                     message="File is not valid UTF-8 text.",
                 ),
-                output=ToolOutputInfo(
-                    stdout_truncated=result.stdout_truncated,
-                    stderr_truncated=result.stderr_truncated,
-                ),
             )
         if result.status is not ExecutionStatus.SUCCESS:
-            return ToolResult(
+            return tool_result_from_execution(
+                result,
                 tool_call_id=tool_call_id,
                 status=ToolStatus.ERROR,
                 content=f"Cannot read file: {path}\n{result.stderr}",
@@ -128,13 +119,10 @@ class ReadFileTool(Tool):
                     code="READ_FAILED",
                     message=f"Cannot read file: {path}",
                 ),
-                output=ToolOutputInfo(
-                    stdout_truncated=result.stdout_truncated,
-                    stderr_truncated=result.stderr_truncated,
-                ),
             )
         if result.stdout_truncated:
-            return ToolResult(
+            return tool_result_from_execution(
+                result,
                 tool_call_id=tool_call_id,
                 status=ToolStatus.ERROR,
                 content=result.stdout,
@@ -146,13 +134,10 @@ class ReadFileTool(Tool):
                     code="OUTPUT_TRUNCATED",
                     message="File exceeds the workspace output limit.",
                 ),
-                output=ToolOutputInfo(
-                    stdout_truncated=True,
-                    stderr_truncated=result.stderr_truncated,
-                ),
             )
 
-        return ToolResult(
+        return tool_result_from_execution(
+            result,
             tool_call_id=tool_call_id,
             status=ToolStatus.SUCCESS,
             content=result.stdout,
@@ -160,8 +145,4 @@ class ReadFileTool(Tool):
                 "path": path,
                 "size": len(result.stdout.encode()),
             },
-            output=ToolOutputInfo(
-                stdout_truncated=result.stdout_truncated,
-                stderr_truncated=result.stderr_truncated,
-            ),
         )

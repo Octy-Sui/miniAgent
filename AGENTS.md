@@ -8,26 +8,26 @@ Workspace 生命周期。
 
 ## Current execution path
 
-`miniagent` CLI (`src/miniagent/cli/main.py`) → bootstrap/workspace
-(`src/miniagent/cli/bootstrap.py`) → `AgentRuntime`
+`miniagent` CLI (`src/miniagent/cli/main.py`) → bootstrap/application
+(`src/miniagent/cli/bootstrap.py`, `src/miniagent/cli/application.py`) → `AgentRuntime`
 (`src/miniagent/runtime/loop.py`) → provider + `ToolRegistry`/tools → evaluator →
-`RunResult` and optional patch artifact. Default composition wires `QwenProvider`,
+SQLite journal → `ApplicationResult` and optional patch artifact manifest. Default composition wires `QwenProvider`,
 strict tool argument validation, bounded structured tool results, `read_file`, `shell`,
 Local/Docker Workspace, and `PassThroughEvaluator`.
 
-SQLite Run/Event/Snapshot/Approval storage and Event Span-scope persistence are
-implemented, but neither storage nor `src/miniagent/runtime/tracing.py` is wired into
-`AgentRuntime`. Recovery remains contract-only. Treat `docs/blueprint.md` as roadmap,
-not proof of current behavior.
+SQLite Run/Event/Snapshot/Approval storage and Event Span-scope generation/persistence
+are wired into `AgentRuntime`. Trace aggregation/export and cross-process recovery remain
+unimplemented; recovery is contract-only. Treat `docs/blueprint.md` as roadmap, not proof
+of current behavior.
 
 ## Start here
 
-- CLI/config/composition: `src/miniagent/cli/`, `src/miniagent/models/settings.py`
-- Run lifecycle/termination/cancellation/usage: `src/miniagent/runtime/`
-- Model protocol/provider/pricing: `src/miniagent/models/`, `src/miniagent/providers/`
+- CLI/config/composition/finalization: `src/miniagent/cli/`
+- Run lifecycle/termination/cancellation: `src/miniagent/runtime/`
+- Model protocol/provider/pricing: `src/miniagent/models/`, `src/miniagent/providers/`, `src/miniagent/metering/`
 - Workspace isolation/tools/artifacts: `src/miniagent/environments/`,
   `src/miniagent/tools/`, `src/miniagent/artifacts/`
-- Behavioral coverage: matching `tests/test_*.py` modules
+- Behavioral coverage: matching domain directory under `tests/`
 - Detailed task routes and implementation status: `docs/repository-map.md`
 
 ## Source of truth and verified commands

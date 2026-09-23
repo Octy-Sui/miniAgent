@@ -4,16 +4,18 @@
 
 from dataclasses import dataclass
 
-from miniagent.models.model import FinishReason, ModelResponse
-from miniagent.models.tool import ToolResult, ToolStatus
-from miniagent.runtime.state import RunError, RunStatus, TerminationReason
+from miniagent.evaluation import CandidateOutput
+from miniagent.models.protocol import FinishReason, ModelResponse
+from miniagent.runtime.result import RunError, TerminationReason
+from miniagent.runtime.state import RunStatus
+from miniagent.tools.contracts import ToolResult, ToolStatus
 
 
 @dataclass(frozen=True)
 class ModelDecision:
     target: RunStatus
     reason: TerminationReason | None = None
-    candidate_output: str | None = None
+    candidate_output: CandidateOutput | None = None
     error: RunError | None = None
 
 
@@ -48,7 +50,7 @@ def evaluate_model_response(response: ModelResponse) -> ModelDecision | None:
             )
         return ModelDecision(
             target=RunStatus.EVALUATING,
-            candidate_output=response.message.content,
+            candidate_output=CandidateOutput(text=response.message.content),
         )
 
     if response.finish_reason is FinishReason.TOOL_CALL:

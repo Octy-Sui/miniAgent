@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from miniagent.models.tool import ToolError, ToolResult, ToolStatus
 from miniagent.policy import (
     ApprovalHandler,
     ApprovalOutcome,
@@ -20,14 +19,12 @@ from miniagent.runtime.cancellation import (
     CancellationToken,
     await_with_cancellation,
 )
+from miniagent.runtime.config import RuntimeConfig
 from miniagent.runtime.execution import RunExecution, RunTermination
 from miniagent.runtime.journal import ApprovalCommitExpired
-from miniagent.runtime.state import (
-    RunError,
-    RunStatus,
-    RuntimeConfig,
-    TerminationReason,
-)
+from miniagent.runtime.result import RunError, TerminationReason
+from miniagent.runtime.state import RunStatus
+from miniagent.tools.contracts import ToolError, ToolResult, ToolStatus
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +72,7 @@ class ApprovalCoordinator:
         request = ApprovalRequest(
             approval_id=uuid4(),
             decision_id=decision.decision_id,
-            run_id=execution.state.run_id,
+            run_id=execution.state.identity.run_id,
             request_digest=decision.request_digest,
             policy_revision=decision.policy_revision,
             requested_at=now,

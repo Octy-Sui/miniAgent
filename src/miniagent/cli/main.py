@@ -3,71 +3,22 @@
 # Author : octy Sui
 
 import asyncio
-import getpass
 import signal
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
-import orjson
 import typer
 
-from miniagent.agents import ModelTarget
 from miniagent.agents.default import DEFAULT_AGENT
-from miniagent.artifacts import ArtifactRef
-from miniagent.cli.bootstrap import (
-    BootstrapConfig,
-    BootstrappedAgent,
-    bootstrap,
-)
+from miniagent.cli.application import Application, ApplicationResult
+from miniagent.cli.approvals import ConsoleApprovalHandler
+from miniagent.cli.bootstrap import BootstrapConfig, bootstrap
+from miniagent.cli.rendering import print_application_result
 from miniagent.environments import WorkspaceKind
-from miniagent.policy import (
-    ApprovalOutcome,
-    ApprovalRequest,
-    ApprovalResolution,
-    PolicyDecision,
-)
-from miniagent.runtime import (
-    CancellationToken,
-    RunResult,
-    RunStatus,
-)
+from miniagent.models.config import ModelTarget
+from miniagent.runtime import CancellationToken
 
 app = typer.Typer()
-
-
-class ConsoleApprovalHandler:
-    async def resolve(
-        self,
-        request: ApprovalRequest,
-        decision: PolicyDecision,
-    ) -> ApprovalResolution:
-        typer.echo(
-            f"Approval required ({decision.risk}): {decision.input_summary}",
-            err=True,
-        )
-        typer.echo(
-            orjson.dumps(
-                decision.request.arguments,
-                option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS,
-            ).decode(),
-            err=True,
-        )
-        approved = await asyncio.to_thread(
-            typer.confirm,
-            "Allow this tool call?",
-            default=False,
-        )
-        return ApprovalResolution(
-            approval_id=request.approval_id,
-            outcome=(
-                ApprovalOutcome.APPROVED if approved else ApprovalOutcome.REJECTED
-            ),
-            actor_kind="human",
-            actor_id=getpass.getuser(),
-            reason="Approved in the CLI" if approved else "Rejected in the CLI",
-            resolved_at=datetime.now(UTC),
-        )
 
 
 class _ForcedSignalCancellation(Exception):
@@ -76,8 +27,8 @@ class _ForcedSignalCancellation(Exception):
 
 
 async def run_with_signals(
-    agent: BootstrappedAgent,
-) -> tuple[RunResult, signal.Signals | None]:
+    application: Application,
+) -> tuple[ApplicationResult, signal.Signals | None]:
     loop = asyncio.get_running_loop()
     main_task = asyncio.current_task()
     cancellation_token = CancellationToken()
@@ -105,7 +56,7 @@ async def run_with_signals(
         registered_signals.append(handled_signal)
 
     try:
-        result = await agent.run(cancellation_token)
+        result = await application.run(cancellation_token)
         return (
             result,
             received_signal.result() if received_signal.done() else None,
@@ -121,52 +72,6 @@ async def run_with_signals(
 
 def _signal_exit_code(received_signal: signal.Signals) -> int:
     return 128 + received_signal.value
-
-
-def print_patch_artifact(patch_artifact: ArtifactRef | None) -> None:
-    if patch_artifact is not None:
-        typer.echo(f"Patch: {patch_artifact.uri}")
-
-
-def print_run_result(
-    result: RunResult,
-    received_signal: signal.Signals | None,
-    patch_artifact: ArtifactRef | None = None,
-) -> None:
-    if result.status is RunStatus.SUCCEEDED:
-        typer.echo(result.output)
-        typer.echo(
-            "Token usage: "
-            f"total={result.usage.total_tokens} "
-            f"input={result.usage.input_tokens} "
-            f"(+{result.usage.cached_input_tokens} cached) "
-            f"output={result.usage.output_tokens} "
-            f"({result.usage.reasoning_output_tokens} reasoning)"
-        )
-        if result.usage.cached_input_priced_separately:
-            typer.echo(
-                "Cost: "
-                f"total=${result.usage.cost_usd:.8f} "
-                f"uncached_input=${result.usage.input_cost_usd:.8f} "
-                f"cached=${result.usage.cached_input_cost_usd:.8f} "
-                f"output=${result.usage.output_cost_usd:.8f} USD"
-            )
-        else:
-            typer.echo(
-                "Cost: "
-                f"total=${result.usage.cost_usd:.8f} "
-                f"input=${result.usage.input_cost_usd:.8f} "
-                f"output=${result.usage.output_cost_usd:.8f} USD"
-            )
-        print_patch_artifact(patch_artifact)
-        return
-
-    typer.echo(f"Agent stopped: {result.reason}", err=True)
-    if result.error is not None:
-        typer.echo(result.error.message, err=True)
-    print_patch_artifact(patch_artifact)
-    exit_code = _signal_exit_code(received_signal) if received_signal is not None else 1
-    raise typer.Exit(code=exit_code)
 
 
 def parse_config(
@@ -204,14 +109,19 @@ async def main(
     config = parse_config(task, model, workspace, docker_image)
 
     try:
-        async with bootstrap(config) as agent:
-            result, received_signal = await run_with_signals(agent)
+        application = await bootstrap(config)
+        result, received_signal = await run_with_signals(application)
     except _ForcedSignalCancellation as exc:
         raise typer.Exit(code=_signal_exit_code(exc.received_signal)) from None
     except asyncio.CancelledError:
         raise typer.Exit(code=130) from None
 
-    print_run_result(result, received_signal, agent.patch_artifact)
+    print_application_result(
+        result,
+        failure_exit_code=(
+            _signal_exit_code(received_signal) if received_signal is not None else 1
+        ),
+    )
 
 
 @app.command()

@@ -5,7 +5,6 @@
 import asyncio
 import hashlib
 import posixpath
-from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -14,15 +13,15 @@ from time import monotonic
 from uuid import UUID, uuid4
 
 from miniagent.artifacts import ArtifactStore, ArtifactWrite
-from miniagent.environments.workspace import (
+from miniagent.environments.config import ContainerUserPolicy, DockerWorkspaceSpec
+from miniagent.environments.contracts import (
     Command,
-    ContainerUserPolicy,
-    DockerWorkspaceSpec,
     ExecutionResult,
     ExecutionStatus,
     Patch,
     WorkspaceCheckpoint,
 )
+from miniagent.environments.process import decode_output, read_stream, write_stdin
 
 
 class DockerWorkspaceError(RuntimeError):
@@ -64,7 +63,7 @@ class DockerWorkspaceBackend:
         self.max_output_bytes = max_output_bytes
 
     async def create(self, spec: DockerWorkspaceSpec) -> "DockerWorkspace":
-        image_id = await self._resolve_image_id(spec.image)
+        image_id = await self._resolve_image_id(spec.options.image)
         return await self._create_from_image(spec, image_id)
 
     async def _create_from_image(
@@ -116,7 +115,7 @@ class DockerWorkspaceBackend:
             or checkpoint.workdir is None
         ):
             raise ValueError("Docker workspace checkpoint has no image baseline")
-        if checkpoint.workdir != spec.workdir:
+        if checkpoint.workdir != spec.options.workdir:
             raise ValueError("Docker workspace checkpoint uses another workdir")
 
         image_id = await self._resolve_image_id(checkpoint.image_id)
@@ -169,20 +168,20 @@ class DockerWorkspaceBackend:
             "--security-opt",
             "no-new-privileges:true",
             "--pids-limit",
-            str(spec.limits.pids),
+            str(spec.options.limits.pids),
             "--cpus",
-            str(spec.limits.cpu_count),
+            str(spec.options.limits.cpu_count),
             "--memory",
-            f"{spec.limits.memory_mb}m",
+            f"{spec.options.limits.memory_mb}m",
             "--memory-swap",
-            f"{spec.limits.memory_mb}m",
+            f"{spec.options.limits.memory_mb}m",
             "--network",
-            "bridge" if spec.network_enabled else "none",
+            "bridge" if spec.options.network_enabled else "none",
             "--init",
             "--workdir",
-            spec.workdir,
+            spec.options.workdir,
         ]
-        for name, value in sorted(spec.environment.items()):
+        for name, value in sorted(spec.environment_values.items()):
             argv.extend(("--env", f"{name}={value}"))
         argv.extend(
             (
@@ -210,14 +209,14 @@ class DockerWorkspaceBackend:
         await self._require_exec_success(
             container_id,
             ["/bin/sh", "-c", "test -d . && test -w ."],
-            cwd=spec.workdir,
-            action=f"validate writable workspace {spec.workdir!r}",
+            cwd=spec.options.workdir,
+            action=f"validate writable workspace {spec.options.workdir!r}",
         )
-        if spec.user_policy is ContainerUserPolicy.REQUIRE_NON_ROOT:
+        if spec.options.user_policy is ContainerUserPolicy.REQUIRE_NON_ROOT:
             result = await self._require_exec_success(
                 container_id,
                 ["id", "-u"],
-                cwd=spec.workdir,
+                cwd=spec.options.workdir,
                 action="inspect Docker workspace user",
             )
             if result.stdout.decode().strip() == "0":
@@ -230,17 +229,18 @@ class DockerWorkspaceBackend:
         container_id: str,
         spec: DockerWorkspaceSpec,
     ) -> str:
-        git = ["git", "-c", f"safe.directory={spec.workdir}", "-C", spec.workdir]
+        workdir = spec.options.workdir
+        git = ["git", "-c", f"safe.directory={workdir}", "-C", workdir]
         result = await self._require_exec_success(
             container_id,
             [*git, "rev-parse", "--verify", "HEAD^{commit}"],
-            cwd=spec.workdir,
+            cwd=spec.options.workdir,
             action="read workspace base revision",
         )
         status = await self._require_exec_success(
             container_id,
             [*git, "status", "--porcelain", "--untracked-files=all"],
-            cwd=spec.workdir,
+            cwd=spec.options.workdir,
             action="verify workspace base is clean",
         )
         if status.stdout:
@@ -355,12 +355,22 @@ class DockerWorkspaceBackend:
             limit = (
                 self.max_output_bytes if max_output_bytes is None else max_output_bytes
             )
-        stdout_task = asyncio.create_task(self._read_stream(process.stdout, limit))
-        stderr_task = asyncio.create_task(self._read_stream(process.stderr, limit))
+        stdout_task = asyncio.create_task(read_stream(process.stdout, limit))
+        stderr_task = asyncio.create_task(read_stream(process.stderr, limit))
         wait_task = asyncio.create_task(process.wait())
         tasks: list[asyncio.Task[object]] = [stdout_task, stderr_task, wait_task]
         if stdin is not None:
-            tasks.append(asyncio.create_task(self._write_stdin(process, stdin)))
+            tasks.append(
+                asyncio.create_task(
+                    write_stdin(
+                        process,
+                        stdin,
+                        unavailable_error=DockerWorkspaceError(
+                            "Docker process input pipe is unavailable"
+                        ),
+                    )
+                )
+            )
 
         try:
             await asyncio.wait_for(
@@ -388,41 +398,6 @@ class DockerWorkspaceBackend:
             stdout_truncated=stdout_truncated,
             stderr_truncated=stderr_truncated,
         )
-
-    @staticmethod
-    async def _read_stream(
-        stream: asyncio.StreamReader,
-        limit: int | None,
-    ) -> tuple[bytes, bool]:
-        content = bytearray()
-        truncated = False
-        while chunk := await stream.read(64 * 1024):
-            if limit is None:
-                content.extend(chunk)
-                continue
-            remaining = limit - len(content)
-            if remaining > 0:
-                content.extend(chunk[:remaining])
-            if len(chunk) > remaining:
-                truncated = True
-        return bytes(content), truncated
-
-    @staticmethod
-    async def _write_stdin(
-        process: asyncio.subprocess.Process,
-        content: bytes,
-    ) -> None:
-        if process.stdin is None:
-            raise DockerWorkspaceError("Docker process input pipe is unavailable")
-        try:
-            process.stdin.write(content)
-            await process.stdin.drain()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-        finally:
-            process.stdin.close()
-            with suppress(BrokenPipeError, ConnectionResetError):
-                await process.stdin.wait_closed()
 
     @staticmethod
     def _command_error(
@@ -485,8 +460,8 @@ class DockerWorkspace:
                     else ExecutionStatus.ERROR
                 ),
                 exit_code=result.exit_code,
-                stdout=self._decode_output(result.stdout, result.stdout_truncated),
-                stderr=self._decode_output(result.stderr, result.stderr_truncated),
+                stdout=decode_output(result.stdout, result.stdout_truncated),
+                stderr=decode_output(result.stderr, result.stderr_truncated),
                 stdout_truncated=result.stdout_truncated,
                 stderr_truncated=result.stderr_truncated,
                 duration_ms=result.duration_ms,
@@ -497,8 +472,8 @@ class DockerWorkspace:
             self._require_active()
             result = await self.backend._require_exec_success(
                 self.container_id,
-                ["tar", "-C", self.spec.workdir, "-cf", "-", "."],
-                cwd=self.spec.workdir,
+                ["tar", "-C", self.spec.options.workdir, "-cf", "-", "."],
+                cwd=self.spec.options.workdir,
                 action="create workspace checkpoint",
                 capture_all=True,
             )
@@ -511,8 +486,13 @@ class DockerWorkspace:
                     name=f"{checkpoint_id}.tar",
                     media_type="application/x-tar",
                     metadata={
+                        "backend": "docker",
+                        "checkpoint_id": checkpoint_id,
+                        "workspace_id": self.workspace_id,
+                        "revision": revision,
                         "image_id": self.image_id,
-                        "workdir": self.spec.workdir,
+                        "base_revision": self.base_revision,
+                        "workdir": self.spec.options.workdir,
                     },
                 ),
                 result.stdout,
@@ -525,7 +505,7 @@ class DockerWorkspace:
                 created_at=datetime.now(UTC),
                 image_id=self.image_id,
                 base_revision=self.base_revision,
-                workdir=self.spec.workdir,
+                workdir=self.spec.options.workdir,
                 artifact=artifact,
             )
 
@@ -540,7 +520,7 @@ class DockerWorkspace:
                 raise ValueError("Workspace checkpoint uses another Docker image")
             if checkpoint.base_revision != self.base_revision:
                 raise ValueError("Workspace checkpoint uses another Git baseline")
-            if checkpoint.workdir != self.spec.workdir:
+            if checkpoint.workdir != self.spec.options.workdir:
                 raise ValueError("Workspace checkpoint uses another workdir")
 
             content = await self.backend.artifact_store.read(checkpoint.artifact)
@@ -554,7 +534,7 @@ class DockerWorkspace:
                     self.container_id,
                     [
                         "find",
-                        self.spec.workdir,
+                        self.spec.options.workdir,
                         "-mindepth",
                         "1",
                         "-maxdepth",
@@ -566,13 +546,13 @@ class DockerWorkspace:
                         "{}",
                         "+",
                     ],
-                    cwd=self.spec.workdir,
+                    cwd=self.spec.options.workdir,
                     action="clear Docker workspace",
                 )
                 await self.backend._require_exec_success(
                     self.container_id,
-                    ["tar", "-C", self.spec.workdir, "-xf", "-"],
-                    cwd=self.spec.workdir,
+                    ["tar", "-C", self.spec.options.workdir, "-xf", "-"],
+                    cwd=self.spec.options.workdir,
                     action="restore workspace checkpoint",
                     stdin=content,
                 )
@@ -589,22 +569,22 @@ class DockerWorkspace:
             git = [
                 "git",
                 "-c",
-                f"safe.directory={self.spec.workdir}",
+                f"safe.directory={self.spec.options.workdir}",
                 "-C",
-                self.spec.workdir,
+                self.spec.options.workdir,
             ]
             try:
                 await self.backend._require_exec_success(
                     self.container_id,
                     [*git, "read-tree", self.base_revision],
-                    cwd=self.spec.workdir,
+                    cwd=self.spec.options.workdir,
                     environment=environment,
                     action="prepare workspace patch",
                 )
                 await self.backend._require_exec_success(
                     self.container_id,
                     [*git, "add", "-A", "--", "."],
-                    cwd=self.spec.workdir,
+                    cwd=self.spec.options.workdir,
                     environment=environment,
                     action="index workspace changes",
                 )
@@ -620,7 +600,7 @@ class DockerWorkspace:
                         "--",
                         ".",
                     ],
-                    cwd=self.spec.workdir,
+                    cwd=self.spec.options.workdir,
                     environment=environment,
                     action="export workspace patch",
                     capture_all=True,
@@ -637,7 +617,7 @@ class DockerWorkspace:
                         "--",
                         ".",
                     ],
-                    cwd=self.spec.workdir,
+                    cwd=self.spec.options.workdir,
                     environment=environment,
                     action="list workspace changes",
                     capture_all=True,
@@ -646,7 +626,7 @@ class DockerWorkspace:
                 await self.backend._exec(
                     self.container_id,
                     ["rm", "-f", "--", temporary_index],
-                    cwd=self.spec.workdir,
+                    cwd=self.spec.options.workdir,
                 )
 
             return Patch(
@@ -667,7 +647,7 @@ class DockerWorkspace:
             self.state = DockerWorkspaceState.DESTROYED
 
     def _resolve_cwd(self, cwd: str) -> str:
-        base = PurePosixPath(self.spec.workdir)
+        base = PurePosixPath(self.spec.options.workdir)
         requested = PurePosixPath(cwd)
         candidate = requested if requested.is_absolute() else base / requested
         resolved = PurePosixPath(posixpath.normpath(str(candidate)))
@@ -684,10 +664,3 @@ class DockerWorkspace:
     def _require_not_destroyed(self) -> None:
         if self.state is DockerWorkspaceState.DESTROYED:
             raise DockerWorkspaceError("Docker workspace has been destroyed")
-
-    @staticmethod
-    def _decode_output(content: bytes, truncated: bool) -> str:
-        text = content.decode("utf-8", errors="replace")
-        if truncated:
-            return f"{text}\n[output truncated]"
-        return text

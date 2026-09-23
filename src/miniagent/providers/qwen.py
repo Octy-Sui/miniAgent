@@ -7,18 +7,17 @@ from typing import Any
 import orjson
 from openai import AsyncOpenAI
 
-from miniagent.models.model import (
+from miniagent.models.messages import AssistantMessage, Message
+from miniagent.models.protocol import (
     FinishReason,
-    Message,
     ModelRequest,
     ModelResponse,
-    Usage,
+    ModelUsage,
 )
-from miniagent.models.tool import ToolCall
-from miniagent.providers import ModelProvider
+from miniagent.tools.contracts import ToolCall
 
 
-class QwenProvider(ModelProvider):
+class QwenProvider:
     def __init__(
         self,
         api_key: str,
@@ -68,6 +67,16 @@ class QwenProvider(ModelProvider):
         return result
 
     @staticmethod
+    def _parse_arguments(raw: str) -> dict[str, Any]:
+        try:
+            result = orjson.loads(raw)
+        except orjson.JSONDecodeError as exc:
+            raise ValueError(f"Invalid tool arguments: {raw}") from exc
+        if not isinstance(result, dict):
+            raise TypeError("Tool arguments must be a JSON object")
+        return result
+
+    @staticmethod
     def _map_finish_reason(finish_reason: str | None) -> FinishReason:
         """
         Normalize provider-specific finish reason to internal enum.
@@ -103,8 +112,8 @@ class QwenProvider(ModelProvider):
                 }
                 for tool in request.tools
             ],
-            temperature=request.temperature,
-            max_tokens=request.max_output_tokens,
+            temperature=request.generation.temperature,
+            max_tokens=request.generation.max_output_tokens,
         )
         choice = response.choices[0]
         provider_message = choice.message
@@ -118,10 +127,9 @@ class QwenProvider(ModelProvider):
             for call in provider_message.tool_calls or []
         ]
 
-        message = Message(
-            role="assistant",
+        message = AssistantMessage(
             content=provider_message.content,
-            tool_calls=tool_calls,
+            tool_calls=tuple(tool_calls),
         )
 
         prompt_details = (
@@ -134,7 +142,7 @@ class QwenProvider(ModelProvider):
         return ModelResponse(
             message=message,
             finish_reason=self._map_finish_reason(choice.finish_reason),
-            usage=Usage(
+            usage=ModelUsage(
                 input_tokens=response.usage.prompt_tokens,
                 cached_input_tokens=(
                     prompt_details.cached_tokens or 0 if prompt_details else 0

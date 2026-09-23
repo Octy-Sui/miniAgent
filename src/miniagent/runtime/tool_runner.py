@@ -1,11 +1,9 @@
 import logging
 import re
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from miniagent.agents import AgentSpec
-from miniagent.models.tool import ToolCall, ToolError, ToolResult, ToolStatus
 from miniagent.policy import (
     PolicyContext,
     PolicyDecision,
@@ -21,7 +19,9 @@ from miniagent.runtime.cancellation import (
     await_with_cancellation,
 )
 from miniagent.runtime.execution import RunExecution, RunTermination
-from miniagent.runtime.state import RunError, RunStatus, TerminationReason
+from miniagent.runtime.result import RunError, TerminationReason
+from miniagent.runtime.state import RunStatus, ToolBatch
+from miniagent.tools.contracts import ToolCall, ToolError, ToolResult, ToolStatus
 from miniagent.tools.registry import PreparedToolCall, ToolRegistry
 
 _TOOL_ERROR_CODE = re.compile(r"^[A-Z0-9_]{1,64}$")
@@ -54,10 +54,13 @@ class ToolCallRunner:
         self,
         execution: RunExecution,
         agent: AgentSpec,
-        calls: Sequence[ToolCall],
+        batch: ToolBatch | None,
     ) -> ToolBatchOutcome:
+        if batch is None:
+            raise ValueError("Tool execution requires an active batch")
         results: list[ToolResult] = []
-        for call_index, call in enumerate(calls):
+        for call_index in range(batch.next_index, len(batch.calls)):
+            call = batch.calls[call_index]
             if self.cancellation_token.is_cancelled:
                 raise CancellationRequested
             await execution.begin_tool(
@@ -84,7 +87,7 @@ class ToolCallRunner:
                     )
                 else:
                     try:
-                        decision = self._decide_policy(
+                        decision = await self._decide_policy(
                             execution,
                             agent,
                             call_index,
@@ -138,7 +141,7 @@ class ToolCallRunner:
             await execution.complete_tool(result)
         return ToolBatchOutcome(results=results)
 
-    def _decide_policy(
+    async def _decide_policy(
         self,
         execution: RunExecution,
         agent: AgentSpec,
@@ -147,23 +150,23 @@ class ToolCallRunner:
         prepared: PreparedToolCall,
     ) -> PolicyDecision:
         request = build_policy_request(
-            run_id=execution.state.run_id,
-            step_number=execution.state.steps_started,
+            run_id=execution.state.identity.run_id,
+            step_number=execution.state.execution.steps_started,
             call_index=call_index,
             tool_call_id=call.id,
             tool_name=call.name,
-            arguments=prepared.arguments,
+            arguments=prepared.canonical_arguments,
             agent=agent,
             definition=self.tools.definition(call.name),
             context=self.policy_context,
-            tool_policy_metadata=self.tools.policy_metadata(call.name),
+            tool_contract_metadata=self.tools.contract_metadata(call.name),
         )
         decision = make_policy_decision(
             request,
             self.policy_engine,
             decided_at=datetime.now(UTC),
         )
-        execution.record_policy_decision(decision)
+        await execution.record_policy_decision(decision)
         return decision
 
     async def _execute_prepared(
@@ -175,10 +178,7 @@ class ToolCallRunner:
         await execution.begin_tool_execution()
         try:
             result = await await_with_cancellation(
-                prepared.tool.execute(
-                    prepared.arguments,
-                    tool_call_id=call.id,
-                ),
+                prepared.invoke(call.id),
                 self.cancellation_token,
             )
         except CancellationRequested:

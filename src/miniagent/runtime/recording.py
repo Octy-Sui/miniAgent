@@ -2,9 +2,9 @@ from collections.abc import Sequence
 from uuid import UUID, uuid4
 
 from miniagent.runtime.events import NewRunEvent
-from miniagent.runtime.persistence import RunRecoveryContext
+from miniagent.runtime.recovery import RunRecoveryContext
 from miniagent.runtime.state import RunState
-from miniagent.storage.models import (
+from miniagent.runtime.store_contracts import (
     ApprovalChange,
     CommitResult,
     RunCommit,
@@ -73,7 +73,7 @@ class RunRecorder:
             return None
         if self.record is None:
             raise RuntimeError("Run recorder has not been created")
-        if state.run_id != self.run_id:
+        if state.identity.run_id != self.run_id:
             raise ValueError("Recorded state belongs to another run")
 
         pending_events = list(events)

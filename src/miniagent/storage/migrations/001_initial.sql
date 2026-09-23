@@ -64,25 +64,25 @@ CREATE TABLE approvals (
     ),
     requested_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
-    request_event_sequence INTEGER NOT NULL,
-    resolution_event_sequence INTEGER,
-    authorization_invalidated_event_sequence INTEGER,
+    request_event_id TEXT NOT NULL,
+    resolution_event_id TEXT,
+    authorization_invalidated_event_id TEXT,
     UNIQUE (run_id, decision_id),
     CHECK (expires_at > requested_at),
     CHECK (
         (outcome IS NULL AND resolution_json IS NULL
-            AND resolution_event_sequence IS NULL)
+            AND resolution_event_id IS NULL)
         OR (outcome IS NOT NULL AND resolution_json IS NOT NULL
-            AND resolution_event_sequence IS NOT NULL)
+            AND resolution_event_id IS NOT NULL)
     ),
-    CHECK (authorization_invalidated_event_sequence IS NULL
+    CHECK (authorization_invalidated_event_id IS NULL
         OR (outcome IS NOT NULL AND outcome = 'approved')),
-    FOREIGN KEY (run_id, request_event_sequence)
-        REFERENCES run_events(run_id, sequence),
-    FOREIGN KEY (run_id, resolution_event_sequence)
-        REFERENCES run_events(run_id, sequence),
-    FOREIGN KEY (run_id, authorization_invalidated_event_sequence)
-        REFERENCES run_events(run_id, sequence)
+    FOREIGN KEY (run_id, request_event_id)
+        REFERENCES run_events(run_id, event_id),
+    FOREIGN KEY (run_id, resolution_event_id)
+        REFERENCES run_events(run_id, event_id),
+    FOREIGN KEY (run_id, authorization_invalidated_event_id)
+        REFERENCES run_events(run_id, event_id)
 );
 
 CREATE UNIQUE INDEX approvals_one_pending_per_run
@@ -90,7 +90,7 @@ CREATE UNIQUE INDEX approvals_one_pending_per_run
 CREATE INDEX approvals_pending_expiry
     ON approvals(expires_at, approval_id) WHERE outcome IS NULL;
 CREATE INDEX approvals_run_history
-    ON approvals(run_id, request_event_sequence);
+    ON approvals(run_id, request_event_id);
 
 CREATE TRIGGER run_events_no_update
 BEFORE UPDATE ON run_events
@@ -116,4 +116,4 @@ BEGIN
     SELECT RAISE(ABORT, 'run snapshots are immutable');
 END;
 
-PRAGMA user_version = 2;
+PRAGMA user_version = 1;

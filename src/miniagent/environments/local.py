@@ -14,14 +14,15 @@ from time import monotonic
 from uuid import UUID, uuid4
 
 from miniagent.artifacts import ArtifactStore, ArtifactWrite
-from miniagent.environments.workspace import (
+from miniagent.environments.config import LocalWorkspaceSpec
+from miniagent.environments.contracts import (
     Command,
     ExecutionResult,
     ExecutionStatus,
-    LocalWorkspaceSpec,
     Patch,
     WorkspaceCheckpoint,
 )
+from miniagent.environments.process import decode_output, read_stream, write_stdin
 
 
 class LocalWorkspaceError(RuntimeError):
@@ -59,16 +60,16 @@ class LocalWorkspaceBackend:
         self.max_output_bytes = max_output_bytes
 
     async def create(self, spec: LocalWorkspaceSpec) -> "LocalWorkspace":
-        self._validate_source(spec.source_dir)
+        self._validate_source(spec.options.source_dir)
         workspace_id = uuid4().hex
         workspace_dir = self._workspace_dir(spec.run_id, workspace_id)
         repository = workspace_dir / "repo"
         try:
             repository.mkdir(parents=True)
-            paths = await self._source_paths(spec.source_dir)
+            paths = await self._source_paths(spec.options.source_dir)
             await asyncio.to_thread(
                 self._copy_source_files,
-                spec.source_dir,
+                spec.options.source_dir,
                 repository,
                 paths,
             )
@@ -279,12 +280,22 @@ class LocalWorkspaceBackend:
             limit = (
                 self.max_output_bytes if max_output_bytes is None else max_output_bytes
             )
-        stdout_task = asyncio.create_task(self._read_stream(process.stdout, limit))
-        stderr_task = asyncio.create_task(self._read_stream(process.stderr, limit))
+        stdout_task = asyncio.create_task(read_stream(process.stdout, limit))
+        stderr_task = asyncio.create_task(read_stream(process.stderr, limit))
         wait_task = asyncio.create_task(process.wait())
         tasks: list[asyncio.Task[object]] = [stdout_task, stderr_task, wait_task]
         if stdin is not None:
-            tasks.append(asyncio.create_task(self._write_stdin(process, stdin)))
+            tasks.append(
+                asyncio.create_task(
+                    write_stdin(
+                        process,
+                        stdin,
+                        unavailable_error=LocalWorkspaceError(
+                            "Local process input pipe is unavailable"
+                        ),
+                    )
+                )
+            )
 
         try:
             await asyncio.wait_for(asyncio.gather(*tasks), timeout=timeout_seconds)
@@ -317,41 +328,6 @@ class LocalWorkspaceBackend:
         }
         environment.update(overrides or {})
         return environment
-
-    @staticmethod
-    async def _read_stream(
-        stream: asyncio.StreamReader,
-        limit: int | None,
-    ) -> tuple[bytes, bool]:
-        content = bytearray()
-        truncated = False
-        while chunk := await stream.read(64 * 1024):
-            if limit is None:
-                content.extend(chunk)
-                continue
-            remaining = limit - len(content)
-            if remaining > 0:
-                content.extend(chunk[:remaining])
-            if len(chunk) > remaining:
-                truncated = True
-        return bytes(content), truncated
-
-    @staticmethod
-    async def _write_stdin(
-        process: asyncio.subprocess.Process,
-        content: bytes,
-    ) -> None:
-        if process.stdin is None:
-            raise LocalWorkspaceError("Local process input pipe is unavailable")
-        try:
-            process.stdin.write(content)
-            await process.stdin.drain()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-        finally:
-            process.stdin.close()
-            with suppress(BrokenPipeError, ConnectionResetError):
-                await process.stdin.wait_closed()
 
     @staticmethod
     async def _kill_process_group(process: asyncio.subprocess.Process) -> None:
@@ -418,7 +394,7 @@ class LocalWorkspace:
                 result = await self.backend._run(
                     command.argv,
                     cwd=self._resolve_cwd(command.cwd),
-                    environment=self.spec.environment | command.environment,
+                    environment=self.spec.environment_values | command.environment,
                     stdin=command.stdin.encode() if command.stdin is not None else None,
                     timeout_seconds=command.timeout_seconds,
                 )
@@ -439,8 +415,8 @@ class LocalWorkspace:
                     else ExecutionStatus.ERROR
                 ),
                 exit_code=result.exit_code,
-                stdout=self._decode_output(result.stdout, result.stdout_truncated),
-                stderr=self._decode_output(result.stderr, result.stderr_truncated),
+                stdout=decode_output(result.stdout, result.stdout_truncated),
+                stderr=decode_output(result.stderr, result.stderr_truncated),
                 stdout_truncated=result.stdout_truncated,
                 stderr_truncated=result.stderr_truncated,
                 duration_ms=result.duration_ms,
@@ -461,7 +437,14 @@ class LocalWorkspace:
                     type="workspace_checkpoint",
                     name=f"{checkpoint_id}.tar",
                     media_type="application/x-tar",
-                    metadata={"backend": "local"},
+                    metadata={
+                        "backend": "local",
+                        "checkpoint_id": checkpoint_id,
+                        "workspace_id": self.workspace_id,
+                        "revision": revision,
+                        "base_revision": self.base_revision,
+                        "workdir": ".",
+                    },
                 ),
                 content,
             )
@@ -524,7 +507,7 @@ class LocalWorkspace:
         async with self._operation_lock:
             self._require_active()
             temporary_index = self.root.parent / f"index-{uuid4().hex}"
-            environment = self.spec.environment | {
+            environment = self.spec.environment_values | {
                 "GIT_INDEX_FILE": str(temporary_index)
             }
             try:
@@ -626,10 +609,3 @@ class LocalWorkspace:
     def _require_not_destroyed(self) -> None:
         if self.state is LocalWorkspaceState.DESTROYED:
             raise LocalWorkspaceError("Local workspace has been destroyed")
-
-    @staticmethod
-    def _decode_output(content: bytes, truncated: bool) -> str:
-        text = content.decode("utf-8", errors="replace")
-        if truncated:
-            return f"{text}\n[output truncated]"
-        return text

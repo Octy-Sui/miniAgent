@@ -15,26 +15,31 @@ from miniagent.environments.local import (
     LocalWorkspaceError,
     LocalWorkspaceState,
 )
-from miniagent.environments.workspace import (
-    Command,
+from miniagent.environments.config import (
     ContainerUserPolicy,
+    DockerOptions,
     DockerWorkspaceSpec,
+    LocalOptions,
+    LocalWorkspaceSpec,
+    ResourceLimits,
+    WorkspaceKind,
+    WorkspaceSpec,
+)
+from miniagent.environments.contracts import (
+    Command,
     ExecutionResult,
     ExecutionStatus,
-    LocalWorkspaceSpec,
     Patch,
-    ResourceLimits,
     Workspace,
     WorkspaceBackend,
     WorkspaceCheckpoint,
-    WorkspaceKind,
-    WorkspaceSpec,
 )
 
 __all__ = [
     "Command",
     "ContainerUserPolicy",
     "DockerCommandError",
+    "DockerOptions",
     "DockerWorkspace",
     "DockerWorkspaceBackend",
     "DockerWorkspaceError",
@@ -43,6 +48,7 @@ __all__ = [
     "ExecutionResult",
     "ExecutionStatus",
     "LocalWorkspace",
+    "LocalOptions",
     "LocalWorkspaceBackend",
     "LocalWorkspaceError",
     "LocalWorkspaceSpec",

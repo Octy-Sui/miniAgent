@@ -6,26 +6,24 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from miniagent.agents import AgentSpec
-from miniagent.models import PriceConfig
-from miniagent.models.model import Message, ModelRequest
+from miniagent.evaluation import EvaluationRequest, Evaluator, PassThroughEvaluator
+from miniagent.metering.pricing import PriceConfig
+from miniagent.metering.usage import calculate_request_cost
+from miniagent.models.messages import SystemMessage, UserMessage
+from miniagent.models.protocol import ModelProvider, ModelRequest
 from miniagent.policy import (
     ApprovalHandler,
     DefaultPolicyEngine,
     PolicyContext,
     PolicyEngine,
 )
-from miniagent.providers import ModelProvider
 from miniagent.runtime.approval import ApprovalCoordinator
 from miniagent.runtime.cancellation import (
     CancellationRequested,
     CancellationToken,
     await_with_cancellation,
 )
-from miniagent.runtime.evaluator import (
-    EvaluationRequest,
-    Evaluator,
-    PassThroughEvaluator,
-)
+from miniagent.runtime.config import RuntimeConfig
 from miniagent.runtime.execution import (
     ContinueRun,
     EvaluateCandidate,
@@ -35,19 +33,17 @@ from miniagent.runtime.execution import (
     TerminateRun,
 )
 from miniagent.runtime.journal import RunJournal
-from miniagent.runtime.persistence import RunRecoveryContext
-from miniagent.runtime.recording import RunRecorder, RuntimeStore
+from miniagent.runtime.recording import RunRecorder
+from miniagent.runtime.recovery import RunRecoveryContext
+from miniagent.runtime.result import RunError, RunResult, TerminationReason
 from miniagent.runtime.state import (
-    RunError,
-    RunResult,
     RunState,
     RunStatus,
-    RuntimeConfig,
-    TerminationReason,
+    create_run_state,
 )
+from miniagent.runtime.store_contracts import RuntimeStore
 from miniagent.runtime.termination import evaluate_model_response
 from miniagent.runtime.tool_runner import ToolCallRunner
-from miniagent.runtime.usage import calculate_request_cost
 from miniagent.tools.registry import ToolRegistry
 
 
@@ -94,23 +90,22 @@ class AgentRuntime:
             self.pricing.price_for(agent.model.provider, agent.model.model)
 
         now = datetime.now(UTC)
-        state = RunState(
+        state = create_run_state(
             run_id=run_id or uuid4(),
             task=task,
-            agent_spec=agent,
-            config=self.config,
-            messages=[
-                Message(role="system", content=agent.system_prompt),
-                Message(role="user", content=task),
-            ],
+            agent_spec=agent.model_copy(deep=True),
+            config=self.config.model_copy(deep=True),
+            messages=(
+                SystemMessage(content=agent.system_prompt),
+                UserMessage(content=task),
+            ),
             created_at=now,
-            updated_at=now,
         )
         execution = await RunExecution.start(
             state,
             RunJournal(
                 RunRecorder(
-                    run_id=state.run_id,
+                    run_id=state.identity.run_id,
                     store=self.run_store,
                     recovery_context=recovery_context,
                 )
@@ -206,9 +201,7 @@ class AgentRuntime:
         await execution.record_model_response(
             response,
             request_cost,
-            pending_tool_calls=(
-                response.message.tool_calls if decision is None else None
-            ),
+            tool_calls=(response.message.tool_calls if decision is None else None),
         )
         if decision is not None:
             if decision.target is RunStatus.FAILED:
@@ -230,7 +223,7 @@ class AgentRuntime:
         tool_outcome = await tools.execute(
             execution,
             agent,
-            execution.state.pending_tool_calls,
+            execution.state.execution.tool_batch,
         )
         if tool_outcome.termination is not None:
             return TerminateRun(tool_outcome.termination)
@@ -244,15 +237,15 @@ class AgentRuntime:
         execution: RunExecution,
         outcome: EvaluateCandidate,
     ) -> TerminateRun:
-        candidate_output = outcome.candidate_output
-        await execution.begin_evaluation(candidate_output)
+        candidate = outcome.candidate_output
+        await execution.begin_evaluation(candidate.text)
         try:
             evaluation = await await_with_cancellation(
                 self.evaluator.evaluate(
                     EvaluationRequest(
-                        run_id=execution.state.run_id,
-                        task=execution.state.task,
-                        candidate_output=candidate_output,
+                        run_id=execution.state.identity.run_id,
+                        task=execution.state.identity.task,
+                        candidate=candidate,
                     )
                 ),
                 self.cancellation_token,
@@ -273,7 +266,7 @@ class AgentRuntime:
 
         if evaluation.passed:
             final_output = (
-                evaluation.output if evaluation.output is not None else candidate_output
+                evaluation.output if evaluation.output is not None else candidate.text
             )
             termination = RunTermination(
                 status=RunStatus.SUCCEEDED,
@@ -283,7 +276,15 @@ class AgentRuntime:
             termination = RunTermination(
                 status=RunStatus.FAILED,
                 reason=TerminationReason.EVALUATION_FAILED,
-                error=evaluation.error,
+                error=(
+                    RunError(
+                        code=evaluation.error.code,
+                        message=evaluation.error.message,
+                        retryable=evaluation.error.retryable,
+                    )
+                    if evaluation.error is not None
+                    else None
+                ),
             )
             final_output = None
         execution.stage_evaluation_result(
@@ -301,8 +302,9 @@ class AgentRuntime:
     def _build_request(self, agent: AgentSpec, state: RunState) -> ModelRequest:
         return ModelRequest(
             model=agent.model.model,
-            messages=state.messages,
-            tools=self.tools.definitions(agent.allowed_tools),
-            max_output_tokens=agent.max_output_tokens,
-            temperature=agent.temperature,
+            messages=tuple(
+                message.model_copy(deep=True) for message in state.conversation.messages
+            ),
+            tools=tuple(self.tools.definitions(agent.allowed_tools)),
+            generation=agent.generation.model_copy(deep=True),
         )
