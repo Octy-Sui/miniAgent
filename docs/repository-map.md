@@ -1,11 +1,10 @@
 # miniAgent Repository Map
 
-<!-- repo-map: verified-against d72dbd5 + refactor working tree | mapped 2026-09-23 -->
+<!-- repo-map: provisional-against 1ea696a | mapped 2026-09-23 -->
 
 本文件是按需读取的 implementation map。状态含义：
 
 - `wired`：已从当前 composition root 或 Run execution path 接入。
-- `implemented`：已有可用实现和测试，但尚未接入当前 composition root 或 Run execution path。
 - `contract-only`：已有类型、协议或独立实现，但当前执行链未使用。
 - `roadmap`：只在设计文档中描述。
 
@@ -36,7 +35,9 @@ miniagent CLI
 
 Composition root 位于 `src/miniagent/cli/bootstrap.py`；应用生命周期位于
 `src/miniagent/cli/application.py`；CLI signal 和 exit semantics 位于
-`src/miniagent/cli/main.py`；loop 位于 `src/miniagent/runtime/loop.py`。
+`src/miniagent/cli/main.py`；loop 位于 `src/miniagent/runtime/loop.py`，
+状态转换与持久化提交分别位于 `src/miniagent/runtime/transitions.py` 和
+`src/miniagent/runtime/journal.py`。
 
 ## Capability status
 
@@ -52,9 +53,9 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；应用生命周期位
 | wired | Content-addressed artifacts、atomic manifest、Run query 与应用层 patch persistence | `src/miniagent/artifacts/`, `src/miniagent/cli/application.py`, `tests/artifacts/` |
 | wired | Evaluator interface with default pass-through implementation | `src/miniagent/evaluation/`, `src/miniagent/runtime/loop.py` |
 | contract-only | Workspace checkpoint/restore implementations, not orchestrated by the Run loop | `src/miniagent/environments/local.py`, `src/miniagent/environments/docker.py` |
-| wired | SQLite Run/Event/Snapshot/Approval 存储、原子提交和单 Run 连续事件序列 | `src/miniagent/runtime/journal.py`, `src/miniagent/storage/`, `tests/storage/` |
+| wired | SQLite Run/Event/Snapshot/Approval 存储、原子提交、单 Run 连续事件序列和 recovery context 持久化 | `src/miniagent/runtime/recording.py`, `src/miniagent/storage/`, `tests/storage/test_sqlite.py` |
 | wired | Run 内 Span scope 生成与 Event scope 持久化；尚无 Trace 聚合、导出或查询界面 | `src/miniagent/runtime/trace_context.py`, `src/miniagent/runtime/events.py`, `src/miniagent/storage/sqlite.py` |
-| contract-only | Recovery decision protocol and persistent Runtime integration | `src/miniagent/runtime/recovery.py`, `docs/sqlite-storage-design.md` |
+| contract-only | Recovery decision protocol；跨进程恢复尚未编排 | `src/miniagent/runtime/recovery.py`, `src/miniagent/runtime/loop.py` |
 | roadmap | 跨进程审批恢复、context compaction、dashboard、SWE-bench orchestration | `docs/blueprint.md`, `docs/policy-engine-design.md` |
 
 ## Task routes
@@ -62,9 +63,9 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；应用生命周期位
 | Task | Start here | Then inspect | Tests |
 | --- | --- | --- | --- |
 | CLI option, output, signal, exit code | `src/miniagent/cli/main.py` | `src/miniagent/cli/rendering.py`, `src/miniagent/cli/application.py` | `tests/cli/` |
-| Agent prompt, model target, tool permissions | `src/miniagent/agents/spec.py` | `src/miniagent/agents/default.py`, `src/miniagent/models/config.py` | `tests/models/test_protocol.py`, `tests/runtime/test_runtime.py` |
+| Agent contract, default prompt/model, tool permissions | `src/miniagent/agents/spec.py` | `src/miniagent/agents/default_agent.py`, `src/miniagent/models/config.py` | `tests/cli/test_main.py`, `tests/runtime/test_runtime.py` |
 | Provider request/response mapping | `src/miniagent/providers/qwen.py` | `src/miniagent/models/messages.py`, `src/miniagent/models/protocol.py` | `tests/models/test_protocol.py`, `tests/runtime/test_runtime.py` |
-| Run state or lifecycle | `src/miniagent/runtime/state.py` | `src/miniagent/runtime/transitions.py`, `src/miniagent/runtime/loop.py` | `tests/runtime/test_runtime.py` |
+| Run state or lifecycle | `src/miniagent/runtime/state.py` | `src/miniagent/runtime/transitions.py`, `src/miniagent/runtime/execution.py`, `src/miniagent/runtime/loop.py` | `tests/runtime/test_runtime.py` |
 | Cancellation | `src/miniagent/runtime/cancellation.py` | `src/miniagent/runtime/loop.py`, `src/miniagent/cli/main.py` | `tests/runtime/test_runtime.py`, `tests/cli/test_main.py` |
 | Evaluation | `src/miniagent/evaluation/` | `src/miniagent/runtime/loop.py` | `tests/runtime/test_runtime.py`, `tests/models/test_protocol.py` |
 | Pricing and token usage | `src/miniagent/metering/` | `src/miniagent/runtime/execution.py`, `config/model_pricing.toml` | `tests/metering/test_pricing.py`, `tests/cli/test_main.py` |
@@ -72,11 +73,11 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；应用生命周期位
 | Local execution/isolation | `src/miniagent/environments/local.py` | `src/miniagent/environments/process.py`, `src/miniagent/tools/` | `tests/environments/test_local.py` |
 | Docker execution/isolation | `src/miniagent/environments/docker.py` | `src/miniagent/environments/process.py`, `src/miniagent/environments/config.py` | `tests/environments/test_docker.py` |
 | Tool registration, arguments, result/error behavior | `src/miniagent/tools/registry.py`, `src/miniagent/tools/contracts.py` | `src/miniagent/tools/read_file.py`, `src/miniagent/tools/shell.py`, `src/miniagent/tools/rendering.py` | `tests/tools/test_contracts.py`, `tests/runtime/test_runtime.py` |
-| Policy and same-process approval | `src/miniagent/policy/` | `src/miniagent/runtime/tool_runner.py`, `src/miniagent/runtime/approval.py` | `tests/policy/test_policy.py` |
+| Policy and same-process approval | `src/miniagent/policy/` | `src/miniagent/runtime/tool_runner.py`, `src/miniagent/runtime/approval.py`, `src/miniagent/cli/console_approval.py` | `tests/policy/test_policy.py` |
 | Patch/artifact persistence | `src/miniagent/artifacts/` | `src/miniagent/cli/application.py`, Workspace `export_patch()` | `tests/artifacts/test_file_store.py`, `tests/cli/test_application.py` |
-| SQLite Run/Event/Snapshot/Approval persistence | `src/miniagent/storage/sqlite.py` | `src/miniagent/storage/codecs.py`, `src/miniagent/storage/queries/`, `src/miniagent/runtime/store_contracts.py` | `tests/storage/test_sqlite.py` |
+| SQLite Run/Event/Snapshot/Approval persistence | `src/miniagent/runtime/journal.py` | `src/miniagent/runtime/recording.py`, `src/miniagent/runtime/store_contracts.py`, `src/miniagent/storage/sqlite.py`, `src/miniagent/storage/codecs.py`, `src/miniagent/storage/queries/` | `tests/storage/test_sqlite.py` |
 | Run Trace/Span and typed Event scope | `src/miniagent/runtime/tracing.py` | `src/miniagent/runtime/trace_context.py`, `src/miniagent/runtime/events.py` | `tests/models/test_protocol.py`, `tests/storage/test_sqlite.py` |
-| Recovery contracts | `src/miniagent/runtime/recovery.py` | `src/miniagent/environments/persistence.py`, `docs/sqlite-storage-design.md` | `tests/models/test_protocol.py` |
+| Recovery context persistence and decision contracts | `src/miniagent/runtime/recovery.py` | `src/miniagent/cli/bootstrap.py`, `src/miniagent/runtime/recording.py`, `src/miniagent/environments/persistence.py` | `tests/storage/test_sqlite.py`, `tests/models/test_protocol.py` |
 | Codex repository context | `.agents/skills/repo-map/SKILL.md` | `AGENTS.md`, `docs/repository-map.md` | `$repo-map refresh`, skill validator |
 
 ## Load-bearing invariants and gotchas
@@ -110,7 +111,7 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；应用生命周期位
 
 ## Build, test, and run
 
-Verified on the mapped working tree:
+Verified on the mapped working tree (130 passed, 1 skipped):
 
 ```shell
 UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest -q

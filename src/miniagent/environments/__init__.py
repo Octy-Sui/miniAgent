@@ -2,19 +2,6 @@
 # Created: 2026-09-11 18:42:33
 # Author : octy Sui
 
-from miniagent.environments.docker import (
-    DockerCommandError,
-    DockerWorkspace,
-    DockerWorkspaceBackend,
-    DockerWorkspaceError,
-    DockerWorkspaceState,
-)
-from miniagent.environments.local import (
-    LocalWorkspace,
-    LocalWorkspaceBackend,
-    LocalWorkspaceError,
-    LocalWorkspaceState,
-)
 from miniagent.environments.config import (
     ContainerUserPolicy,
     DockerOptions,
@@ -34,6 +21,19 @@ from miniagent.environments.contracts import (
     WorkspaceBackend,
     WorkspaceCheckpoint,
 )
+from miniagent.environments.docker import (
+    DockerCommandError,
+    DockerWorkspace,
+    DockerWorkspaceBackend,
+    DockerWorkspaceError,
+    DockerWorkspaceState,
+)
+from miniagent.environments.local import (
+    LocalWorkspace,
+    LocalWorkspaceBackend,
+    LocalWorkspaceError,
+    LocalWorkspaceState,
+)
 
 __all__ = [
     "Command",
@@ -47,8 +47,8 @@ __all__ = [
     "DockerWorkspaceState",
     "ExecutionResult",
     "ExecutionStatus",
-    "LocalWorkspace",
     "LocalOptions",
+    "LocalWorkspace",
     "LocalWorkspaceBackend",
     "LocalWorkspaceError",
     "LocalWorkspaceSpec",

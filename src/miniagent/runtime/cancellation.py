@@ -5,9 +5,6 @@
 import asyncio
 from collections.abc import Awaitable
 from contextlib import suppress
-from typing import TypeVar
-
-T = TypeVar("T")
 
 
 class CancellationRequested(Exception):
@@ -29,7 +26,7 @@ class CancellationToken:
         await self._event.wait()
 
 
-async def await_with_cancellation(
+async def await_with_cancellation[T](
     awaitable: Awaitable[T],
     token: CancellationToken,
 ) -> T:

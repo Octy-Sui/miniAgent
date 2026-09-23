@@ -25,7 +25,7 @@ environments → artifacts.contracts
 | 文件 | 内容及约束 |
 | --- | --- |
 | `spec.py` | `AgentSpec(name, system_prompt, model, generation, allowed_tools)`；嵌套配置冻结，工具许可用 tuple；不拥有模型参数定义 |
-| `default.py` | 默认配置构造及现有简短提示词；调用者不会共享可修改的配置 |
+| `default_agent.py` | 默认配置构造及现有简短提示词；调用者不会共享可修改的配置 |
 | `prompts/default.jinja` | 后续提示词变复杂时才建立，本次不创建 |
 
 ### models

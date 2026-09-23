@@ -4,7 +4,7 @@ from typing import cast
 
 import pytest
 
-from miniagent.agents.default import DEFAULT_AGENT
+from miniagent.agents.default_agent import DEFAULT_AGENT
 from miniagent.artifacts import FileArtifactStore
 from miniagent.cli.bootstrap import (
     BootstrapConfig,

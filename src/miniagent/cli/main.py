@@ -9,10 +9,10 @@ from typing import Annotated
 
 import typer
 
-from miniagent.agents.default import DEFAULT_AGENT
+from miniagent.agents.default_agent import DEFAULT_AGENT
 from miniagent.cli.application import Application, ApplicationResult
-from miniagent.cli.approvals import ConsoleApprovalHandler
 from miniagent.cli.bootstrap import BootstrapConfig, bootstrap
+from miniagent.cli.console_approval import ConsoleApprovalHandler
 from miniagent.cli.rendering import print_application_result
 from miniagent.environments import WorkspaceKind
 from miniagent.models.config import ModelTarget

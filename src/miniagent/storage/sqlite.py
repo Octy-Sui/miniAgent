@@ -35,7 +35,6 @@ from miniagent.runtime.store_contracts import (
     RunCommit,
     RunNotFoundError,
     RunRecord,
-    RuntimeStore,
     StoredApproval,
     UnsupportedStorageVersionError,
 )
@@ -85,7 +84,7 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-class SQLiteRunStore(RuntimeStore):
+class SQLiteRunStore:
     def __init__(
         self,
         path: Path,

@@ -1,5 +1,5 @@
 <!-- repo-map:start -->
-<!-- repo-map: verified-against 0c2c0bd | mapped 2026-09-18 -->
+<!-- repo-map: provisional-against 1ea696a | mapped 2026-09-23 -->
 # Repository Orientation
 
 miniAgent 是 Python 3.13 的最小 Agent Runtime：模型在有界 Step loop 中调用工具，
@@ -10,14 +10,15 @@ Workspace 生命周期。
 
 `miniagent` CLI (`src/miniagent/cli/main.py`) → bootstrap/application
 (`src/miniagent/cli/bootstrap.py`, `src/miniagent/cli/application.py`) → `AgentRuntime`
-(`src/miniagent/runtime/loop.py`) → provider + `ToolRegistry`/tools → evaluator →
+(`src/miniagent/runtime/loop.py`, `src/miniagent/runtime/execution.py`) → provider + `ToolRegistry`/tools → evaluator →
 SQLite journal → `ApplicationResult` and optional patch artifact manifest. Default composition wires `QwenProvider`,
 strict tool argument validation, bounded structured tool results, `read_file`, `shell`,
 Local/Docker Workspace, and `PassThroughEvaluator`.
 
-SQLite Run/Event/Snapshot/Approval storage and Event Span-scope generation/persistence
-are wired into `AgentRuntime`. Trace aggregation/export and cross-process recovery remain
-unimplemented; recovery is contract-only. Treat `docs/blueprint.md` as roadmap, not proof
+SQLite Run/Event/Snapshot/Approval storage, persisted recovery context, and Event
+Span-scope generation are wired into `AgentRuntime`. Recovery decisions, cross-process
+resume, and Trace aggregation/export are not wired (`src/miniagent/runtime/recovery.py`,
+`src/miniagent/runtime/recording.py`). Treat `docs/blueprint.md` as roadmap, not proof
 of current behavior.
 
 ## Start here
