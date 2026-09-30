@@ -222,6 +222,9 @@ class AgentRuntime:
             attempt = CompactionAttempt(attempt=number, usage=response.usage, request_cost=cost, provider_request_id=response.provider_request_id, error_code=response.error.code if response.error else None)
             attempts.append(attempt)
             await execution.record_compaction_attempt(attempt)
+            if self.cancellation_token.is_cancelled:
+                await execution.fail_compaction('COMPACTION_FAILED', 'compaction cancelled', tuple(attempts))
+                raise CancellationRequested
             if response.error is not None:
                 failure = response.error.message
                 retryable = response.error.retryable
@@ -242,6 +245,9 @@ class AgentRuntime:
         except InvalidSummaryError as exc:
             await execution.fail_compaction('COMPACTION_INVALID_SUMMARY', str(exc), tuple(attempts))
             return self._context_failure('COMPACTION_INVALID_SUMMARY', str(exc)) if plan.hard_trigger else old_request
+        if self.cancellation_token.is_cancelled:
+            await execution.fail_compaction('COMPACTION_FAILED', 'compaction cancelled', tuple(attempts))
+            raise CancellationRequested
         await execution.publish_compaction(conversation, plan, attempts=tuple(attempts), new_tokens=new_tokens, summary_input_tokens=summary_tokens, source_snapshot_id=source.snapshot_id if source is not None else None)
         return self._build_request(execution.state)
 
@@ -251,7 +257,11 @@ class AgentRuntime:
         agent: AgentSpec,
         tools: ToolCallRunner,
     ) -> RunOutcome:
+        if self.cancellation_token.is_cancelled:
+            raise CancellationRequested
         request = await self._prepare_request(execution)
+        if self.cancellation_token.is_cancelled:
+            raise CancellationRequested
         if isinstance(request, RunTermination):
             return TerminateRun(request)
         await execution.begin_step(
@@ -273,6 +283,8 @@ class AgentRuntime:
                     return TerminateRun(retry_request)
                 if execution.state.context.current_version == previous_version:
                     return TerminateRun(self._context_failure('COMPACTION_FAILED', 'Provider rejected context and compaction did not publish'))
+                if self.cancellation_token.is_cancelled:
+                    raise CancellationRequested
                 request = retry_request
                 await execution.begin_model_retry()
                 continue

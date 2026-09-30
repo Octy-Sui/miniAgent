@@ -223,3 +223,26 @@ async def test_later_summary_request_contains_previous_summary() -> None:
     assert 'Historical continuation summary' in (request.messages[-1].content or '')
     assert 'done step 4' in (request.messages[-1].content or '')
     assert request.tools == ()
+
+
+async def test_summary_rejects_whitespace_only_next_action() -> None:
+    from miniagent.runtime.context import InvalidSummaryError, validate_summary
+
+    with pytest.raises(InvalidSummaryError):
+        await validate_summary(summary_response(open_items=['   '], next_action='   '), summary_plan(), None)
+
+
+async def test_mixed_source_proof_cannot_hide_false_structured_value(tmp_path) -> None:
+    from dataclasses import replace
+    from miniagent.runtime.context import InvalidSummaryError, validate_summary
+    from miniagent.runtime.snapshots import NewRunSnapshot
+    from miniagent.storage.sqlite import SQLiteRunStore
+
+    plan = replace(summary_plan(), source_snapshot_version=1)
+    store = SQLiteRunStore(tmp_path / 'mixed-proof.sqlite3')
+    await store.initialize()
+    await store.create(plan.state)
+    await store.save(NewRunSnapshot(run_id=plan.state.identity.run_id, state=plan.state, event_sequence=0), expected_version=0)
+    evidence = {'claim':'done step 1', 'excerpt':'done step 1', 'field_path':['1','content'], 'value':'false structured value', 'source':{'kind':'snapshot','run_id':str(plan.state.identity.run_id),'snapshot_version':1,'message_start':2,'message_end':4}}
+    with pytest.raises(InvalidSummaryError, match='source'):
+        await validate_summary(summary_response(verified_evidence=[evidence]), plan, store)

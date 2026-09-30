@@ -315,3 +315,147 @@ async def test_context_limit_retries_same_step_once(tmp_path, second_rejects) ->
     events = await store.list_events(execution.state.identity.run_id)
     assert sum(event.type.value == 'step_started' for event in events) == 1
     assert sum(event.type.value == 'model_requested' for event in events) == 2
+
+
+@pytest.mark.parametrize(('mutation',), [('cleared_version',), ('retained_message',), ('retained_range',)])
+async def test_reload_rejects_rewritten_committed_history(tmp_path, mutation) -> None:
+    import json
+
+    store, journal, plan, state, event = await journal_candidate(tmp_path)
+    await journal.compact(state, event)
+    with sqlite3.connect(store.path) as connection:
+        data = json.loads(connection.execute('SELECT state_json FROM runs').fetchone()[0])
+        if mutation == 'cleared_version': data['context']['current_version'] = None
+        if mutation == 'retained_message': data['conversation']['messages'][4]['content'] = 'rewritten tool result'
+        if mutation == 'retained_range': data['conversation']['completed_steps'][0]['message_start'] = 0
+        connection.execute('UPDATE runs SET state_json=?', (json.dumps(data),))
+    with pytest.raises(ValueError, match='compaction'):
+        await validate_compaction_record(await store.get(state.identity.run_id), store)
+
+
+async def test_cancel_returned_summary_before_publish_or_business_step(tmp_path) -> None:
+    from miniagent.models.protocol import ModelUsage
+    from miniagent.runtime.cancellation import CancellationRequested
+    from miniagent.runtime.approval import ApprovalCoordinator
+    from miniagent.runtime.tool_runner import ToolCallRunner
+    from miniagent.tools.registry import ToolRegistry
+
+    runtime, execution, provider, store = await pipeline(tmp_path)
+    class ReturningCancellationProvider:
+        def __init__(self): self.requests = []
+        async def generate(self, request):
+            self.requests.append(request)
+            runtime.cancellation_token.cancel()
+            return summary_response().model_copy(update={'usage': ModelUsage(input_tokens=10, output_tokens=2, total_tokens=12)})
+    cancelling = ReturningCancellationProvider()
+    runtime.provider = cancelling
+    runner = ToolCallRunner(tools=ToolRegistry([]), policy_engine=runtime.policy_engine, policy_context=runtime.policy_context, approval=ApprovalCoordinator(config=execution.state.definition.config, handler=None, policy_engine=runtime.policy_engine, cancellation_token=runtime.cancellation_token), cancellation_token=runtime.cancellation_token)
+    with pytest.raises(CancellationRequested):
+        await runtime._run_step(execution, execution.state.definition.agent_spec, runner)
+    assert execution.state.execution.steps_started == 6
+    assert execution.state.usage.model_requests == 1
+    assert execution.state.usage.total_tokens == 12
+    assert execution.state.context.current_version is None
+    assert len(cancelling.requests) == 1
+    assert (await store.load_latest(execution.state.identity.run_id)).version == 1
+    events = await store.list_events(execution.state.identity.run_id)
+    assert all(event.type.value not in ('step_started', 'compaction_completed') for event in events)
+
+
+@pytest.mark.parametrize(('unsafe',), [(False,), (True,)])
+async def test_real_summary_capacity_precheck_preserves_safe_business_only(tmp_path, unsafe) -> None:
+    from dataclasses import replace
+    from miniagent.agents import AgentSpec
+    from miniagent.runtime import AgentRuntime
+    from miniagent.runtime.context import QwenPromptTokenEstimator, select_compaction_prefix, build_summary_request
+    from miniagent.runtime.execution import RunExecution, TerminateRun, EvaluateCandidate
+    from miniagent.runtime.state import RunLifecycle, RunDefinition
+    from miniagent.runtime.approval import ApprovalCoordinator
+    from miniagent.runtime.tool_runner import ToolCallRunner
+    from miniagent.tools.registry import ToolRegistry
+    from test_runtime import SuccessfulTool, QueueProvider, final_response
+
+    class DescribedTool(SuccessfulTool):
+        @property
+        def definition(self):
+            return super().definition.model_copy(update={'description':'schema context ' * (900 if unsafe else 1)})
+    registry = ToolRegistry([DescribedTool()])
+    original = summary_plan().state
+    agent = original.definition.agent_spec.model_copy(update={'allowed_tools': ('ok',)})
+    definition = RunDefinition(agent_spec=agent, config=original.definition.config, tool_definitions=tuple(registry.definitions(agent.allowed_tools)), tool_contract_metadata=(registry.contract_metadata('ok'),))
+    state = original.model_copy(update={'definition': definition})
+    estimator = QwenPromptTokenEstimator()
+    def sized_state(size):
+        messages = list(state.conversation.messages)
+        messages[3] = messages[3].model_copy(update={'content': 'x' * size})
+        return state.model_copy(update={'conversation': state.conversation.model_copy(update={'messages': tuple(messages)})})
+    def summary_total(size):
+        candidate = sized_state(size)
+        request = request_for_state(candidate)
+        plan = select_compaction_prefix(candidate, request, estimator, force=True)
+        assert plan is not None
+        plan = replace(plan, source_snapshot_version=1, source_event_sequence=1)
+        return estimator.estimate(build_summary_request(candidate, plan)) + plan.budget.summary_reserve
+    def request_for_state(candidate):
+        from miniagent.models.protocol import ModelRequest
+        return ModelRequest(model='test', messages=candidate.conversation.messages, tools=definition.tool_definitions, generation=agent.generation)
+    low, high = 0, 35000
+    while low < high:
+        middle = (low + high) // 2
+        if summary_total(middle) < 10977: low = middle + 1
+        else: high = middle
+    state = sized_state(low)
+    assert summary_total(low) == 10977
+    old_tokens = estimator.estimate(request_for_state(state))
+    assert (old_tokens > 10000) is unsafe
+    store = SQLiteRunStore(tmp_path / 'real-capacity.sqlite3')
+    await store.initialize()
+    state = state.model_copy(update={'lifecycle': RunLifecycle(updated_at=state.lifecycle.updated_at), 'execution':state.execution.model_copy(update={'cursor':None})})
+    execution = await RunExecution.start(state, RunJournal(RunRecorder(run_id=state.identity.run_id, store=store, recovery_context=None)))
+    provider = QueueProvider([final_response()])
+    runtime = AgentRuntime(provider=provider, tools=registry, estimator=estimator, run_store=store)
+    runner = ToolCallRunner(tools=registry, policy_engine=runtime.policy_engine, policy_context=runtime.policy_context, approval=ApprovalCoordinator(config=definition.config, handler=None, policy_engine=runtime.policy_engine, cancellation_token=runtime.cancellation_token), cancellation_token=runtime.cancellation_token)
+    outcome = await runtime._run_step(execution, agent, runner)
+    assert isinstance(outcome, TerminateRun if unsafe else EvaluateCandidate)
+    if unsafe:
+        assert isinstance(outcome, TerminateRun)
+        assert outcome.termination.error is not None
+        assert outcome.termination.error.code == 'COMPACTION_INPUT_TOO_LARGE'
+    assert len(provider.requests) == (0 if unsafe else 1)
+    assert execution.state.usage.model_requests == (0 if unsafe else 1)
+    assert execution.state.context.current_version is None
+    snapshot = await store.load_latest(state.identity.run_id)
+    assert snapshot is not None
+    assert snapshot.version == 1
+    events = await store.list_events(state.identity.run_id)
+    assert sum(event.type.value == 'compaction_failed' for event in events) == 1
+    assert all(event.type.value != 'compaction_requested' for event in events)
+
+
+async def test_repeated_compaction_retains_prior_source_chain(tmp_path) -> None:
+    from miniagent.agents import AgentSpec
+    from miniagent.models.config import GenerationOptions, ModelTarget
+    from miniagent.runtime import AgentRuntime, RuntimeConfig, RunStatus
+    from miniagent.models.protocol import ModelResponse, FinishReason
+    from miniagent.tools.registry import ToolRegistry
+    from test_runtime import QueueProvider, SuccessfulTool, AllowPolicyEngine, tool_response, final_response
+
+    class GrowingEstimator:
+        def estimate(self, request):
+            if 'summary_schema' in (request.messages[-1].content or ''): return 3000
+            return 10001 if len(request.messages) >= 10 else 1000
+    run_id = uuid4()
+    prior_evidence = {'claim':'done', 'excerpt':'done', 'source':{'kind':'snapshot','run_id':str(run_id),'snapshot_version':5,'message_start':2,'message_end':4}}
+    provider = QueueProvider([tool_response()] * 4 + [summary_response(), tool_response(), summary_response(verified_evidence=[prior_evidence]), final_response()])
+    store = SQLiteRunStore(tmp_path / 'chain.sqlite3')
+    await store.initialize()
+    runtime = AgentRuntime(provider=provider, tools=ToolRegistry([SuccessfulTool()]), estimator=GrowingEstimator(), run_store=store, policy_engine=AllowPolicyEngine(), config=RuntimeConfig(context_window_tokens=12000))
+    result = await runtime.run(AgentSpec(name='test', system_prompt='fixed', model=ModelTarget(provider='qwen', model='test'), generation=GenerationOptions(max_output_tokens=976), allowed_tools=('ok',)), 'task', run_id=run_id)
+    assert result.status is RunStatus.SUCCEEDED
+    record = await store.get(run_id)
+    assert record.state.context.current_version == 2
+    assert record.state.execution.steps_started == 6
+    assert result.usage.model_requests == 8
+    assert result.usage.tool_calls == 5
+    await validate_compaction_record(record, store)
+    assert await store.load_version(run_id, 5) is not None

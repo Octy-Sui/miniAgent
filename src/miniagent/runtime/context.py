@@ -157,6 +157,14 @@ class VerifiedEvidence(_StrictModel):
     field_path: tuple[str, ...] | None = None
     value: JsonValue = None
 
+    @model_validator(mode="after")
+    def validate_proof(self) -> 'VerifiedEvidence':
+        if (self.excerpt is None) == (self.field_path is None):
+            raise ValueError('source evidence requires exactly one excerpt or field proof')
+        if self.excerpt is not None and self.value is not None:
+            raise ValueError('source excerpt cannot carry an unchecked structured value')
+        return self
+
 
 class CompactionSummary(_StrictModel):
     current_goal: str = Field(min_length=1)
@@ -170,7 +178,7 @@ class CompactionSummary(_StrictModel):
 
     @model_validator(mode="after")
     def validate_action(self) -> 'CompactionSummary':
-        if not self.current_goal.strip() or self.next_action not in self.open_items:
+        if not self.current_goal.strip() or not self.next_action.strip() or any(not item.strip() for item in self.open_items) or self.next_action not in self.open_items:
             raise ValueError("next_action must name one open_items entry and goal must be nonempty")
         return self
 
@@ -289,13 +297,15 @@ async def validate_summary(response: ModelResponse, plan: CompactionPlan, source
 async def validate_compaction_record(record: RunRecord, store: RuntimeStore) -> None:
     state = record.state
     version = state.context.current_version
+    events = await store.list_events(state.identity.run_id)
+    completed = [(event, event.payload) for event in events if isinstance(event.payload, CompactionCompleted)]
+    if completed and (version is None or version != completed[-1][1].current_version):
+        raise ValueError('compaction current version does not match committed history')
     if version is None:
         return
     messages = state.conversation.messages
     if len(messages) < 3 or not isinstance(messages[2], AssistantMessage) or not messages[2].content:
         raise ValueError('compaction active summary is missing')
-    events = await store.list_events(state.identity.run_id)
-    completed = [(event, event.payload) for event in events if isinstance(event.payload, CompactionCompleted)]
     if len({payload.current_version for event, payload in completed}) != len(completed):
         raise ValueError('compaction versions are duplicated')
     chain = {payload.current_version: (event, payload) for event, payload in completed}
@@ -321,6 +331,10 @@ async def validate_compaction_record(record: RunRecord, store: RuntimeStore) -> 
         start, end = payload.covered_messages
         old_messages = source.state.conversation.messages
         new_messages = new.state.conversation.messages
+        if version == state.context.current_version:
+            committed_ranges = new.state.conversation.completed_steps
+            if messages[:len(new_messages)] != new_messages or state.conversation.completed_steps[:len(committed_ranges)] != committed_ranges:
+                raise ValueError('compaction retained history differs from committed Snapshot')
         if start != 2 or not (start < end <= len(old_messages)) or new_messages[:2] != old_messages[:2] or new_messages[3:] != old_messages[end:]:
             raise ValueError('compaction covered/retained range mismatch')
         covered = tuple(step.step_number for step in source.state.conversation.completed_steps if start <= step.message_start and step.message_end <= end)

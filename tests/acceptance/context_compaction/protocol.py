@@ -8,7 +8,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 import typer
 
 from miniagent.models.config import ModelTarget
-from miniagent.models.protocol import ModelUsage
+from miniagent.models.protocol import ModelUsage, ModelRequest, ModelResponse
+from miniagent.runtime.events import RunEvent, CompactionCompleted
+from miniagent.runtime.snapshots import RunSnapshot
+from miniagent.metering.usage import RunUsage
+import orjson
 from miniagent.runtime.config import RuntimeConfig
 
 
@@ -63,6 +67,7 @@ class AcceptanceManifest(_Contract):
     inclusion: Literal['all-planned-runs-no-replacement'] = 'all-planned-runs-no-replacement'
     median_rule: Literal['median-of-all-run-total-input-plus-output'] = 'median-of-all-run-total-input-plus-output'
     unknown_usage: Literal['unaccepted'] = 'unaccepted'
+    approval_mode: Literal['console'] = 'console'
     summary_rubric: str | None = None
     runner_revision: str | None = None
 
@@ -174,6 +179,67 @@ class AcceptanceReport(_Contract):
     reasons: list[str]
 
 
+def _validate_raw_evidence(folder: Path, result: RunEvidence) -> None:
+    def json_lines(name: str) -> list[dict]:
+        values = [orjson.loads(line) for line in (folder / name).read_bytes().splitlines() if line.strip()]
+        if any(not isinstance(value, dict) for value in values):
+            raise ValueError(f'{name} requires JSON objects')
+        return values
+
+    requests = [ModelRequest.model_validate(value) for value in json_lines('requests.jsonl')]
+    responses = json_lines('responses.jsonl')
+    events = [RunEvent.model_validate(value) for value in json_lines('events.jsonl')]
+    wire = json_lines('wire.jsonl')
+    snapshots = [RunSnapshot.model_validate(value) for value in orjson.loads((folder / 'snapshots.json').read_bytes())]
+    usage = orjson.loads((folder / 'usage.json').read_bytes())
+    if not requests or len(requests) != len(responses) or len(requests) != len(result.billable_calls):
+        raise ValueError('request/response/billable call counts are missing or inconsistent')
+    if not events or not snapshots or any(str(event.run_id) != result.actual_run_id for event in events) or any(str(snapshot.run_id) != result.actual_run_id for snapshot in snapshots):
+        raise ValueError('event/Snapshot Run identity is missing or inconsistent')
+    if [event.sequence for event in events] != list(range(1, len(events) + 1)):
+        raise ValueError('event sequence is incomplete')
+    known_usage = []
+    for response, billed in zip(responses, result.billable_calls, strict=True):
+        observed = None if 'exception' in response else ModelResponse.model_validate(response).usage
+        if observed != billed:
+            raise ValueError('response usage differs from billable evidence')
+        if observed is not None:
+            known_usage.append(observed)
+    recorded_calls = [ModelUsage.model_validate(call) if call is not None else None for call in usage['calls']]
+    run_usage = RunUsage.model_validate(usage['run_usage'])
+    if recorded_calls != result.billable_calls or run_usage.model_requests != len(requests) or run_usage.total_tokens != sum(call.total_tokens for call in known_usage):
+        raise ValueError('usage totals do not match actual requests/responses')
+    wire_requests = [entry for entry in wire if entry.get('kind') == 'request']
+    if len(wire_requests) != len(requests):
+        raise ValueError('actual SDK wire requests are missing')
+    for request, observed in zip(requests, wire_requests, strict=True):
+        body = observed.get('body')
+        if not isinstance(body, dict) or body.get('model') != request.model or not body.get('messages') or body.get('max_tokens') != request.generation.max_output_tokens:
+            raise ValueError('SDK wire payload does not match normalized request')
+        if not request.tools and (body.get('tools') or body.get('tool_choice')):
+            raise ValueError('summary wire payload exposes callable tools')
+    wire_responses = [entry for entry in wire if entry.get('kind') == 'response']
+    if not wire_responses or any('status' not in entry or not entry.get('body') for entry in wire_responses):
+        raise ValueError('actual SDK response observations are missing')
+    completed = [event.payload for event in events if isinstance(event.payload, CompactionCompleted)]
+    covered = any(1 in payload.covered_steps for payload in completed)
+    if result.compacted_source_step != covered:
+        raise ValueError('claimed compaction trajectory does not match events')
+    by_version = {snapshot.version: snapshot for snapshot in snapshots}
+    for event in events:
+        payload = event.payload
+        if isinstance(payload, CompactionCompleted):
+            source = by_version.get(payload.source_snapshot_version)
+            new = by_version.get(payload.new_snapshot_version)
+            if source is None or new is None or source.snapshot_id != payload.source_snapshot_id or new.snapshot_id != payload.new_snapshot_id or new.event_sequence != event.sequence or new.state.context.current_version != payload.current_version:
+                raise ValueError('compaction Snapshot/event reference is incomplete')
+    for name, filtered in [('tool-trace.jsonl', [event for event in events if event.type.value in ('tool_start', 'tool_end', 'policy_decided')]), ('approval-trace.jsonl', [event for event in events if 'approval' in event.type.value])]:
+        if [RunEvent.model_validate(value) for value in json_lines(name)] != filtered:
+            raise ValueError(f'{name} differs from original events')
+    if result.completed and (events[-1].type.value != 'run_finished' or events[-1].payload.model_dump().get('status') != 'succeeded'):
+        raise ValueError('completion claim differs from final Run event')
+
+
 def write_acceptance_report(directory: Path) -> AcceptanceReport:
     manifest = load_frozen_manifest(directory)
     digest = (directory / 'manifest.sha256').read_text()
@@ -189,6 +255,11 @@ def write_acceptance_report(directory: Path) -> AcceptanceReport:
         result = RunEvidence.model_validate_json((folder / 'result.json').read_text())
         if result.run_id != planned.run_id or result.manifest_sha256 != digest or not result.live_qwen:
             reasons.append(f'invalid provenance for Run {planned.run_id}')
+            continue
+        try:
+            _validate_raw_evidence(folder, result)
+        except (ValueError, KeyError, TypeError) as exc:
+            reasons.append(f'invalid raw evidence for Run {planned.run_id}: {exc}')
             continue
         evidence[planned.run_id] = result
     costs: dict[str, list[int]] = {'baseline': [], 'compacted': []}

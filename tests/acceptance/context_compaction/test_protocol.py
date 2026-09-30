@@ -69,3 +69,85 @@ def test_missing_planned_run_oracle_is_rejected() -> None:
     frozen['planned_runs'][0]['task_id'] = 'absent'
     with pytest.raises(ValueError):
         AcceptanceManifest.model_validate(frozen)
+
+
+def test_empty_raw_evidence_cannot_be_accepted_with_signed_pass(tmp_path) -> None:
+    from .protocol import IndependentReview, REQUIRED_EVIDENCE, RunEvidence, TaskResult
+    from miniagent.models.protocol import ModelUsage
+
+    data = manifest('independent').model_dump()
+    data['summary_rubric'] = 'frozen-quality-rubric-v1'
+    for group in ('capacity', 'safety'):
+        oracle = data['task_oracles'][0].copy()
+        oracle.update(task_id=group, group=group)
+        data['task_oracles'].append(oracle)
+        for arm in ('baseline', 'compacted'):
+            name = f'{group}-{arm}'
+            data['planned_runs'].append(dict(run_id=name, task_id=group, arm=arm, repetition=1))
+            data['pairing_order'].append(name)
+    frozen = AcceptanceManifest.model_validate(data)
+    directory = freeze_manifest(frozen, tmp_path)
+    digest = (directory / 'manifest.sha256').read_text()
+    for planned in frozen.planned_runs:
+        folder = directory / 'runs' / planned.run_id
+        folder.mkdir(parents=True)
+        for name in REQUIRED_EVIDENCE: (folder / name).write_text('')
+        total = 1000 if planned.arm == 'baseline' else 800
+        evidence = RunEvidence(run_id=planned.run_id, actual_run_id='synthetic-placeholder', manifest_sha256=digest, completed=True, task_result=TaskResult(passed=True, reasons=[]), billable_calls=[ModelUsage(input_tokens=total, total_tokens=total)], compacted_source_step=True, live_qwen=True)
+        (folder / 'result.json').write_text(evidence.model_dump_json())
+    (directory / 'reviews').mkdir()
+    review = IndependentReview(reviewer='independent', manifest_sha256=digest, conclusions={name: 'PASS' for name in ('continuation', 'cost', 'recovery', 'summary_quality', 'execution_safety')}, evidence_index=['manifest.json'], signed_at='2026-09-30')
+    (directory / 'reviews' / 'independent-review.json').write_text(review.model_dump_json())
+    assert not write_acceptance_report(directory).accepted
+
+
+async def test_live_runner_executes_approved_local_write_with_real_composition(tmp_path, monkeypatch) -> None:
+    import json
+    import subprocess
+    from decimal import Decimal
+    import httpx2
+    from openai import AsyncOpenAI
+    from .live import execute
+
+    source = tmp_path / 'source'
+    source.mkdir()
+    subprocess.run(['git', 'init', '--quiet', str(source)], check=True)
+    (source / 'source.txt').write_text('source\n')
+    subprocess.run(['git', '-C', str(source), 'add', 'source.txt'], check=True)
+    subprocess.run(['git', '-C', str(source), '-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '-m', 'fixture'], check=True)
+    initial = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
+    revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+    data = manifest('independent').model_dump()
+    data.update(model={'provider':'qwen', 'model':'qwen3.8-flash'}, runner_revision=revision, max_output_tokens=976)
+    data['task_oracles'][0].update(source_dir=str(source), initial_workspace_revision=initial, expected_files={'source.txt':'source\n','result.txt':'blue'}, allowed_files=['source.txt','result.txt'])
+    directory = freeze_manifest(AcceptanceManifest.model_validate(data), tmp_path / 'evidence')
+    monkeypatch.setenv('OPENAI_API_KEY', 'test')
+    monkeypatch.setenv('OPENAI_BASE_URL', 'https://example.com/v1')
+    monkeypatch.setenv('LOCAL_WORKSPACE_ROOT', str(tmp_path / 'workspaces'))
+    monkeypatch.setenv('ARTIFACT_ROOT', str(tmp_path / 'artifacts'))
+    monkeypatch.setenv('RUN_DATABASE_PATH', str(tmp_path / 'runs.sqlite3'))
+    counter = 0
+    def endpoint(request):
+        nonlocal counter
+        counter += 1
+        message = {'role':'assistant', 'content': None, 'tool_calls':[{'id':'write', 'type':'function', 'function':{'name':'shell','arguments': json.dumps({'command':'printf blue > result.txt'})}}]} if counter == 1 else {'role':'assistant','content':'done'}
+        return httpx2.Response(200, json={'id':f'request-{counter}', 'object':'chat.completion','created':0,'model':'qwen3.8-flash','choices':[{'index':0,'message':message,'finish_reason':'tool_calls' if counter == 1 else 'stop'}],'usage':{'prompt_tokens':10,'completion_tokens':2,'total_tokens':12}})
+    def sdk_client(**options):
+        return AsyncOpenAI(**options, http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(endpoint)))
+    monkeypatch.setattr('miniagent.providers.qwen.AsyncOpenAI', sdk_client)
+    approvals = []
+    def human_confirmation(*args, **kwargs):
+        approvals.append(True)
+        return True
+    monkeypatch.setattr('typer.confirm', human_confirmation)
+    await execute(directory, 'compacted-1')
+    folder = directory / 'runs' / 'compacted-1'
+    result = json.loads((folder / 'result.json').read_text())
+    assert result['completed']
+    assert result['task_result']['passed']
+    assert approvals == [True]
+    assert counter == 2
+    assert len((folder / 'wire.jsonl').read_text().splitlines()) == 4
+    assert 'approved' in (folder / 'approval-trace.jsonl').read_text()
+    from .protocol import RunEvidence, _validate_raw_evidence
+    _validate_raw_evidence(folder, RunEvidence.model_validate(result))
