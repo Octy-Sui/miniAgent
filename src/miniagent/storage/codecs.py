@@ -18,7 +18,7 @@ from miniagent.runtime.store_contracts import (
 
 _ARTIFACTS_ADAPTER = TypeAdapter(list[ArtifactRef])
 _EVENT_PAYLOAD_ADAPTER = TypeAdapter(EventPayload)
-_SUPPORTED_VERSIONS = {"run": 2, "event": 1, "snapshot": 2, "approval": 1}
+_SUPPORTED_VERSIONS = {"run": 2, "event": 2, "snapshot": 2, "approval": 1}
 
 
 def encode_datetime(value: datetime) -> str:

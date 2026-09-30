@@ -117,6 +117,10 @@ class RecoveryProgress(_StatePart):
     attempts: int = Field(default=0, ge=0)
 
 
+class ContextProgress(_StatePart):
+    current_version: int | None = Field(default=None, ge=1)
+
+
 class RunState(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -127,6 +131,7 @@ class RunState(BaseModel):
     execution: ExecutionProgress = Field(default_factory=ExecutionProgress)
     approval: ApprovalProgress = Field(default_factory=ApprovalProgress)
     recovery: RecoveryProgress = Field(default_factory=RecoveryProgress)
+    context: ContextProgress = Field(default_factory=ContextProgress)
     usage: RunUsage = Field(default_factory=RunUsage)
 
     @model_validator(mode="after")

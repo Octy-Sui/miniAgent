@@ -1,5 +1,8 @@
 from collections.abc import Sequence
-from uuid import UUID
+from uuid import UUID, uuid4
+from hashlib import sha256
+
+from miniagent.runtime.context import CompactionPlan, QwenPromptTokenEstimator
 
 from miniagent.policy import ApprovalRequest, ApprovalResolution, PolicyDecision
 from miniagent.runtime.events import (
@@ -7,14 +10,18 @@ from miniagent.runtime.events import (
     ApprovalRequested,
     ApprovalResolved,
     NewRunEvent,
+    CompactionAttempt,
+    CompactionCompleted,
 )
 from miniagent.runtime.recording import RunPersistenceError, RunRecorder
-from miniagent.runtime.state import RunState
+from miniagent.runtime.state import RunState, ConversationState, ContextProgress
 from miniagent.runtime.store_contracts import (
     ApprovalExpiredError,
     CreateApproval,
     InvalidateApproval,
     ResolveApproval,
+    CommitResult,
+    SnapshotChange,
 )
 
 
@@ -26,6 +33,32 @@ class RunJournal:
     def __init__(self, recorder: RunRecorder) -> None:
         self.recorder = recorder
         self._approval_versions: dict[UUID, int] = {}
+
+    def prepare_compaction(self, state: RunState, conversation: ConversationState, plan: CompactionPlan, *, attempts: tuple[CompactionAttempt, ...], new_tokens: int, summary_input_tokens: int = 0, source_snapshot_id: UUID | None = None) -> tuple[RunState, NewRunEvent]:
+        record = self.recorder.record
+        previous = state.context.current_version
+        version = (previous or 0) + 1
+        snapshot_id = uuid4() if record is not None else None
+        snapshot_version = record.latest_snapshot_version + 1 if record is not None else None
+        sequence = record.last_event_sequence + 1 if record is not None else None
+        candidate = state.model_copy(update={'conversation': conversation, 'context': ContextProgress(current_version=version)})
+        content = conversation.messages[2].content
+        assert content is not None
+        budget = plan.budget
+        event = NewRunEvent(run_id=state.identity.run_id, payload=CompactionCompleted(previous_version=previous, current_version=version, source_snapshot_version=plan.source_snapshot_version, source_snapshot_id=source_snapshot_id, source_event_sequence=plan.source_event_sequence, new_snapshot_version=snapshot_version, new_snapshot_id=snapshot_id, event_sequence=sequence, covered_messages=plan.covered_messages, covered_steps=plan.covered_steps, retained_first_step=plan.retained_first_step, summary_sha256=sha256(content.encode()).hexdigest(), provider=state.definition.agent_spec.model.provider, model=state.definition.agent_spec.model.model, context_window_tokens=budget.C, output_reserve=budget.O, safety_margin=budget.S, business_budget=budget.B, summary_reserve=budget.summary_reserve, old_input_tokens=plan.T, new_input_tokens=new_tokens, summary_input_tokens=summary_input_tokens, hard_trigger=plan.hard_trigger, attempts=attempts))
+        return candidate, event
+
+    async def compact(self, state: RunState, event: NewRunEvent) -> CommitResult | None:
+        payload = event.payload
+        if not isinstance(payload, CompactionCompleted):
+            raise ValueError('compaction commit requires completion event')
+        record = self.recorder.record
+        change = None
+        if record is not None:
+            if payload.new_snapshot_version != record.latest_snapshot_version + 1 or payload.new_snapshot_id is None or payload.event_sequence != record.last_event_sequence + 1:
+                raise ValueError('compaction reservation does not match confirmed record')
+            change = SnapshotChange(snapshot_id=payload.new_snapshot_id, expected_version=record.latest_snapshot_version)
+        return await self.recorder.commit(state, events=[event], snapshot=True, snapshot_change=change)
 
     async def create(self, state: RunState) -> None:
         await self.recorder.create(state)

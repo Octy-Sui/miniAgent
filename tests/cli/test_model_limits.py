@@ -42,7 +42,7 @@ def test_summary_reserve_boundary() -> None:
 ])
 def test_invalid_runtime_limits(values: dict[str, int | float]) -> None:
     with pytest.raises(ValueError):
-        RuntimeConfig(**values)
+        RuntimeConfig.model_validate(values)
 
 
 def test_zero_output_rejected() -> None:

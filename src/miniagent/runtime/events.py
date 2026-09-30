@@ -5,6 +5,9 @@ from uuid import UUID, uuid4
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
+from miniagent.models.protocol import ModelUsage
+from miniagent.metering.usage import RequestCost
+
 from miniagent.artifacts.contracts import ArtifactRef
 from miniagent.policy import PolicyDecision
 from miniagent.runtime.tracing import SpanId
@@ -19,6 +22,10 @@ class EventSequenceConflictError(RuntimeError):
 
 
 class RunEventType(StrEnum):
+    COMPACTION_REQUESTED = "compaction_requested"
+    COMPACTION_ATTEMPT_RECORDED = "compaction_attempt_recorded"
+    COMPACTION_FAILED = "compaction_failed"
+    COMPACTION_COMPLETED = "compaction_completed"
     RUN_STARTED = "run_started"
     STEP_STARTED = "step_started"
     STEP_COMPLETED = "step_completed"
@@ -156,8 +163,70 @@ class RunFinished(_Payload):
     reason: str
 
 
+class CompactionAttempt(_Payload):
+    attempt: int = Field(ge=1)
+    usage: ModelUsage | None = None
+    request_cost: RequestCost | None = None
+    provider_request_id: str | None = None
+    error_code: str | None = None
+
+
+class CompactionRequested(_Payload):
+    type: Literal[RunEventType.COMPACTION_REQUESTED] = RunEventType.COMPACTION_REQUESTED
+    provider: str
+    model: str
+    attempt: int = Field(ge=1)
+    source_snapshot_version: int | None
+    covered_messages: tuple[int, int]
+
+
+class CompactionAttemptRecorded(_Payload):
+    type: Literal[RunEventType.COMPACTION_ATTEMPT_RECORDED] = RunEventType.COMPACTION_ATTEMPT_RECORDED
+    result: CompactionAttempt
+
+
+class CompactionFailed(_Payload):
+    type: Literal[RunEventType.COMPACTION_FAILED] = RunEventType.COMPACTION_FAILED
+    code: str
+    reason: str
+    attempts: tuple[CompactionAttempt, ...] = ()
+
+
+class CompactionCompleted(_Payload):
+    type: Literal[RunEventType.COMPACTION_COMPLETED] = RunEventType.COMPACTION_COMPLETED
+    previous_version: int | None = Field(default=None, ge=1)
+    current_version: int = Field(ge=1)
+    source_snapshot_version: int | None = Field(default=None, ge=1)
+    source_snapshot_id: UUID | None = None
+    source_event_sequence: int = Field(ge=0)
+    new_snapshot_version: int | None = Field(default=None, ge=1)
+    new_snapshot_id: UUID | None = None
+    event_sequence: int | None = Field(default=None, ge=1)
+    covered_messages: tuple[int, int]
+    covered_steps: tuple[int, ...]
+    retained_first_step: int = Field(ge=1)
+    template_version: Literal[1] = 1
+    summary_sha256: str
+    provider: str
+    model: str
+    context_window_tokens: int
+    output_reserve: int
+    safety_margin: int
+    business_budget: int
+    summary_reserve: int
+    old_input_tokens: int
+    new_input_tokens: int
+    summary_input_tokens: int
+    hard_trigger: bool
+    attempts: tuple[CompactionAttempt, ...] = ()
+
+
 type EventPayload = Annotated[
-    RunStarted
+    CompactionRequested
+    | CompactionAttemptRecorded
+    | CompactionFailed
+    | CompactionCompleted
+    | RunStarted
     | StepStarted
     | StepCompleted
     | ModelRequested
@@ -180,7 +249,7 @@ type EventPayload = Annotated[
 class NewRunEvent(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     run_id: UUID
     event_id: UUID = Field(default_factory=uuid4)
     payload: EventPayload

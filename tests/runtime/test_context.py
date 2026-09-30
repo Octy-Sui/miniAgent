@@ -54,6 +54,7 @@ def test_trigger_boundaries(tokens: int, expected: bool) -> None:
 def test_complete_tool_groups_with_reused_call_ids() -> None:
     state = long_state()
     plan = select_compaction_prefix(state, request_for(state), SizedEstimator(10001))
+    assert plan is not None
     assert plan.covered_steps == (1, 2, 3)
     assert plan.retained_first_step == 4
     assert plan.covered_messages == (2, 9)
@@ -64,12 +65,14 @@ def test_complete_tool_groups_with_reused_call_ids() -> None:
 def test_soft_cost_filter(remaining: int, cost: int, expected: bool) -> None:
     state = long_state()
     plan = select_compaction_prefix(state, request_for(state), SizedEstimator(7000))
+    assert plan is not None
     assert should_compact(plan, summary_request_tokens=cost, remaining_steps=remaining) is expected
 
 
 def test_hard_trigger_ignores_cost() -> None:
     state = long_state()
     plan = select_compaction_prefix(state, request_for(state), SizedEstimator(10001))
+    assert plan is not None
     assert should_compact(plan, summary_request_tokens=999999, remaining_steps=1)
 
 
@@ -100,7 +103,9 @@ def summary_response(**changes):
 
 def summary_plan():
     state = long_state()
-    return select_compaction_prefix(state, request_for(state), SizedEstimator(10001))
+    plan = select_compaction_prefix(state, request_for(state), SizedEstimator(10001))
+    assert plan is not None
+    return plan
 
 
 def test_summary_request_has_fixed_identity_and_no_tools() -> None:
@@ -111,9 +116,9 @@ def test_summary_request_has_fixed_identity_and_no_tools() -> None:
     assert request.messages[:2] == plan.request.messages[:2]
     assert request.tools == ()
     assert request.generation.max_output_tokens == 1500
-    assert 'message_start' in request.messages[-1].content
-    assert 'done step 1' in request.messages[-1].content
-    assert 'done step 4' not in request.messages[-1].content
+    assert 'message_start' in (request.messages[-1].content or '')
+    assert 'done step 1' in (request.messages[-1].content or '')
+    assert 'done step 4' not in (request.messages[-1].content or '')
 
 
 @pytest.mark.parametrize(('changes',), [({'current_goal': ''},), ({'next_action': 'unrelated'},), ({'unexpected': 'field'},), ({'open_items': []},)])
@@ -195,7 +200,7 @@ async def test_verified_excerpt_from_real_snapshot(tmp_path) -> None:
     await store.save(NewRunSnapshot(run_id=plan.state.identity.run_id, state=plan.state, event_sequence=0), expected_version=0)
     evidence = {'claim': 'done step 1', 'excerpt': 'done step 1', 'source': {'kind': 'snapshot', 'run_id': str(plan.state.identity.run_id), 'snapshot_version': 1, 'message_start': 2, 'message_end': 4}}
     candidate = await validate_summary(summary_response(verified_evidence=[evidence]), plan, store)
-    assert 'done step 1' in candidate.messages[2].content
+    assert 'done step 1' in (candidate.messages[2].content or '')
 
 
 async def test_later_summary_request_contains_previous_summary() -> None:
@@ -212,8 +217,9 @@ async def test_later_summary_request_contains_previous_summary() -> None:
         ranges.append(StepRange(step_number=number, message_start=start, message_end=len(messages)))
     state = first.state.model_copy(update={'conversation': ConversationState(messages=tuple(messages), completed_steps=tuple(ranges))})
     second = select_compaction_prefix(state, request_for(state), SizedEstimator(10001))
+    assert second is not None
     request = build_summary_request(state, second)
     assert request.messages[:2] == first.request.messages[:2]
-    assert 'Historical continuation summary' in request.messages[-1].content
-    assert 'done step 4' in request.messages[-1].content
+    assert 'Historical continuation summary' in (request.messages[-1].content or '')
+    assert 'done step 4' in (request.messages[-1].content or '')
     assert request.tools == ()

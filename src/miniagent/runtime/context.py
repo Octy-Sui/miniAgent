@@ -13,7 +13,7 @@ from miniagent.models.messages import AssistantMessage, ToolMessage, UserMessage
 from miniagent.models.protocol import ModelRequest, ModelResponse, FinishReason
 from miniagent.models.config import GenerationOptions
 from miniagent.runtime.state import ConversationState, RunCursor, RunState, RunStatus
-from miniagent.runtime.store_contracts import RuntimeStore
+from miniagent.runtime.store_contracts import RuntimeStore, RunRecord
 
 
 class ContextCapacityError(ValueError):
@@ -282,3 +282,52 @@ async def validate_summary(response: ModelResponse, plan: CompactionPlan, source
     rendered = template.render(summary_json=summary.model_dump_json())
     _, end = plan.covered_messages
     return ConversationState(messages=(*plan.request.messages[:2], AssistantMessage(content=rendered), *plan.request.messages[end:]), completed_steps=tuple(step.model_copy(update={'message_start': step.message_start - end + 3, 'message_end': step.message_end - end + 3}) for step in plan.state.conversation.completed_steps if step.message_start >= end))
+
+
+async def validate_compaction_record(record: RunRecord, store: RuntimeStore) -> None:
+    from hashlib import sha256
+    from miniagent.runtime.events import CompactionCompleted
+
+    state = record.state
+    version = state.context.current_version
+    if version is None:
+        return
+    messages = state.conversation.messages
+    if len(messages) < 3 or not isinstance(messages[2], AssistantMessage) or not messages[2].content:
+        raise ValueError('compaction active summary is missing')
+    events = await store.list_events(state.identity.run_id)
+    completed = [(event, event.payload) for event in events if isinstance(event.payload, CompactionCompleted)]
+    if len({payload.current_version for event, payload in completed}) != len(completed):
+        raise ValueError('compaction versions are duplicated')
+    chain = {payload.current_version: (event, payload) for event, payload in completed}
+    seen = set()
+    active_hash = sha256(messages[2].content.encode()).hexdigest()
+    while version is not None:
+        if version in seen or version not in chain:
+            raise ValueError('compaction version chain is invalid')
+        seen.add(version)
+        event, payload = chain[version]
+        if event.sequence > record.last_event_sequence or payload.current_version != (payload.previous_version or 0) + 1 or payload.event_sequence != event.sequence:
+            raise ValueError('compaction event version/sequence is invalid')
+        if version == state.context.current_version and active_hash != payload.summary_sha256:
+            raise ValueError('compaction active summary hash mismatch')
+        if payload.source_snapshot_version is None or payload.new_snapshot_version is None:
+            raise ValueError('compaction persistent snapshot reference missing')
+        source = await store.load_version(state.identity.run_id, payload.source_snapshot_version)
+        new = await store.load_version(state.identity.run_id, payload.new_snapshot_version)
+        if source is None or new is None or source.snapshot_id != payload.source_snapshot_id or new.snapshot_id != payload.new_snapshot_id or source.version >= new.version or new.version > record.latest_snapshot_version or source.event_sequence != payload.source_event_sequence or new.event_sequence != event.sequence:
+            raise ValueError('compaction snapshot identity/sequence mismatch')
+        if source.state.context.current_version != payload.previous_version or new.state.context.current_version != version:
+            raise ValueError('compaction snapshot version chain mismatch')
+        start, end = payload.covered_messages
+        old_messages = source.state.conversation.messages
+        new_messages = new.state.conversation.messages
+        if start != 2 or not (start < end <= len(old_messages)) or new_messages[:2] != old_messages[:2] or new_messages[3:] != old_messages[end:]:
+            raise ValueError('compaction covered/retained range mismatch')
+        covered = tuple(step.step_number for step in source.state.conversation.completed_steps if start <= step.message_start and step.message_end <= end)
+        retained = tuple(step for step in source.state.conversation.completed_steps if step.message_start >= end)
+        if covered != payload.covered_steps or not retained or retained[0].step_number != payload.retained_first_step or end != retained[0].message_start:
+            raise ValueError('compaction Step range mismatch')
+        if len(new_messages) < 3 or not isinstance(new_messages[2], AssistantMessage) or new_messages[2].tool_calls or sha256((new_messages[2].content or '').encode()).hexdigest() != payload.summary_sha256:
+            raise ValueError('compaction snapshot summary hash mismatch')
+        version = payload.previous_version

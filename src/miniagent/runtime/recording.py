@@ -68,6 +68,7 @@ class RunRecorder:
         events: Sequence[NewRunEvent],
         approval_changes: Sequence[ApprovalChange] = (),
         snapshot: bool = False,
+        snapshot_change: SnapshotChange | None = None,
     ) -> CommitResult | None:
         if self.store is None:
             return None
@@ -77,8 +78,7 @@ class RunRecorder:
             raise ValueError("Recorded state belongs to another run")
 
         pending_events = list(events)
-        snapshot_change = None
-        if snapshot:
+        if snapshot and snapshot_change is None:
             snapshot_id = uuid4()
             snapshot_change = SnapshotChange(
                 snapshot_id=snapshot_id,

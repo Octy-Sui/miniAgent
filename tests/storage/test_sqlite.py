@@ -1063,7 +1063,7 @@ async def test_newer_related_record_versions_are_reported_as_unsupported(
         with sqlite3.connect(path) as connection:
             connection.execute("DROP TRIGGER run_events_no_update")
             connection.execute(
-                "UPDATE run_events SET schema_version = 2 WHERE run_id = ?",
+                "UPDATE run_events SET schema_version = 99 WHERE run_id = ?",
                 (str(state.identity.run_id),),
             )
         operation = store.list_events(state.identity.run_id)
@@ -1122,4 +1122,6 @@ async def test_historical_snapshot_preserves_request(tmp_path: Path) -> None:
     assert await store.load_version(uuid4(), 1) is None
     assert await store.load_version(state.identity.run_id, 3) is None
     runtime = AgentRuntime(provider=UnusedProvider(), tools=ToolRegistry([]))
-    assert runtime._build_request((await store.load_version(state.identity.run_id, 1)).state).model_dump() == runtime._build_request(state).model_dump()
+    restored = await store.load_version(state.identity.run_id, 1)
+    assert restored is not None
+    assert runtime._build_request(restored.state).model_dump() == runtime._build_request(state).model_dump()
