@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from uuid import UUID, uuid4
 from hashlib import sha256
 
-from miniagent.runtime.context import CompactionPlan, QwenPromptTokenEstimator
+from miniagent.runtime.context import CompactionPlan
 
 from miniagent.policy import ApprovalRequest, ApprovalResolution, PolicyDecision
 from miniagent.runtime.events import (

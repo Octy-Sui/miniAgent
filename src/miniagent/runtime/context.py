@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from hashlib import sha256
 from math import ceil
 from typing import Annotated, Literal, Protocol
 from uuid import UUID
@@ -14,6 +15,7 @@ from miniagent.models.protocol import ModelRequest, ModelResponse, FinishReason
 from miniagent.models.config import GenerationOptions
 from miniagent.runtime.state import ConversationState, RunCursor, RunState, RunStatus
 from miniagent.runtime.store_contracts import RuntimeStore, RunRecord
+from miniagent.runtime.events import CompactionCompleted
 
 
 class ContextCapacityError(ValueError):
@@ -285,9 +287,6 @@ async def validate_summary(response: ModelResponse, plan: CompactionPlan, source
 
 
 async def validate_compaction_record(record: RunRecord, store: RuntimeStore) -> None:
-    from hashlib import sha256
-    from miniagent.runtime.events import CompactionCompleted
-
     state = record.state
     version = state.context.current_version
     if version is None:

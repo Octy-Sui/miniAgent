@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+from hashlib import sha256
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from importlib.resources import files
@@ -385,7 +386,6 @@ class SQLiteRunStore:
         return self._transaction(commit)
 
     def _validate_compaction_commit(self, connection, current, change, event, snapshot) -> None:
-        from hashlib import sha256
         payload = event.payload
         if len(change.events) != 1 or snapshot is None or payload.new_snapshot_id != snapshot.snapshot_id or payload.new_snapshot_version != snapshot.version or payload.event_sequence != event.sequence or change.state.context.current_version != payload.current_version or payload.previous_version != current.state.context.current_version or payload.current_version != (payload.previous_version or 0) + 1:
             raise ValueError('compaction commit reservation mismatch')

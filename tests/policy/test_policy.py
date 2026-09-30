@@ -7,7 +7,7 @@ from uuid import UUID
 import pytest
 
 from miniagent.agents import AgentSpec
-from miniagent.models.config import ModelTarget
+from miniagent.models.config import ModelTarget, GenerationOptions
 from miniagent.models.messages import AssistantMessage
 from miniagent.models.protocol import (
     FinishReason,
@@ -439,6 +439,7 @@ def make_agent() -> AgentSpec:
     return AgentSpec(
         name="test",
         system_prompt="Test.",
+        generation=GenerationOptions(max_output_tokens=100),
         model=ModelTarget(provider="test", model="test"),
         allowed_tools=["shell"],
     )
