@@ -65,8 +65,8 @@ class RunLifecycle(_StatePart):
 
 class StepRange(_StatePart):
     step_number: int = Field(ge=1)
-    message_start: int = Field(ge=2)
-    message_end: int = Field(ge=3)
+    message_start: int = Field(ge=0)
+    message_end: int = Field(ge=1)
 
     @model_validator(mode="after")
     def validate_range(self) -> "StepRange":
