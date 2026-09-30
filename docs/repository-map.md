@@ -1,6 +1,6 @@
 # miniAgent Repository Map
 
-<!-- repo-map: provisional-against 1ea696a | mapped 2026-09-23 -->
+<!-- repo-map: verified-against 710ac2b | mapped 2026-09-30 -->
 
 本文件是按需读取的 implementation map。状态含义：
 
@@ -12,17 +12,18 @@
 
 miniAgent 是 Python 3.13 的最小 Agent Runtime。当前产品路径接受一个 CLI task，
 创建隔离 Workspace，让模型在 bounded Step loop 中调用工具，输出结构化 `RunResult`，
-并把 Run/Event/Snapshot/Approval 原子持久化；应用层在成功后登记 patch artifact，
-仅当证据登记成功时销毁 Workspace。
+并把 Run/Event/Snapshot/Approval 原子持久化；应用层结束时尝试登记 patch artifact，
+仅当 Run 成功且 finalization 无错误时销毁 Workspace
+（`src/miniagent/cli/application.py`, `src/miniagent/runtime/recording.py`）。
 
 ## Execution and data flow
 
 ```text
 miniagent CLI
-  → BootstrapConfig / Settings → ApplicationDependencies
+  → BootstrapConfig / Settings → model limits → ApplicationDependencies
   → Application
     → AgentRuntime + SQLiteRunStore
-      → QwenProvider.generate(ModelRequest)
+      → context budget / optional compaction → QwenProvider.generate(ModelRequest)
       → ToolRegistry.prepare(ToolCall)
       → PolicyEngine → allow / deny / same-process approval
       → ReadFileTool / ShellTool → Workspace.execute(Command)
@@ -45,7 +46,7 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；应用生命周期位
 | --- | --- | --- |
 | wired | Typer CLI、model override、signal cancellation、result/finalization rendering | `src/miniagent/cli/main.py`, `src/miniagent/cli/rendering.py`, `tests/cli/` |
 | wired | Qwen/OpenAI-compatible model request and tool-call translation | `src/miniagent/providers/qwen.py`, `src/miniagent/models/protocol.py` |
-| wired | Step loop、tool allowlist、termination、usage/cost、cancellation | `src/miniagent/runtime/loop.py`, `src/miniagent/runtime/termination.py`, `src/miniagent/metering/` |
+| wired | Step loop、tool allowlist、termination、usage/cost（含摘要尝试）、cancellation | `src/miniagent/runtime/loop.py`, `src/miniagent/runtime/termination.py`, `src/miniagent/metering/` |
 | wired | Tool Registry、严格参数校验、有界 JSON 工具消息和结构化错误 | `src/miniagent/tools/registry.py`, `src/miniagent/tools/rendering.py`, `tests/tools/` |
 | wired | Tool Call policy allow/deny、同进程人工审批、CLI 审批交互 | `src/miniagent/policy/`, `src/miniagent/runtime/tool_runner.py`, `tests/policy/` |
 | wired | Local/Docker Workspace create、execute、patch export、destroy | `src/miniagent/environments/`, `tests/environments/` |
@@ -56,7 +57,10 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；应用生命周期位
 | wired | SQLite Run/Event/Snapshot/Approval 存储、原子提交、单 Run 连续事件序列和 recovery context 持久化 | `src/miniagent/runtime/recording.py`, `src/miniagent/storage/`, `tests/storage/test_sqlite.py` |
 | wired | Run 内 Span scope 生成与 Event scope 持久化；尚无 Trace 聚合、导出或查询界面 | `src/miniagent/runtime/trace_context.py`, `src/miniagent/runtime/events.py`, `src/miniagent/storage/sqlite.py` |
 | contract-only | Recovery decision protocol；跨进程恢复尚未编排 | `src/miniagent/runtime/recovery.py`, `src/miniagent/runtime/loop.py` |
-| roadmap | 跨进程审批恢复、context compaction、dashboard、SWE-bench orchestration | `docs/blueprint.md`, `docs/policy-engine-design.md` |
+| wired | 必填模型容量/输出配置、安全 Step 边界压缩、结构化摘要来源校验、原子压缩 Event/Snapshot | `src/miniagent/cli/model_limits.py`, `src/miniagent/runtime/context.py`, `src/miniagent/runtime/journal.py`, `tests/runtime/test_compaction.py` |
+| contract-only | 压缩历史重载校验函数；产品未接入跨进程重载入口 | `src/miniagent/runtime/context.py`, `tests/runtime/test_compaction.py` |
+| wired | 测试专用压缩验收 freeze/live/report 工具；真实 Qwen 验收仍 PENDING，摘要语义质量 DEFER | `tests/acceptance/context_compaction/`, `docs/superpowers/acceptance/context-compaction-protocol.md` |
+| roadmap | 跨进程审批恢复、dashboard、SWE-bench orchestration | `docs/blueprint.md`, `docs/policy-engine-design.md` |
 
 ## Task routes
 
@@ -64,10 +68,13 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；应用生命周期位
 | --- | --- | --- | --- |
 | CLI option, output, signal, exit code | `src/miniagent/cli/main.py` | `src/miniagent/cli/rendering.py`, `src/miniagent/cli/application.py` | `tests/cli/` |
 | Agent contract, default prompt/model, tool permissions | `src/miniagent/agents/spec.py` | `src/miniagent/agents/default_agent.py`, `src/miniagent/models/config.py` | `tests/cli/test_main.py`, `tests/runtime/test_runtime.py` |
-| Provider request/response mapping | `src/miniagent/providers/qwen.py` | `src/miniagent/models/messages.py`, `src/miniagent/models/protocol.py` | `tests/models/test_protocol.py`, `tests/runtime/test_runtime.py` |
+| Provider request/response and error mapping | `src/miniagent/providers/qwen.py` | `src/miniagent/models/messages.py`, `src/miniagent/models/protocol.py` | `tests/providers/test_qwen.py`, `tests/models/test_protocol.py` |
 | Run state or lifecycle | `src/miniagent/runtime/state.py` | `src/miniagent/runtime/transitions.py`, `src/miniagent/runtime/execution.py`, `src/miniagent/runtime/loop.py` | `tests/runtime/test_runtime.py` |
 | Cancellation | `src/miniagent/runtime/cancellation.py` | `src/miniagent/runtime/loop.py`, `src/miniagent/cli/main.py` | `tests/runtime/test_runtime.py`, `tests/cli/test_main.py` |
 | Evaluation | `src/miniagent/evaluation/` | `src/miniagent/runtime/loop.py` | `tests/runtime/test_runtime.py`, `tests/models/test_protocol.py` |
+| Model capacity/output limits | `src/miniagent/cli/model_limits.py` | `config/model_limits.toml`, `src/miniagent/cli/bootstrap.py`, `src/miniagent/runtime/config.py` | `tests/cli/test_model_limits.py` |
+| Context compaction and evidence | `src/miniagent/runtime/context.py` | `src/miniagent/runtime/loop.py`, `src/miniagent/runtime/journal.py`, `src/miniagent/runtime/templates/compaction_v1.j2` | `tests/runtime/test_context.py`, `tests/runtime/test_compaction.py` |
+| Compaction acceptance tooling | `tests/acceptance/context_compaction/protocol.py` | `tests/acceptance/context_compaction/live.py`, `docs/superpowers/acceptance/context-compaction-protocol.md` | `tests/acceptance/context_compaction/test_protocol.py` |
 | Pricing and token usage | `src/miniagent/metering/` | `src/miniagent/runtime/execution.py`, `config/model_pricing.toml` | `tests/metering/test_pricing.py`, `tests/cli/test_main.py` |
 | Workspace public contract/config | `src/miniagent/environments/contracts.py` | `src/miniagent/environments/config.py`, `src/miniagent/environments/persistence.py` | `tests/models/test_protocol.py` |
 | Local execution/isolation | `src/miniagent/environments/local.py` | `src/miniagent/environments/process.py`, `src/miniagent/tools/` | `tests/environments/test_local.py` |
@@ -78,7 +85,7 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；应用生命周期位
 | SQLite Run/Event/Snapshot/Approval persistence | `src/miniagent/runtime/journal.py` | `src/miniagent/runtime/recording.py`, `src/miniagent/runtime/store_contracts.py`, `src/miniagent/storage/sqlite.py`, `src/miniagent/storage/codecs.py`, `src/miniagent/storage/queries/` | `tests/storage/test_sqlite.py` |
 | Run Trace/Span and typed Event scope | `src/miniagent/runtime/tracing.py` | `src/miniagent/runtime/trace_context.py`, `src/miniagent/runtime/events.py` | `tests/models/test_protocol.py`, `tests/storage/test_sqlite.py` |
 | Recovery context persistence and decision contracts | `src/miniagent/runtime/recovery.py` | `src/miniagent/cli/bootstrap.py`, `src/miniagent/runtime/recording.py`, `src/miniagent/environments/persistence.py` | `tests/storage/test_sqlite.py`, `tests/models/test_protocol.py` |
-| Codex repository context | `.agents/skills/repo-map/SKILL.md` | `AGENTS.md`, `docs/repository-map.md` | `$repo-map refresh`, skill validator |
+| Codex repository context | `.agents/skills/repo-map/SKILL.md` | `AGENTS.md`, `docs/repository-map.md` | `$repo-map refresh`, `git diff --check` |
 
 ## Load-bearing invariants and gotchas
 
@@ -96,6 +103,16 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；应用生命周期位
 - `--model` replaces only the model name; provider selection still comes from
   `AgentSpec.model.provider` (`src/miniagent/cli/main.py`,
   `src/miniagent/cli/bootstrap.py`).
+- Bootstrap requires a matching limits entry before creating Workspace; `--model` also
+  needs pricing. Config paths are relative to the current directory unless overridden
+  (`src/miniagent/cli/bootstrap.py`, `src/miniagent/cli/settings.py`).
+- Compaction preserves the system/task prefix, recent complete tool groups and tool
+  contracts; token estimation is approximate. Summary retries are bounded; business
+  context rejection retries once after compaction. General Provider/Tool retry and
+  backoff are absent; SDK retries are disabled (`src/miniagent/runtime/context.py`,
+  `src/miniagent/runtime/loop.py`, `src/miniagent/providers/qwen.py`).
+- Storage supports Run/Event/Snapshot schema v2 and Approval v1; older versions are
+  rejected, without automatic migration (`src/miniagent/storage/codecs.py`).
 - Local Workspace isolates code state in a Run-owned directory but is not a security
   sandbox; Docker Workspace adds container and resource controls
   (`src/miniagent/environments/local.py`, `src/miniagent/environments/docker.py`).
@@ -111,17 +128,21 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；应用生命周期位
 
 ## Build, test, and run
 
-Verified on the mapped working tree (130 passed, 1 skipped):
+本次 REFRESH 在 `710ac2b` 验证通过：
 
 ```shell
-UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest -q
 ty check
 UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run miniagent --help
+git diff --check
 ```
 
-Run focused tool-loop tests with
-`uv run pytest tests/runtime/test_runtime.py tests/tools/test_contracts.py`. Live CLI tasks
-require configured credentials and may invoke external model/network services.
+测试命令来自 `pyproject.toml`，按 `AGENTS.md` 的 docs-only 规则本次未运行：
+`UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest -q`。
+工具循环可聚焦 `tests/runtime/test_runtime.py tests/tools/test_contracts.py`；
+压缩可聚焦 `tests/runtime/test_context.py tests/runtime/test_compaction.py tests/cli/test_model_limits.py`。
+真实模型验收须显式按 `docs/superpowers/acceptance/context-compaction-protocol.md` 执行；
+Docker 实测依赖 `MINIAGENT_DOCKER_IMAGE`（`tests/environments/test_docker.py`）。
+本次未执行真实模型、Docker 或 SWE-bench 评测；CLI help 不验证 bootstrap 或任务成功。
 
 ## Sources of truth
 

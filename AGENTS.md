@@ -1,5 +1,5 @@
 <!-- repo-map:start -->
-<!-- repo-map: provisional-against 1ea696a | mapped 2026-09-23 -->
+<!-- repo-map: verified-against 710ac2b | mapped 2026-09-30 -->
 # Repository Orientation
 
 miniAgent 是 Python 3.13 的最小 Agent Runtime：模型在有界 Step loop 中调用工具，
@@ -15,11 +15,14 @@ SQLite journal → `ApplicationResult` and optional patch artifact manifest. Def
 strict tool argument validation, bounded structured tool results, `read_file`, `shell`,
 Local/Docker Workspace, and `PassThroughEvaluator`.
 
-SQLite Run/Event/Snapshot/Approval storage, persisted recovery context, and Event
-Span-scope generation are wired into `AgentRuntime`. Recovery decisions, cross-process
-resume, and Trace aggregation/export are not wired (`src/miniagent/runtime/recovery.py`,
-`src/miniagent/runtime/recording.py`). Treat `docs/blueprint.md` as roadmap, not proof
-of current behavior.
+SQLite Run/Event/Snapshot/Approval storage and Event Span scopes are wired into
+`AgentRuntime`. Context compaction runs at completed-Step boundaries with source
+validation and atomic Event/Snapshot persistence (`src/miniagent/runtime/context.py`,
+`src/miniagent/runtime/journal.py`). CLI loads required per-model capacity/output limits
+from `config/model_limits.toml` (`src/miniagent/cli/model_limits.py`). Recovery decisions,
+cross-process resume, and product Trace aggregation/export remain unwired
+(`src/miniagent/runtime/recovery.py`, `src/miniagent/runtime/tracing.py`).
+Treat `docs/blueprint.md` as roadmap, not proof of current behavior.
 
 ## Start here
 
@@ -31,15 +34,15 @@ of current behavior.
 - Behavioral coverage: matching domain directory under `tests/`
 - Detailed task routes and implementation status: `docs/repository-map.md`
 
-## Source of truth and verified commands
+## Source of truth and commands
 
 Code and tests define current behavior. `docs/CONTEXT.md` defines canonical domain
 terms; keep implementation details out of it. Use `docs/repository-map.md` for navigation.
 
-- Tests: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest -q`
-- Type check: `ty check`
+- Tests (not rerun for this docs-only refresh): `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest -q`
+- Verified type check: `ty check`
 - After modifying Python files, run `uv run ruff check --fix <changed-files>` and `uv run ruff format <changed-files>`. Avoid project-wide lint/format unless necessary.
-- CLI surface: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run miniagent --help`
+- Verified CLI surface: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run miniagent --help`
 
 <!-- repo-map:end -->
 
