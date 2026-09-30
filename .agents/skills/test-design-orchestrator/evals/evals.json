@@ -1,0 +1,113 @@
+{
+  "skill_name": "test-design-orchestrator",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Hey, can you design the test cases for this story? It's PBI-2231 in our backlog.\n\nAs a returning customer I want to redeem a voucher at checkout so that I get a discount.\n\nAC1 - The voucher code is 8 to 12 alphanumeric characters.\nAC2 - Gold members get 10% off orders of \u20ac50 or more, silver members get 5% off orders of \u20ac50 or more, everyone else gets no discount.\nAC3 - A voucher can be redeemed once. After it has been redeemed or after its expiry date it can no longer be used.\n\nPut the result in a markdown file please.",
+      "expected_output": "Splits the story into units (AC1 BVA, AC2 decision table + BVA on EUR 50, AC3 state transition), explains the split, traces tests to AC IDs, logs gaps instead of inventing behaviour.",
+      "files": [],
+      "assertions": [
+        "The deliverable opens with a test design plan that assigns a technique per unit and covers AC1, AC2 and AC3 as separate units",
+        "The split into units is explained (why one technique for everything would miss something)",
+        "AC1 is tested with boundary values 7, 8, 12 and 13 characters",
+        "AC2 is modelled as a decision table over membership tier and order total",
+        "The EUR 50 threshold is tested on both sides at the money step (49.99 and 50.00)",
+        "AC3 is modelled with voucher states and tests both reuse of a redeemed voucher and use after expiry",
+        "Every test case traces to an AC ID",
+        "At least three labelled assumptions or open questions are logged instead of invented behaviour",
+        "The run hit no missing referenced skill paths (run_notes.md)"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "We need to regression test the search page of our webshop across browsers. Chrome, Firefox, Safari and Edge; on Windows, macOS and Android; in English, French and Dutch; for guest and logged-in users; with both sort modes (relevance and price). Safari only runs on macOS in our lab and we don't test Edge on Android. The full matrix is way too big - give me a pairwise set we can actually run, as a markdown file.",
+      "expected_output": "A verified pairwise set that covers every feasible pair, respects the three constraints, states the reduction versus the full set, and gives real expected results.",
+      "files": [],
+      "assertions": [
+        "Every feasible pair of parameter values is covered by the test set (checked by script)",
+        "No test violates the constraints: Safari only on macOS, no Edge on Android (checked by script)",
+        "The test set has at most 20 tests",
+        "The deliverable states the reduction versus the number of allowed full combinations",
+        "Every combination has a concrete expected result, not a generic 'works without error'",
+        "The deliverable does not claim exhaustive coverage",
+        "The run hit no missing referenced skill paths (run_notes.md)"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Bug BUG-5812 came in from production: customers with exactly 10 items in their cart don't get the bulk discount. The requirement REQ-DISC-3 says orders with 10 or more items get 5% off the item subtotal. 11 items works fine according to support. Design the tests we need to confirm the fix and save them as markdown.",
+      "expected_output": "A confirmation test at exactly 10 items expecting 5% off, neighbouring BVA tests at 9 and 11, the test level(s) named explicitly, expected results from REQ-DISC-3.",
+      "files": [],
+      "assertions": [
+        "Contains a confirmation test at exactly 10 items expecting 5% off the item subtotal",
+        "Contains neighbouring tests at 9 items (no discount) and 11 items (discount)",
+        "Names the test level(s) at which the defect should be confirmed, with a reason",
+        "Expected results are concrete amounts or percentages traced to REQ-DISC-3 or BUG-5812",
+        "The run hit no missing referenced skill paths (run_notes.md)"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "Here are the quoting rules for our travel insurance product (RULES-TRV v2):\n- Travellers under 18 can only be insured together with an adult on the same policy.\n- Winter sports cover is only offered for trips within Europe.\n- Travellers aged 70 or older pay a 30% surcharge, unless they choose the basic plan.\n- Pre-existing medical conditions always go to manual underwriting.\n\nWhat test cases do we need for the quote engine? Markdown file is fine.",
+      "expected_output": "Decision-table based design with boundary tests on age 18 and 70, unspecified combinations flagged as questions rather than invented, traceability to RULES-TRV.",
+      "files": [],
+      "assertions": [
+        "Uses a decision table for the rule combinations",
+        "Tests the age boundaries on both sides of 18 (17/18) and of 70 (69/70)",
+        "Flags at least one unspecified or conflicting rule combination as an open question",
+        "Does not invent outcomes for combinations the rules leave unspecified",
+        "Test cases trace to RULES-TRV rules",
+        "The run hit no missing referenced skill paths (run_notes.md)"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "Here's use case UC-31 'Return an online order' from our analysis doc. Can you derive the test cases? Markdown file please.\n\nActor: registered customer. Precondition: the customer has a delivered order.\nMain success scenario:\n1. The customer opens the order in 'My orders' and chooses 'Return items'.\n2. The system shows the returnable items of the order.\n3. The customer selects one or more items and a return reason.\n4. The system checks that each selected item is still within the return window of 30 days after delivery.\n5. The system creates a return with a prepaid shipping label and emails the label to the customer.\n6. The customer ships the parcel. When the warehouse registers it, the system refunds the item price to the original payment method.\nExtensions:\n2a. The order contains no returnable items (all items are final sale): the system shows 'Nothing to return' and the use case ends.\n3a. The customer selects no item: the system asks to select at least one item and the customer returns to step 3.\n4a. An item is outside the return window: the system removes it from the return and tells the customer why. If no items remain, the use case ends.\n6a. The warehouse rejects an item as damaged by the customer: the system refunds nothing for that item and notifies the customer.\nPostcondition: the refunded amount equals the sum of the accepted items' prices, and the return has status Closed.",
+      "expected_output": "Path inventory with main path and 2a/3a/4a/6a, one test per path, postconditions on every path, the 30-day window split out as a boundary unit, traceability to UC-31 steps.",
+      "files": [],
+      "assertions": [
+        "A path inventory lists the main path and all four extensions (2a, 3a, 4a, 6a) with where each branches and where it ends",
+        "Every extension path has at least one test case",
+        "The 3a loop is tested back to completion (select nothing, then select an item and finish)",
+        "The 30-day return window is handled as its own boundary unit with tests on both sides of day 30",
+        "Alternate and exception paths check their postconditions or failure guarantees (e.g. no label, no refund, return status), not only the main path",
+        "Test cases trace to UC-31 steps or extension IDs",
+        "The run hit no missing referenced skill paths (run_notes.md)"
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "Can you turn these acceptance criteria into test scenarios? Gherkin is fine, save it as a markdown file.\n\nStory NOTIF-88: As a user I want to manage my notification preferences so that I only get the messages I care about.\nAC1: The user can switch email notifications on or off from the Settings page.\nAC2: When the user saves their preferences, a confirmation message 'Preferences saved' is shown.\nAC3: When email notifications are off, the user no longer receives the weekly digest email.\nAC4: The saved preferences are still applied after the user logs out and back in.",
+      "expected_output": "Acceptance-criteria scenarios traced to AC1-AC4, one behaviour per scenario, observable Then steps, gaps logged instead of invented behaviour, no over-engineered state or decision models.",
+      "files": [],
+      "assertions": [
+        "Acceptance Criteria to Test Cases is the primary technique; the story is not forced into a state-transition or decision-table model",
+        "Every acceptance criterion (AC1-AC4) has at least one scenario tagged with its ID",
+        "Each scenario has a single When and an observable Then (no 'works correctly')",
+        "Undefined behaviour (e.g. save failure, digest timing) is logged as a gap or question instead of an invented Then",
+        "Scenarios are implementation-agnostic: Given states context, not a click sequence",
+        "The run hit no missing referenced skill paths (run_notes.md)"
+      ]
+    },
+    {
+      "id": 7,
+      "prompt": "Our test team is triaging requirement snippets from different squads. For each snippet below, tell me which test design technique you would use and why. I only need the technique choice, not the test cases themselves. Save it as a markdown file.\n\n1. Coupon code length must be 6 to 10 characters inclusive.\n2. Applicant type can be employee, contractor, or guest. Guests are rejected. Employees and contractors may continue.\n3. A transfer is allowed only when the source account is active, the destination account is active, and the amount is below the risk threshold.\n4. Search results depend on browser, locale, sort order, and membership tier; exhaustive coverage is too large.\n5. An order can move from Draft to Submitted to Paid to Shipped, and cancellation is legal only before shipment.\n6. Given a registered shopper, when they apply a valid gift card during checkout, then the order total is reduced and the remaining balance is shown.\n7. UC-12 Reset password: the user requests a link, opens it and sets a new password. Extensions: an unknown email shows a neutral message; a link older than 24 hours is refused.\n8. Story PBI-2231. AC1: the voucher code is 8 to 12 alphanumeric characters. AC2: gold members get 10% off orders of EUR 50 or more, silver members 5%, others nothing. AC3: a voucher can be redeemed once and cannot be used after expiry.\n9. AC-4: Given a shopper, when the basket total is EUR 50 or more, then shipping is free.\n10. (The analyst explicitly asked for a decision table for this one.) Applicant type can be employee, contractor or guest; guests are rejected.\n11. Defect BUG-5812: carts with exactly 10 items do not get the 5% bulk discount; REQ-DISC-3 says 10 or more items get 5% off.",
+      "expected_output": "One technique per snippet with a short rationale; snippet 8 split into units; snippet 9 BVA; snippet 10 decision table with a note; snippet 11 BVA plus test level; no test cases.",
+      "files": [],
+      "assertions": [
+        "Snippets 1 and 9 get Boundary Value Analysis (9 despite its acceptance-criterion wording)",
+        "Snippet 2 gets Equivalence Partitioning",
+        "Snippet 3 gets Decision Table",
+        "Snippet 4 gets Classification Tree / N-Wise (pairwise)",
+        "Snippet 5 gets State Transition",
+        "Snippet 6 gets Acceptance Criteria to Test Cases",
+        "Snippet 7 gets Use Case Testing, with the 24-hour limit noted as a boundary concern",
+        "Snippet 8 is split into units: BVA for AC1, Decision Table (+BVA on EUR 50) for AC2, State Transition for AC3",
+        "Snippet 10 gets Decision Table as requested, with a note that equivalence partitioning would suffice",
+        "Snippet 11 gets Boundary Value Analysis and names the test level(s) for confirming the defect",
+        "No test cases are generated (the answer stops at technique choice)",
+        "The run hit no missing referenced skill paths (run_notes.md)"
+      ]
+    }
+  ]
+}

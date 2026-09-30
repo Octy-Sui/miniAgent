@@ -1,0 +1,7 @@
+interface:
+  display_name: "Test Design Orchestrator"
+  short_description: "Design structured software tests"
+  icon_small: "./assets/test-design-orchestrator-small.svg"
+  icon_large: "./assets/test-design-orchestrator.svg"
+  brand_color: "#0F766E"
+  default_prompt: "Use $test-design-orchestrator to turn these requirements into traceable test scenarios."

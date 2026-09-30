@@ -1,0 +1,61 @@
+[
+  {
+    "id": "selector-001",
+    "scenario": "Coupon code length must be 6 to 10 characters inclusive.",
+    "expected_primary": "Boundary Value Analysis"
+  },
+  {
+    "id": "selector-002",
+    "scenario": "Applicant type can be employee, contractor, or guest. Guests are rejected. Employees and contractors may continue.",
+    "expected_primary": "Equivalence Partitioning"
+  },
+  {
+    "id": "selector-003",
+    "scenario": "A transfer is allowed only when the source account is active, the destination account is active, and the amount is below the risk threshold.",
+    "expected_primary": "Decision Table"
+  },
+  {
+    "id": "selector-004",
+    "scenario": "Search results depend on browser, locale, sort order, and membership tier; exhaustive coverage is too large.",
+    "expected_primary": "Classification Tree / N-Wise"
+  },
+  {
+    "id": "selector-005",
+    "scenario": "An order can move from Draft to Submitted to Paid to Shipped, and cancellation is legal only before shipment.",
+    "expected_primary": "State Transition"
+  },
+  {
+    "id": "selector-006",
+    "scenario": "Given a registered shopper, when they apply a valid gift card during checkout, then the order total is reduced and the remaining balance is shown.",
+    "expected_primary": "Acceptance Criteria to Test Cases"
+  },
+  {
+    "id": "selector-007",
+    "scenario": "UC-12 Reset password: the user requests a link, opens it and sets a new password. Extensions: an unknown email shows a neutral message; a link older than 24 hours is refused.",
+    "expected_primary": "Use Case Testing",
+    "expected_secondary": "Boundary Value Analysis (24-hour link validity as its own unit)"
+  },
+  {
+    "id": "selector-008",
+    "scenario": "Story PBI-2231. AC1: the voucher code is 8 to 12 alphanumeric characters. AC2: gold members get 10% off orders of EUR 50 or more, silver members 5%, others nothing. AC3: a voucher can be redeemed once and cannot be used after expiry.",
+    "expected_primary": "Split into units: Boundary Value Analysis (AC1), Decision Table + BVA on EUR 50 (AC2), State Transition (AC3)"
+  },
+  {
+    "id": "selector-009",
+    "scenario": "AC-4: Given a shopper, when the basket total is EUR 50 or more, then shipping is free.",
+    "expected_primary": "Boundary Value Analysis",
+    "note": "acceptance-criterion wording, but the logic is a threshold"
+  },
+  {
+    "id": "selector-010",
+    "scenario": "Give me a decision table for this: applicant type can be employee, contractor or guest; guests are rejected.",
+    "expected_primary": "Decision Table",
+    "note": "user-mandated; the plan should mention that equivalence partitioning would suffice"
+  },
+  {
+    "id": "selector-011",
+    "scenario": "Defect BUG-5812: carts with exactly 10 items do not get the 5% bulk discount; REQ-DISC-3 says 10 or more items get 5% off.",
+    "expected_primary": "Boundary Value Analysis",
+    "note": "defect confirmation: confirmation test at 10 items, neighbours 9 and 11, and a 'Test level(s):' line"
+  }
+]

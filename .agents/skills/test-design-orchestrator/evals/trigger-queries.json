@@ -1,0 +1,20 @@
+[
+  {"query": "Turn this user story and acceptance criteria into test scenarios with traceability.", "should_trigger": true},
+  {"query": "Which test design technique fits these discount rules best?", "should_trigger": true},
+  {"query": "Generate pairwise combinations for these device options.", "should_trigger": true},
+  {"query": "I need BDD scenarios from these checkout acceptance criteria.", "should_trigger": true},
+  {"query": "our loan approval spec has 4 rules about age, income and a fraud flag - can you work out the test cases and tell me if any combination isn't specified?", "should_trigger": true},
+  {"query": "bug BUG-5812: carts with exactly 10 items don't get the 5% bulk discount (rule says 10 or more). what tests do we need to confirm the fix?", "should_trigger": true},
+  {"query": "order status goes draft -> submitted -> paid -> shipped and cancel is only allowed before shipped. write me the edge and negative test cases", "should_trigger": true},
+  {"query": "can you do boundary value analysis on the password rules in REQ-114 (8 to 64 chars, at least one digit)?", "should_trigger": true},
+  {"query": "Here is UC-07 'Transfer money' with its main flow and 3 extensions, derive the test cases please", "should_trigger": true},
+  {"query": "Can you format these tests into Zephyr Scale CSV?", "should_trigger": false},
+  {"query": "Package these BDD scenarios as Xray-importable feature files.", "should_trigger": false},
+  {"query": "Review these acceptance criteria for ambiguity and testability before our refinement session tomorrow.", "should_trigger": false},
+  {"query": "Write the acceptance criteria for this user story about resetting a password.", "should_trigger": false},
+  {"query": "Draft a test strategy for the new claims platform: test levels, environments, entry and exit criteria.", "should_trigger": false},
+  {"query": "Write Playwright tests for the login page from these Gherkin scenarios.", "should_trigger": false},
+  {"query": "Add JUnit 5 unit tests for the DiscountCalculator class in src/main/java/pricing.", "should_trigger": false},
+  {"query": "How do I install Zephyr Scale in Jira?", "should_trigger": false},
+  {"query": "Write a Python function to validate email addresses.", "should_trigger": false}
+]

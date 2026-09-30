@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Test Design Orchestrator logo">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#134E4A"/>
+      <stop offset="100%" stop-color="#0F766E"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+  <rect x="88" y="76" width="188" height="360" rx="36" fill="#F8FAFC"/>
+  <rect x="126" y="126" width="112" height="18" rx="9" fill="#0F766E"/>
+  <rect x="126" y="172" width="96" height="18" rx="9" fill="#99F6E4"/>
+  <rect x="126" y="218" width="74" height="18" rx="9" fill="#99F6E4"/>
+  <rect x="126" y="264" width="88" height="18" rx="9" fill="#99F6E4"/>
+  <rect x="126" y="310" width="68" height="18" rx="9" fill="#99F6E4"/>
+  <circle cx="362" cy="138" r="34" fill="#CCFBF1"/>
+  <circle cx="362" cy="256" r="34" fill="#5EEAD4"/>
+  <circle cx="362" cy="374" r="34" fill="#14B8A6"/>
+  <path d="M276 138h52M276 256h52M276 374h52" stroke="#CCFBF1" stroke-width="18" stroke-linecap="round"/>
+  <path d="M362 172v50M362 290v50" stroke="#CCFBF1" stroke-width="18" stroke-linecap="round"/>
+  <path d="M132 382l26 26 52-66" fill="none" stroke="#0F766E" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
