@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 from uuid import UUID
 
@@ -17,6 +17,7 @@ from miniagent.runtime import (
     RunResult,
     RunStatus,
     RuntimeStore,
+    RuntimeConfig,
 )
 from miniagent.tools.registry import ToolRegistry
 
@@ -51,6 +52,7 @@ class ApplicationDependencies:
     approval_handler: ApprovalHandler | None
     run_store: RuntimeStore
     recovery_context: RunRecoveryContext
+    config: RuntimeConfig = field(default_factory=RuntimeConfig)
 
 
 class Application:
@@ -61,6 +63,7 @@ class Application:
         dependencies = self.dependencies
         runtime = AgentRuntime(
             provider=dependencies.provider,
+            config=dependencies.config,
             tools=dependencies.tools,
             cancellation_token=cancellation_token,
             pricing=dependencies.pricing,

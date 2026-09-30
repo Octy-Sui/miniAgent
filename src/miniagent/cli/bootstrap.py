@@ -15,6 +15,7 @@ from miniagent.cli.application import (
     ApplicationDependencies,
 )
 from miniagent.cli.settings import Settings
+from miniagent.cli.model_limits import load_model_limits
 from miniagent.environments import (
     DockerOptions,
     DockerWorkspaceBackend,
@@ -37,6 +38,7 @@ from miniagent.policy import (
 from miniagent.providers.qwen import QwenProvider
 from miniagent.runtime import (
     RunRecoveryContext,
+    RuntimeConfig,
 )
 from miniagent.storage.sqlite import SQLiteRunStore
 from miniagent.tools.read_file import ReadFileTool
@@ -109,6 +111,10 @@ class BootstrapConfig:
 
 async def bootstrap(config: BootstrapConfig) -> Application:
     settings = Settings()
+    limits = load_model_limits(settings.model_limits_file, config.agent.model.provider, config.agent.model.model)
+    runtime_config = RuntimeConfig(context_window_tokens=limits.context_window_tokens)
+    runtime_config.validate_output_limit(limits.max_output_tokens)
+    agent = config.agent.model_copy(update={"generation": config.agent.generation.model_copy(update={"max_output_tokens": limits.max_output_tokens})})
     run_id = uuid4()
     workspace_config = WorkspaceConfig(
         kind=config.workspace_kind or WorkspaceKind(settings.workspace_backend),
@@ -125,10 +131,11 @@ async def bootstrap(config: BootstrapConfig) -> Application:
         await run_store.initialize()
         return Application(
             ApplicationDependencies(
-                agent=config.agent,
+                agent=agent,
+                config=runtime_config,
                 task=config.task,
                 run_id=run_id,
-                provider=build_provider(config.agent, settings),
+                provider=build_provider(agent, settings),
                 tools=build_tools(instance),
                 workspace=instance,
                 artifact_store=artifact_store,

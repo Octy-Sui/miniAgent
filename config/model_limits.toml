@@ -1,0 +1,5 @@
+[[models]]
+provider = "qwen"
+model = "qwen3.8-flash"
+context_window_tokens = 32768
+max_output_tokens = 4096
