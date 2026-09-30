@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from miniagent.evaluation import CandidateOutput
-from miniagent.metering.usage import RequestCost
+from miniagent.metering.usage import RequestCost, add_request_usage
 from miniagent.models.messages import ToolMessage
 from miniagent.models.protocol import ModelResponse
 from miniagent.policy import (
@@ -15,6 +15,10 @@ from miniagent.policy import (
     PolicyDecision,
 )
 from miniagent.runtime.events import (
+    CompactionAttempt,
+    CompactionRequested,
+    CompactionAttemptRecorded,
+    CompactionFailed,
     ApprovalInvalidated,
     ApprovalRequested,
     ApprovalResolved,
@@ -33,6 +37,8 @@ from miniagent.runtime.events import (
     ToolStarted,
 )
 from miniagent.runtime.journal import RunJournal
+from miniagent.runtime.context import CompactionPlan
+from miniagent.runtime.state import ConversationState
 from miniagent.runtime.result import RunError, RunResult, TerminationReason
 from miniagent.runtime.state import RunState, RunStatus
 from miniagent.runtime.termination import tool_step_failed
@@ -142,6 +148,28 @@ class RunExecution:
             status=RunStatus.FAILED,
             reason=TerminationReason.MAX_STEPS_REACHED,
         )
+
+    async def begin_compaction_attempt(self, plan: CompactionPlan, attempt: int) -> None:
+        state = self.state.model_copy(update={'usage': self.state.usage.model_copy(update={'model_requests': self.state.usage.model_requests + 1})})
+        target = state.definition.agent_spec.model
+        event = self.trace.run_event(CompactionRequested(provider=target.provider, model=target.model, attempt=attempt, source_snapshot_version=plan.source_snapshot_version, covered_messages=plan.covered_messages))
+        await self.journal.record_activity(state, [event])
+        self.state = state
+
+    async def record_compaction_attempt(self, attempt: CompactionAttempt) -> None:
+        state = self.state
+        if attempt.usage is not None:
+            state = state.model_copy(update={'usage': add_request_usage(state.usage, attempt.usage, attempt.request_cost)})
+        await self.journal.record_activity(state, [self.trace.run_event(CompactionAttemptRecorded(result=attempt))])
+        self.state = state
+
+    async def fail_compaction(self, code: str, reason: str, attempts: tuple[CompactionAttempt, ...] = ()) -> None:
+        await self.journal.record_activity(self.state, [self.trace.run_event(CompactionFailed(code=code, reason=reason, attempts=attempts))])
+
+    async def publish_compaction(self, conversation: ConversationState, plan: CompactionPlan, *, attempts: tuple[CompactionAttempt, ...], new_tokens: int, summary_input_tokens: int, source_snapshot_id: UUID | None) -> None:
+        state, event = self.journal.prepare_compaction(self.state, conversation, plan, attempts=attempts, new_tokens=new_tokens, summary_input_tokens=summary_input_tokens, source_snapshot_id=source_snapshot_id)
+        await self.journal.compact(state, event)
+        self.state = state
 
     async def begin_step(self, *, provider: str, model: str) -> None:
         next_state = advance_step(self.state)

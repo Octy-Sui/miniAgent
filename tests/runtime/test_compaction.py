@@ -106,3 +106,131 @@ async def test_compaction_rejects_inconsistent_step_metadata_atomically(tmp_path
         await journal.compact(state, event)
     assert (await store.get(state.identity.run_id)).state == plan.state
     assert len(await store.list_events(state.identity.run_id)) == 1
+
+
+class PipelineEstimator:
+    def __init__(self, old=10001, summary=3000, candidate=1000):
+        self.old, self.summary, self.candidate = old, summary, candidate
+
+    def estimate(self, request):
+        if 'summary_schema' in (request.messages[-1].content or ''):
+            return self.summary
+        if len(request.messages) > 2 and 'Historical continuation summary' in (request.messages[2].content or ''):
+            return self.candidate
+        return self.old if len(request.messages) >= 10 else 1000
+
+
+async def pipeline(tmp_path, *, old=10001, summary=3000, candidate=1000, response=None):
+    from miniagent.runtime import AgentRuntime
+    from miniagent.runtime.execution import RunExecution
+    from miniagent.tools.registry import ToolRegistry
+    from test_runtime import QueueProvider
+
+    plan = summary_plan()
+    store = SQLiteRunStore(tmp_path / 'pipeline.sqlite3')
+    await store.initialize()
+    from miniagent.runtime.state import RunLifecycle
+    seed = plan.state.model_copy(update={"lifecycle": RunLifecycle(updated_at=plan.state.lifecycle.updated_at), "execution": plan.state.execution.model_copy(update={"cursor": None})})
+    execution = await RunExecution.start(seed, RunJournal(RunRecorder(run_id=plan.state.identity.run_id, store=store, recovery_context=None)))
+    provider = QueueProvider([response or summary_response()])
+    runtime = AgentRuntime(provider=provider, tools=ToolRegistry([]), run_store=store, estimator=PipelineEstimator(old, summary, candidate))
+    return runtime, execution, provider, store
+
+
+async def test_pre_step_compaction_counts_calls_and_publishes_snapshot(tmp_path) -> None:
+    from miniagent.runtime.execution import RunTermination
+
+    runtime, execution, provider, store = await pipeline(tmp_path)
+    request = await runtime._prepare_request(execution)
+    assert not isinstance(request, RunTermination)
+    assert execution.state.execution.steps_started == 6
+    assert execution.state.usage.model_requests == 1
+    assert len(provider.requests) == 1
+    assert provider.requests[0].tools == ()
+    assert (await store.load_latest(execution.state.identity.run_id)).version == 2
+    assert execution.state.context.current_version == 1
+    assert request.messages == execution.state.conversation.messages
+    await validate_compaction_record(await store.get(execution.state.identity.run_id), store)
+
+
+@pytest.mark.parametrize(('old', 'terminates'), [(7000, False), (10001, True)])
+async def test_summary_input_over_budget_safe_and_unsafe_old_request(tmp_path, old, terminates) -> None:
+    from miniagent.runtime.execution import RunTermination
+
+    runtime, execution, provider, store = await pipeline(tmp_path, old=old, summary=9477)
+    outcome = await runtime._prepare_request(execution)
+    assert isinstance(outcome, RunTermination) is terminates
+    if terminates: assert outcome.error.code == 'COMPACTION_INPUT_TOO_LARGE'
+    assert provider.requests == []
+    assert execution.state.execution.steps_started == 6
+    assert execution.state.usage.model_requests == 0
+    assert execution.state.context.current_version is None
+    assert (await store.load_latest(execution.state.identity.run_id)).version == 1
+    types = [event.type.value for event in await store.list_events(execution.state.identity.run_id)]
+    assert types == ['run_started', 'compaction_failed']
+
+
+@pytest.mark.parametrize(('old', 'candidate', 'published', 'terminates'), [(7000, 5000, True, False), (7000, 5001, False, False), (10001, 10000, True, False), (10001, 10001, False, True)])
+async def test_candidate_budget_boundaries(tmp_path, old, candidate, published, terminates) -> None:
+    from miniagent.runtime.execution import RunTermination
+
+    runtime, execution, provider, store = await pipeline(tmp_path, old=old, candidate=candidate)
+    outcome = await runtime._prepare_request(execution)
+    assert isinstance(outcome, RunTermination) is terminates
+    assert (execution.state.context.current_version == 1) is published
+    assert len(provider.requests) == 1
+    assert (await store.load_latest(execution.state.identity.run_id)).version == (2 if published else 1)
+
+
+async def test_rejected_summary_usage_and_price_are_counted(tmp_path) -> None:
+    from decimal import Decimal
+    from miniagent.metering.pricing import ModelPrice, PriceConfig
+    from miniagent.models.protocol import ModelUsage
+
+    response = summary_response(current_goal='').model_copy(update={'usage': ModelUsage(input_tokens=10, cached_input_tokens=3, output_tokens=2, total_tokens=12), 'provider_request_id': 'summary-request'})
+    runtime, execution, provider, store = await pipeline(tmp_path, old=7000, response=response)
+    runtime.pricing = PriceConfig(models=[ModelPrice(provider='qwen', model='test', input_per_token=Decimal('1'), cached_input_per_token=Decimal('.5'), output_per_token=Decimal('2'))])
+    await runtime._prepare_request(execution)
+    assert execution.state.usage.input_tokens == 10
+    assert execution.state.usage.cached_input_tokens == 3
+    assert execution.state.usage.output_tokens == 2
+    assert execution.state.usage.cost_usd == Decimal('12.5')
+    failed = (await store.list_events(execution.state.identity.run_id))[-1].payload
+    assert failed.attempts[0].provider_request_id == 'summary-request'
+    assert failed.attempts[0].usage.total_tokens == 12
+    assert execution.state.context.current_version is None
+
+
+async def test_missing_summary_usage_stays_unknown(tmp_path) -> None:
+    runtime, execution, provider, store = await pipeline(tmp_path, old=7000, response=summary_response(current_goal=''))
+    await runtime._prepare_request(execution)
+    failed = (await store.list_events(execution.state.identity.run_id))[-1].payload
+    assert failed.attempts[0].usage is None
+
+
+async def test_compaction_continues_same_run_before_business_step(tmp_path) -> None:
+    from miniagent.agents import AgentSpec
+    from miniagent.models.config import GenerationOptions, ModelTarget
+    from miniagent.models.protocol import ModelResponse, FinishReason
+    from miniagent.runtime import AgentRuntime, RuntimeConfig, RunStatus
+    from miniagent.tools.contracts import ToolCall
+    from miniagent.tools.registry import ToolRegistry
+    from test_runtime import QueueProvider, SuccessfulTool, AllowPolicyEngine
+
+    tool = SuccessfulTool()
+    tool_response = ModelResponse(message=AssistantMessage(tool_calls=(ToolCall(id='reused', name='ok', arguments={}),)), finish_reason=FinishReason.TOOL_CALL)
+    provider = QueueProvider([tool_response] * 4 + [summary_response(), ModelResponse(message=AssistantMessage(content='done'), finish_reason=FinishReason.STOP)])
+    store = SQLiteRunStore(tmp_path / 'integration.sqlite3')
+    await store.initialize()
+    runtime = AgentRuntime(provider=provider, tools=ToolRegistry([tool]), policy_engine=AllowPolicyEngine(), run_store=store, estimator=PipelineEstimator(), config=RuntimeConfig(context_window_tokens=12000))
+    result = await runtime.run(AgentSpec(name='test', system_prompt='fixed', model=ModelTarget(provider='qwen', model='test'), generation=GenerationOptions(max_output_tokens=976), allowed_tools=('ok',)), 'task')
+    assert result.status is RunStatus.SUCCEEDED
+    assert result.usage.model_requests == 6
+    assert result.usage.tool_calls == 4
+    assert tool.executions == 4
+    assert provider.requests[4].tools == ()
+    assert len(provider.requests[5].tools) == 1
+    record = await store.get(result.run_id)
+    assert record.state.execution.steps_started == 5
+    assert record.state.context.current_version == 1
+    await validate_compaction_record(record, store)
