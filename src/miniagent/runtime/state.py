@@ -63,8 +63,21 @@ class RunLifecycle(_StatePart):
     error: RunError | None = None
 
 
+class StepRange(_StatePart):
+    step_number: int = Field(ge=1)
+    message_start: int = Field(ge=2)
+    message_end: int = Field(ge=3)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "StepRange":
+        if self.message_end <= self.message_start:
+            raise ValueError("Step message range must be nonempty")
+        return self
+
+
 class ConversationState(_StatePart):
     messages: tuple[Message, ...] = ()
+    completed_steps: tuple[StepRange, ...] = ()
 
 
 class ToolBatch(_StatePart):
