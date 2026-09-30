@@ -22,7 +22,7 @@ class SnapshotVersionConflictError(RuntimeError):
 class NewRunSnapshot(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     run_id: UUID
     event_sequence: int = Field(ge=0)
     state: RunState
@@ -55,3 +55,5 @@ class SnapshotStore(Protocol):
     ) -> Awaitable[RunSnapshot]: ...
 
     async def load_latest(self, run_id: UUID) -> RunSnapshot | None: ...
+
+    async def load_version(self, run_id: UUID, version: int) -> RunSnapshot | None: ...

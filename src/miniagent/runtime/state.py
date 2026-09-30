@@ -2,14 +2,14 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from miniagent.agents import AgentSpec
 from miniagent.metering.usage import RunUsage
 from miniagent.models.messages import Message
 from miniagent.runtime.config import RuntimeConfig
 from miniagent.runtime.result import RunError, RunResult, TerminationReason
-from miniagent.tools.contracts import ToolCall
+from miniagent.tools.contracts import ToolCall, ToolDefinition
 
 
 class RunStatus(StrEnum):
@@ -47,6 +47,8 @@ class RunIdentity(_StatePart):
 class RunDefinition(_StatePart):
     agent_spec: AgentSpec
     config: RuntimeConfig
+    tool_definitions: tuple[ToolDefinition, ...] = ()
+    tool_contract_metadata: tuple[dict[str, JsonValue], ...] = ()
 
 
 class RunLifecycle(_StatePart):

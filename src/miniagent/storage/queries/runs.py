@@ -45,7 +45,7 @@ def insert_run(
         INSERT INTO runs (
             run_id, schema_version, status, state_json,
             recovery_context_json, created_at, updated_at, finished_at
-        ) VALUES (?, 1, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, 2, ?, ?, ?, ?, ?, ?)
         """,
         (
             run_id,

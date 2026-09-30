@@ -951,7 +951,7 @@ async def test_concurrent_initialization_serializes_migration(tmp_path: Path) ->
     await asyncio.gather(*(store.initialize() for store in stores))
 
     with sqlite3.connect(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert (
             connection.execute(
@@ -961,7 +961,7 @@ async def test_concurrent_initialization_serializes_migration(tmp_path: Path) ->
         )
 
 
-@pytest.mark.parametrize("version", [2, 3])
+@pytest.mark.parametrize("version", [1, 3])
 async def test_unsupported_database_schema_is_rejected(
     tmp_path: Path,
     version: int,
@@ -970,7 +970,7 @@ async def test_unsupported_database_schema_is_rejected(
     with sqlite3.connect(path) as connection:
         connection.execute(f"PRAGMA user_version = {version}")
 
-    with pytest.raises(UnsupportedStorageVersionError, match="expected 1"):
+    with pytest.raises(UnsupportedStorageVersionError, match="expected 2"):
         await SQLiteRunStore(path).initialize()
 
 
@@ -1011,7 +1011,7 @@ async def test_newer_record_versions_are_reported_as_unsupported(
     await store.create(state)
     with sqlite3.connect(path) as connection:
         connection.execute(
-            "UPDATE runs SET schema_version = 2 WHERE run_id = ?",
+            "UPDATE runs SET schema_version = 99 WHERE run_id = ?",
             (str(state.identity.run_id),),
         )
 
@@ -1079,7 +1079,7 @@ async def test_newer_related_record_versions_are_reported_as_unsupported(
         with sqlite3.connect(path) as connection:
             connection.execute("DROP TRIGGER run_snapshots_no_update")
             connection.execute(
-                "UPDATE run_snapshots SET schema_version = 2 WHERE run_id = ?",
+                "UPDATE run_snapshots SET schema_version = 99 WHERE run_id = ?",
                 (str(state.identity.run_id),),
             )
         operation = store.load_latest(state.identity.run_id)
@@ -1098,3 +1098,28 @@ async def test_newer_related_record_versions_are_reported_as_unsupported(
 
     with pytest.raises(UnsupportedStorageVersionError, match=record_kind):
         await operation
+
+
+async def test_historical_snapshot_preserves_request(tmp_path: Path) -> None:
+    from miniagent.models.config import GenerationOptions
+    from miniagent.models.messages import SystemMessage, UserMessage
+    from miniagent.runtime import AgentRuntime
+    from miniagent.tools.registry import ToolRegistry
+    from miniagent.models.protocol import ModelProvider
+
+    class UnusedProvider(ModelProvider):
+        async def generate(self, request):
+            raise AssertionError("no provider call expected")
+
+    store = SQLiteRunStore(tmp_path / 'history.sqlite3')
+    await store.initialize()
+    agent = AgentSpec(name='test', system_prompt='fixed', model=ModelTarget(provider='qwen', model='test'), generation=GenerationOptions(max_output_tokens=976))
+    state = create_run_state(run_id=uuid4(), task='task', agent_spec=agent, config=RuntimeConfig(), messages=(SystemMessage(content='fixed'), UserMessage(content='task')))
+    await store.create(state)
+    first = await store.save(NewRunSnapshot(run_id=state.identity.run_id, event_sequence=0, state=state), expected_version=0)
+    await store.save(NewRunSnapshot(run_id=state.identity.run_id, event_sequence=0, state=state), expected_version=1)
+    assert await store.load_version(state.identity.run_id, 1) == first
+    assert await store.load_version(uuid4(), 1) is None
+    assert await store.load_version(state.identity.run_id, 3) is None
+    runtime = AgentRuntime(provider=UnusedProvider(), tools=ToolRegistry([]))
+    assert runtime._build_request((await store.load_version(state.identity.run_id, 1)).state).model_dump() == runtime._build_request(state).model_dump()

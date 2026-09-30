@@ -116,4 +116,4 @@ BEGIN
     SELECT RAISE(ABORT, 'run snapshots are immutable');
 END;
 
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;

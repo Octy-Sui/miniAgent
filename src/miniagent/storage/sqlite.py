@@ -74,9 +74,9 @@ from miniagent.storage.queries.runs import (
     update_run,
     update_snapshot_version,
 )
-from miniagent.storage.queries.snapshots import insert_snapshot, select_latest_snapshot
+from miniagent.storage.queries.snapshots import insert_snapshot, select_latest_snapshot, select_snapshot_version
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _T = TypeVar("_T")
 
 
@@ -173,6 +173,13 @@ class SQLiteRunStore:
                 expected_version=expected_version,
             )
         )
+
+    async def load_version(self, run_id: UUID, version: int) -> RunSnapshot | None:
+        def load() -> RunSnapshot | None:
+            with self._connect() as connection:
+                row = select_snapshot_version(connection, run_id, version)
+                return decode_snapshot(row) if row is not None else None
+        return await self._in_thread(load)
 
     async def load_latest(self, run_id: UUID) -> RunSnapshot | None:
         return await self._in_thread(lambda: self._load_latest_sync(run_id))

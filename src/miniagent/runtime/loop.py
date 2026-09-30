@@ -38,6 +38,7 @@ from miniagent.runtime.recovery import RunRecoveryContext
 from miniagent.runtime.result import RunError, RunResult, TerminationReason
 from miniagent.runtime.state import (
     RunState,
+    RunDefinition,
     RunStatus,
     create_run_state,
 )
@@ -86,6 +87,7 @@ class AgentRuntime:
         recovery_context: RunRecoveryContext | None = None,
     ) -> RunResult:
         self._validate_agent_tools(agent)
+        self.config.validate_output_limit(agent.generation.max_output_tokens)
         if self.pricing is not None:
             self.pricing.price_for(agent.model.provider, agent.model.model)
 
@@ -101,6 +103,7 @@ class AgentRuntime:
             ),
             created_at=now,
         )
+        state = state.model_copy(update={"definition": RunDefinition(agent_spec=state.definition.agent_spec, config=state.definition.config, tool_definitions=tuple(self.tools.definitions(agent.allowed_tools)), tool_contract_metadata=tuple(self.tools.contract_metadata(name) for name in agent.allowed_tools))})
         execution = await RunExecution.start(
             state,
             RunJournal(
@@ -161,7 +164,7 @@ class AgentRuntime:
         )
         try:
             response = await await_with_cancellation(
-                self.provider.generate(self._build_request(agent, execution.state)),
+                self.provider.generate(self._build_request(execution.state)),
                 self.cancellation_token,
             )
         except CancellationRequested:
@@ -299,12 +302,16 @@ class AgentRuntime:
         except ValueError as exc:
             raise ValueError(f"Invalid tools for agent {agent.name!r}: {exc}") from exc
 
-    def _build_request(self, agent: AgentSpec, state: RunState) -> ModelRequest:
+    def _build_request(self, state: RunState) -> ModelRequest:
+        agent = state.definition.agent_spec
+        messages = state.conversation.messages
+        if len(messages) < 2 or messages[:2] != (SystemMessage(content=agent.system_prompt), UserMessage(content=state.identity.task)):
+            raise ValueError("fixed system/task prefix does not match Run definition")
+        if tuple(self.tools.definitions(agent.allowed_tools)) != state.definition.tool_definitions or tuple(self.tools.contract_metadata(name) for name in agent.allowed_tools) != state.definition.tool_contract_metadata:
+            raise ValueError("tool contract does not match persisted Run definition")
         return ModelRequest(
             model=agent.model.model,
-            messages=tuple(
-                message.model_copy(deep=True) for message in state.conversation.messages
-            ),
-            tools=tuple(self.tools.definitions(agent.allowed_tools)),
+            messages=tuple(message.model_copy(deep=True) for message in messages),
+            tools=tuple(tool.model_copy(deep=True) for tool in state.definition.tool_definitions),
             generation=agent.generation.model_copy(deep=True),
         )

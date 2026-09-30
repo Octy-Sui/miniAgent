@@ -28,3 +28,7 @@ def insert_snapshot(
         """,
         values,
     )
+
+
+def select_snapshot_version(connection: sqlite3.Connection, run_id: UUID, version: int) -> sqlite3.Row | None:
+    return connection.execute("SELECT * FROM run_snapshots WHERE run_id = ? AND version = ?", (str(run_id), version)).fetchone()
