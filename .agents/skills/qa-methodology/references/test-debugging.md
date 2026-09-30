@@ -73,6 +73,7 @@ Python imports bind names into the importing module's namespace at import time:
 # myapp/service.py
 from myapp.clients import HttpClient  # binds 'HttpClient' in service.py's namespace
 
+
 def fetch_data():
     client = HttpClient()  # looks up 'HttpClient' in service.py's globals
     return client.get("/api/data")
@@ -81,7 +82,6 @@ def fetch_data():
 ```python
 # WRONG: patches the definition point — service.py still has the original reference
 @patch("myapp.clients.HttpClient")
-
 # RIGHT: patches where service.py looks it up
 @patch("myapp.service.HttpClient")
 def test_fetch_data(mock_client):

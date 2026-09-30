@@ -1103,25 +1103,45 @@ async def test_newer_related_record_versions_are_reported_as_unsupported(
 async def test_historical_snapshot_preserves_request(tmp_path: Path) -> None:
     from miniagent.models.config import GenerationOptions
     from miniagent.models.messages import SystemMessage, UserMessage
+    from miniagent.models.protocol import ModelProvider
     from miniagent.runtime import AgentRuntime
     from miniagent.tools.registry import ToolRegistry
-    from miniagent.models.protocol import ModelProvider
 
     class UnusedProvider(ModelProvider):
         async def generate(self, request):
             raise AssertionError("no provider call expected")
 
-    store = SQLiteRunStore(tmp_path / 'history.sqlite3')
+    store = SQLiteRunStore(tmp_path / "history.sqlite3")
     await store.initialize()
-    agent = AgentSpec(name='test', system_prompt='fixed', model=ModelTarget(provider='qwen', model='test'), generation=GenerationOptions(max_output_tokens=976))
-    state = create_run_state(run_id=uuid4(), task='task', agent_spec=agent, config=RuntimeConfig(), messages=(SystemMessage(content='fixed'), UserMessage(content='task')))
+    agent = AgentSpec(
+        name="test",
+        system_prompt="fixed",
+        model=ModelTarget(provider="qwen", model="test"),
+        generation=GenerationOptions(max_output_tokens=976),
+    )
+    state = create_run_state(
+        run_id=uuid4(),
+        task="task",
+        agent_spec=agent,
+        config=RuntimeConfig(),
+        messages=(SystemMessage(content="fixed"), UserMessage(content="task")),
+    )
     await store.create(state)
-    first = await store.save(NewRunSnapshot(run_id=state.identity.run_id, event_sequence=0, state=state), expected_version=0)
-    await store.save(NewRunSnapshot(run_id=state.identity.run_id, event_sequence=0, state=state), expected_version=1)
+    first = await store.save(
+        NewRunSnapshot(run_id=state.identity.run_id, event_sequence=0, state=state),
+        expected_version=0,
+    )
+    await store.save(
+        NewRunSnapshot(run_id=state.identity.run_id, event_sequence=0, state=state),
+        expected_version=1,
+    )
     assert await store.load_version(state.identity.run_id, 1) == first
     assert await store.load_version(uuid4(), 1) is None
     assert await store.load_version(state.identity.run_id, 3) is None
     runtime = AgentRuntime(provider=UnusedProvider(), tools=ToolRegistry([]))
     restored = await store.load_version(state.identity.run_id, 1)
     assert restored is not None
-    assert runtime._build_request(restored.state).model_dump() == runtime._build_request(state).model_dump()
+    assert (
+        runtime._build_request(restored.state).model_dump()
+        == runtime._build_request(state).model_dump()
+    )

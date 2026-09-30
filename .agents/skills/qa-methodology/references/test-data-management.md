@@ -26,15 +26,19 @@
 import factory
 from myapp.models import User, Order
 
+
 class UserFactory(factory.django.DjangoModelFactory):
     class Meta:
         model = User
+
     email = factory.Sequence(lambda n: f"user{n}@test.dev")
     name = factory.Faker("name")
+
 
 class OrderFactory(factory.django.DjangoModelFactory):
     class Meta:
         model = Order
+
     user = factory.SubFactory(UserFactory)
     total = factory.Faker("pydecimal", min_value=1, max_value=500, right_digits=2)
 ```
@@ -66,10 +70,12 @@ Tests that depend on the current time are flaky by construction. Freeze or mock 
 ```python
 from freezegun import freeze_time
 
+
 @freeze_time("2025-06-15 12:00:00")
 def test_subscription_expiry():
     user = UserFactory(subscription_start=date(2025, 5, 15))
     assert user.subscription_expired is True  # 31 days > 30-day window
+
 
 @freeze_time("2025-06-10 12:00:00")
 def test_subscription_active():

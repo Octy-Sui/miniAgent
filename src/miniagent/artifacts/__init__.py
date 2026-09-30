@@ -2,7 +2,6 @@
 # Created: 2026-09-11 18:42:22
 # Author : octy Sui
 
-from miniagent.artifacts.file import FileArtifactStore
 from miniagent.artifacts.contracts import (
     ArtifactNotFoundError,
     ArtifactRecord,
@@ -10,6 +9,7 @@ from miniagent.artifacts.contracts import (
     ArtifactStore,
     ArtifactWrite,
 )
+from miniagent.artifacts.file import FileArtifactStore
 
 __all__ = [
     "ArtifactNotFoundError",

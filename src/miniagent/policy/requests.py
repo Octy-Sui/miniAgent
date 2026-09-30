@@ -79,12 +79,15 @@ def build_policy_request(
         operation=operation_for_tool(tool_name, arguments),
         agent_spec_digest=digest_json(agent.model_dump(mode="json")),
         tool_contract_digest=digest_json(
-            dict(tool_contract_metadata or {
-                "name": definition.name,
-                "version": "1",
-                "input_schema": definition.input_schema,
-                "execution_options": {},
-            })
+            dict(
+                tool_contract_metadata
+                or {
+                    "name": definition.name,
+                    "version": "1",
+                    "input_schema": definition.input_schema,
+                    "execution_options": {},
+                }
+            )
         ),
         workspace_id=context.workspace_id,
         workspace_kind=context.workspace_kind,

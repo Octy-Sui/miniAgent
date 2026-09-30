@@ -89,9 +89,7 @@ def successful_result(*, separate_cache_pricing: bool = False) -> RunResult:
                 "0.0093920" if separate_cache_pricing else "0"
             ),
             output_cost_usd=Decimal("0.0512736"),
-            cost_usd=Decimal(
-                "0.0762716" if separate_cache_pricing else "0.1044476"
-            ),
+            cost_usd=Decimal("0.0762716" if separate_cache_pricing else "0.1044476"),
         ),
         started_at=now,
         finished_at=now,
@@ -139,9 +137,7 @@ async def test_first_signal_requests_graceful_cancellation(
             await cancellation_token.wait()
             return ApplicationResult(run_result=expected_result)
 
-    run = asyncio.create_task(
-        run_with_signals(cast(Application, WaitingAgent()))
-    )
+    run = asyncio.create_task(run_with_signals(cast(Application, WaitingAgent())))
     await asyncio.sleep(0)
     signal_loop.send(signal.SIGINT)
 
@@ -166,9 +162,7 @@ async def test_second_signal_forces_task_cancellation(
             await asyncio.Event().wait()
             raise AssertionError("unreachable")
 
-    run = asyncio.create_task(
-        run_with_signals(cast(Application, BlockingAgent()))
-    )
+    run = asyncio.create_task(run_with_signals(cast(Application, BlockingAgent())))
     await started.wait()
     signal_loop.send(signal.SIGTERM)
     signal_loop.send(signal.SIGTERM)
@@ -220,8 +214,7 @@ def test_separate_cache_pricing_prints_cache_cost(
     assert invocation.exit_code == 0
     assert (
         "Cost: total=$0.07627160 uncached_input=$0.01560600 "
-        "cached=$0.00939200 output=$0.05127360 USD\n"
-        in invocation.stdout
+        "cached=$0.00939200 output=$0.05127360 USD\n" in invocation.stdout
     )
 
 

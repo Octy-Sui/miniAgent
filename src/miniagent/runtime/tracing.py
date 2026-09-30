@@ -82,7 +82,9 @@ class TraceSpan(BaseModel):
             raise ValueError("Trace span cannot end before it starts")
 
         if (self.end_sequence is None) != (self.ended_at is None):
-            raise ValueError("Trace span end sequence and time must be recorded together")
+            raise ValueError(
+                "Trace span end sequence and time must be recorded together"
+            )
         has_end = self.end_sequence is not None
         if self.duration_ms is not None and not has_end:
             raise ValueError("Trace span duration requires an end")

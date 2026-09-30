@@ -19,7 +19,9 @@ def run_exists(connection: sqlite3.Connection, run_id: UUID) -> bool:
     )
 
 
-def latest_positions(connection: sqlite3.Connection, run_id: UUID) -> sqlite3.Row | None:
+def latest_positions(
+    connection: sqlite3.Connection, run_id: UUID
+) -> sqlite3.Row | None:
     return connection.execute(
         """
         SELECT last_event_sequence, latest_snapshot_version

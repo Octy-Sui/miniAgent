@@ -40,8 +40,8 @@ from miniagent.runtime import (
     TerminationReason,
     create_run_state,
 )
-from miniagent.runtime.execution import RunExecution
 from miniagent.runtime.events import ToolEnded
+from miniagent.runtime.execution import RunExecution
 from miniagent.runtime.journal import RunJournal
 from miniagent.runtime.recording import RunRecorder
 from miniagent.runtime.transitions import (
@@ -751,29 +751,76 @@ def test_request_rejects_fixed_prefix_tampering() -> None:
     from miniagent.models.messages import SystemMessage, UserMessage
     from miniagent.runtime.state import ConversationState
 
-    agent = AgentSpec(name='test', system_prompt='fixed', model=ModelTarget(provider='qwen', model='test'), generation=GenerationOptions(max_output_tokens=976))
-    state = create_run_state(run_id=uuid4(), task='task', agent_spec=agent, config=RuntimeConfig(), messages=(SystemMessage(content='fixed'), UserMessage(content='task')))
+    agent = AgentSpec(
+        name="test",
+        system_prompt="fixed",
+        model=ModelTarget(provider="qwen", model="test"),
+        generation=GenerationOptions(max_output_tokens=976),
+    )
+    state = create_run_state(
+        run_id=uuid4(),
+        task="task",
+        agent_spec=agent,
+        config=RuntimeConfig(),
+        messages=(SystemMessage(content="fixed"), UserMessage(content="task")),
+    )
     runtime = AgentRuntime(provider=QueueProvider([]), tools=ToolRegistry([]))
     assert runtime._build_request(state).generation.max_output_tokens == 976
-    altered = state.model_copy(update={'conversation': ConversationState(messages=(SystemMessage(content='tampered'), UserMessage(content='task')))})
-    with pytest.raises(ValueError, match='fixed'):
+    altered = state.model_copy(
+        update={
+            "conversation": ConversationState(
+                messages=(
+                    SystemMessage(content="tampered"),
+                    UserMessage(content="task"),
+                )
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="fixed"):
         runtime._build_request(altered)
 
 
-@pytest.mark.parametrize(('change',), [('description',), ('schema',), ('version',)])
+@pytest.mark.parametrize(("change",), [("description",), ("schema",), ("version",)])
 def test_request_rejects_changed_tool_contract(change: str) -> None:
     from miniagent.models.messages import SystemMessage, UserMessage
     from miniagent.runtime.state import RunDefinition
 
     registry = ToolRegistry([SuccessfulTool()])
-    agent = AgentSpec(name='test', system_prompt='fixed', model=ModelTarget(provider='qwen', model='test'), generation=GenerationOptions(max_output_tokens=976), allowed_tools=('ok',))
-    state = create_run_state(run_id=uuid4(), task='task', agent_spec=agent, config=RuntimeConfig(), messages=(SystemMessage(content='fixed'), UserMessage(content='task')))
+    agent = AgentSpec(
+        name="test",
+        system_prompt="fixed",
+        model=ModelTarget(provider="qwen", model="test"),
+        generation=GenerationOptions(max_output_tokens=976),
+        allowed_tools=("ok",),
+    )
+    state = create_run_state(
+        run_id=uuid4(),
+        task="task",
+        agent_spec=agent,
+        config=RuntimeConfig(),
+        messages=(SystemMessage(content="fixed"), UserMessage(content="task")),
+    )
     definitions = registry.definitions(agent.allowed_tools)
-    metadata = [registry.contract_metadata('ok')]
-    if change == 'version':
-        metadata[0]['version'] = 'changed'
+    metadata = [registry.contract_metadata("ok")]
+    if change == "version":
+        metadata[0]["version"] = "changed"
     else:
-        definitions[0] = definitions[0].model_copy(update={ 'description' if change == 'description' else 'input_schema': 'changed' if change == 'description' else {'type': 'string'}})
-    state = state.model_copy(update={'definition': RunDefinition(agent_spec=agent, config=RuntimeConfig(), tool_definitions=tuple(definitions), tool_contract_metadata=tuple(metadata))})
-    with pytest.raises(ValueError, match='tool contract'):
+        definitions[0] = definitions[0].model_copy(
+            update={
+                "description" if change == "description" else "input_schema": "changed"
+                if change == "description"
+                else {"type": "string"}
+            }
+        )
+    state = state.model_copy(
+        update={
+            "definition": RunDefinition(
+                agent_spec=agent,
+                config=RuntimeConfig(),
+                tool_definitions=tuple(definitions),
+                tool_contract_metadata=tuple(metadata),
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="tool contract"):
         AgentRuntime(provider=QueueProvider([]), tools=registry)._build_request(state)

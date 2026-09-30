@@ -59,9 +59,8 @@ def render_tool_result(result: ToolResult, limits: ToolOutputLimits) -> str:
         payload["output"]["content_truncated"] = True
 
         error = payload.get("error")
-        if (
-            _encoded_size(payload) > limits.max_message_bytes
-            and isinstance(error, MutableMapping)
+        if _encoded_size(payload) > limits.max_message_bytes and isinstance(
+            error, MutableMapping
         ):
             original_message = error["message"]
             error["message"] = ""

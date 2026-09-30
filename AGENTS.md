@@ -38,6 +38,7 @@ terms; keep implementation details out of it. Use `docs/repository-map.md` for n
 
 - Tests: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest -q`
 - Type check: `ty check`
+- After modifying Python files, run `uv run ruff check --fix <changed-files>` and `uv run ruff format <changed-files>`. Avoid project-wide lint/format unless necessary.
 - CLI surface: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run miniagent --help`
 
 <!-- repo-map:end -->

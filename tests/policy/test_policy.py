@@ -7,7 +7,7 @@ from uuid import UUID
 import pytest
 
 from miniagent.agents import AgentSpec
-from miniagent.models.config import ModelTarget, GenerationOptions
+from miniagent.models.config import GenerationOptions, ModelTarget
 from miniagent.models.messages import AssistantMessage
 from miniagent.models.protocol import (
     FinishReason,

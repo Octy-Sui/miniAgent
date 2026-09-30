@@ -123,9 +123,7 @@ class FileArtifactStore:
         try:
             content = target.read_bytes()
         except OSError as exc:
-            raise ArtifactNotFoundError(
-                f"Artifact not found: {record.uri}"
-            ) from exc
+            raise ArtifactNotFoundError(f"Artifact not found: {record.uri}") from exc
         if (
             len(content) != record.size_bytes
             or hashlib.sha256(content).hexdigest() != record.sha256
@@ -138,7 +136,9 @@ class FileArtifactStore:
         try:
             return ArtifactRecord.model_validate_json(path.read_text(encoding="utf-8"))
         except (OSError, ValidationError, ValueError) as exc:
-            raise ArtifactNotFoundError(f"Invalid artifact manifest: {path.name}") from exc
+            raise ArtifactNotFoundError(
+                f"Invalid artifact manifest: {path.name}"
+            ) from exc
 
     @staticmethod
     def _validate_write(request: ArtifactWrite) -> None:

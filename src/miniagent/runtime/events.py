@@ -5,10 +5,9 @@ from uuid import UUID, uuid4
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
-from miniagent.models.protocol import ModelUsage
-from miniagent.metering.usage import RequestCost
-
 from miniagent.artifacts.contracts import ArtifactRef
+from miniagent.metering.usage import RequestCost
+from miniagent.models.protocol import ModelUsage
 from miniagent.policy import PolicyDecision
 from miniagent.runtime.tracing import SpanId
 from miniagent.tools.contracts import ToolResult
@@ -111,9 +110,7 @@ class ToolEnded(ToolScopePayload):
 
 
 class ToolExecutionStarted(ToolScopePayload):
-    type: Literal[RunEventType.TOOL_EXECUTION_START] = (
-        RunEventType.TOOL_EXECUTION_START
-    )
+    type: Literal[RunEventType.TOOL_EXECUTION_START] = RunEventType.TOOL_EXECUTION_START
 
 
 class ToolExecutionEnded(ToolScopePayload):
@@ -141,9 +138,7 @@ class ApprovalResolved(ToolScopePayload):
 
 
 class ApprovalInvalidated(_Payload):
-    type: Literal[RunEventType.APPROVAL_INVALIDATED] = (
-        RunEventType.APPROVAL_INVALIDATED
-    )
+    type: Literal[RunEventType.APPROVAL_INVALIDATED] = RunEventType.APPROVAL_INVALIDATED
     approval_id: UUID
     reason: str
 
@@ -153,9 +148,7 @@ class EvaluationStart(_Payload):
 
 
 class EvaluationCompleted(_Payload):
-    type: Literal[RunEventType.EVALUATION_COMPLETED] = (
-        RunEventType.EVALUATION_COMPLETED
-    )
+    type: Literal[RunEventType.EVALUATION_COMPLETED] = RunEventType.EVALUATION_COMPLETED
     passed: bool
 
 
@@ -183,7 +176,9 @@ class CompactionRequested(_Payload):
 
 
 class CompactionAttemptRecorded(_Payload):
-    type: Literal[RunEventType.COMPACTION_ATTEMPT_RECORDED] = RunEventType.COMPACTION_ATTEMPT_RECORDED
+    type: Literal[RunEventType.COMPACTION_ATTEMPT_RECORDED] = (
+        RunEventType.COMPACTION_ATTEMPT_RECORDED
+    )
     result: CompactionAttempt
 
 

@@ -1,8 +1,8 @@
 import asyncio
 import sqlite3
-from hashlib import sha256
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from hashlib import sha256
 from importlib.resources import files
 from pathlib import Path
 from time import monotonic, sleep
@@ -11,10 +11,10 @@ from uuid import UUID, uuid4
 
 from miniagent.policy import ApprovalOutcome, ApprovalResolution, PolicyRequest
 from miniagent.runtime.events import (
-    CompactionCompleted,
     ApprovalInvalidated,
     ApprovalRequested,
     ApprovalResolved,
+    CompactionCompleted,
     EventSequenceConflictError,
     NewRunEvent,
     RunEvent,
@@ -76,7 +76,11 @@ from miniagent.storage.queries.runs import (
     update_run,
     update_snapshot_version,
 )
-from miniagent.storage.queries.snapshots import insert_snapshot, select_latest_snapshot, select_snapshot_version
+from miniagent.storage.queries.snapshots import (
+    insert_snapshot,
+    select_latest_snapshot,
+    select_snapshot_version,
+)
 
 _SCHEMA_VERSION = 2
 _T = TypeVar("_T")
@@ -181,6 +185,7 @@ class SQLiteRunStore:
             with self._connect() as connection:
                 row = select_snapshot_version(connection, run_id, version)
                 return decode_snapshot(row) if row is not None else None
+
         return await self._in_thread(load)
 
     async def load_latest(self, run_id: UUID) -> RunSnapshot | None:
@@ -363,7 +368,9 @@ class SQLiteRunStore:
             )
             for event in events:
                 if isinstance(event.payload, CompactionCompleted):
-                    self._validate_compaction_commit(connection, current, change, event, snapshot)
+                    self._validate_compaction_commit(
+                        connection, current, change, event, snapshot
+                    )
             latest_snapshot_version = (
                 snapshot.version
                 if snapshot is not None
@@ -385,30 +392,88 @@ class SQLiteRunStore:
 
         return self._transaction(commit)
 
-    def _validate_compaction_commit(self, connection, current, change, event, snapshot) -> None:
+    def _validate_compaction_commit(
+        self, connection, current, change, event, snapshot
+    ) -> None:
         payload = event.payload
-        if len(change.events) != 1 or snapshot is None or payload.new_snapshot_id != snapshot.snapshot_id or payload.new_snapshot_version != snapshot.version or payload.event_sequence != event.sequence or change.state.context.current_version != payload.current_version or payload.previous_version != current.state.context.current_version or payload.current_version != (payload.previous_version or 0) + 1:
-            raise ValueError('compaction commit reservation mismatch')
-        row = select_snapshot_version(connection, event.run_id, payload.source_snapshot_version)
+        if (
+            len(change.events) != 1
+            or snapshot is None
+            or payload.new_snapshot_id != snapshot.snapshot_id
+            or payload.new_snapshot_version != snapshot.version
+            or payload.event_sequence != event.sequence
+            or change.state.context.current_version != payload.current_version
+            or payload.previous_version != current.state.context.current_version
+            or payload.current_version != (payload.previous_version or 0) + 1
+        ):
+            raise ValueError("compaction commit reservation mismatch")
+        row = select_snapshot_version(
+            connection, event.run_id, payload.source_snapshot_version
+        )
         source = decode_snapshot(row) if row is not None else None
-        if source is None or (payload.source_snapshot_id is not None and source.snapshot_id != payload.source_snapshot_id) or source.event_sequence != payload.source_event_sequence:
-            raise ValueError('compaction source snapshot mismatch')
+        if (
+            source is None
+            or (
+                payload.source_snapshot_id is not None
+                and source.snapshot_id != payload.source_snapshot_id
+            )
+            or source.event_sequence != payload.source_event_sequence
+        ):
+            raise ValueError("compaction source snapshot mismatch")
         if payload.source_snapshot_id is None:
-            raise ValueError('compaction source snapshot ID is required')
+            raise ValueError("compaction source snapshot ID is required")
         messages = change.state.conversation.messages
         start, end = payload.covered_messages
         old = source.state.conversation.messages
-        if start != 2 or not (start < end <= len(old)) or messages[:2] != old[:2] or messages[3:] != old[end:] or sha256((messages[2].content or '').encode()).hexdigest() != payload.summary_sha256:
-            raise ValueError('compaction committed messages mismatch')
-        covered = tuple(step.step_number for step in source.state.conversation.completed_steps if start <= step.message_start and step.message_end <= end)
-        retained = tuple(step for step in source.state.conversation.completed_steps if step.message_start >= end)
-        expected_ranges = tuple(step.model_copy(update={'message_start': step.message_start - end + 3, 'message_end': step.message_end - end + 3}) for step in retained)
-        if covered != payload.covered_steps or not retained or end != retained[0].message_start or retained[0].step_number != payload.retained_first_step or change.state.conversation.completed_steps != expected_ranges:
-            raise ValueError('compaction Step metadata mismatch')
-        if source.state.context.current_version != payload.previous_version or source.version != current.latest_snapshot_version or source.version >= snapshot.version:
-            raise ValueError('compaction source version mismatch')
-        if change.state.definition != current.state.definition or change.state.identity != current.state.identity or messages[:2] != current.state.conversation.messages[:2] or old != current.state.conversation.messages:
-            raise ValueError('compaction Run identity or source context mismatch')
+        if (
+            start != 2
+            or not (start < end <= len(old))
+            or messages[:2] != old[:2]
+            or messages[3:] != old[end:]
+            or sha256((messages[2].content or "").encode()).hexdigest()
+            != payload.summary_sha256
+        ):
+            raise ValueError("compaction committed messages mismatch")
+        covered = tuple(
+            step.step_number
+            for step in source.state.conversation.completed_steps
+            if start <= step.message_start and step.message_end <= end
+        )
+        retained = tuple(
+            step
+            for step in source.state.conversation.completed_steps
+            if step.message_start >= end
+        )
+        expected_ranges = tuple(
+            step.model_copy(
+                update={
+                    "message_start": step.message_start - end + 3,
+                    "message_end": step.message_end - end + 3,
+                }
+            )
+            for step in retained
+        )
+        if (
+            covered != payload.covered_steps
+            or not retained
+            or end != retained[0].message_start
+            or retained[0].step_number != payload.retained_first_step
+            or change.state.conversation.completed_steps != expected_ranges
+        ):
+            raise ValueError("compaction Step metadata mismatch")
+        if (
+            source.state.context.current_version != payload.previous_version
+            or source.version != current.latest_snapshot_version
+            or source.version >= snapshot.version
+        ):
+            raise ValueError("compaction source version mismatch")
+        if (
+            change.state.definition != current.state.definition
+            or change.state.identity != current.state.identity
+            or messages[:2] != current.state.conversation.messages[:2]
+            or old != current.state.conversation.messages
+        ):
+            raise ValueError("compaction Run identity or source context mismatch")
 
     def _idempotent_resolution(
         self,

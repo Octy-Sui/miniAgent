@@ -180,7 +180,9 @@ class RunCommit(BaseModel):
         return self
 
     def _event_payload(self, event_id: UUID) -> EventPayload:
-        return next(event.payload for event in self.events if event.event_id == event_id)
+        return next(
+            event.payload for event in self.events if event.event_id == event_id
+        )
 
     def _require_approval_event(
         self,
@@ -220,4 +222,6 @@ class RuntimeStore(Protocol):
 
     async def load_version(self, run_id: UUID, version: int) -> RunSnapshot | None: ...
 
-    async def list_events(self, run_id: UUID, *, after_sequence: int = 0, limit: int | None = None) -> list[RunEvent]: ...
+    async def list_events(
+        self, run_id: UUID, *, after_sequence: int = 0, limit: int | None = None
+    ) -> list[RunEvent]: ...

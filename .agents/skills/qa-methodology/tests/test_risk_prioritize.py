@@ -64,7 +64,11 @@ class TestRiskPrioritizeRankingMath(unittest.TestCase):
         items = [
             {"id": "zeta", "probability": 3, "impact": 4},
             {"id": "alpha", "probability": 4, "impact": 3},
-            {"id": "mid", "probability": 2, "impact": 6},  # invalid but tests ordering logic
+            {
+                "id": "mid",
+                "probability": 2,
+                "impact": 6,
+            },  # invalid but tests ordering logic
         ]
         # Use valid items only (impact 1-5)
         items = [
@@ -242,9 +246,7 @@ class TestRiskPrioritizeIdempotency(unittest.TestCase):
     def test_no_input_mutation(self):
         """Input file is not modified by the script."""
         items = [{"id": "x", "probability": 5, "impact": 5}]
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False
-        ) as tmp:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
             json.dump(items, tmp)
             tmp_path = tmp.name
         try:
@@ -288,9 +290,7 @@ class TestRiskPrioritizeFileInput(unittest.TestCase):
     def test_file_input(self):
         """Reading from a file path works."""
         items = [{"id": "file-test", "probability": 4, "impact": 2}]
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False
-        ) as tmp:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
             json.dump(items, tmp)
             tmp_path = tmp.name
         try:

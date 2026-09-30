@@ -10,7 +10,6 @@ from pathlib import Path
 
 import yaml
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_DIRS = ["agents", "assets", "references", "evals", "scripts"]
 TECHNIQUES = [
@@ -49,7 +48,9 @@ def parse_frontmatter(path: Path, errors: list[str]) -> tuple[dict, str, str] | 
     return fields, match.group(1), text
 
 
-def check_name_and_description(path: Path, fields: dict, expected_name: str, errors: list[str]) -> None:
+def check_name_and_description(
+    path: Path, fields: dict, expected_name: str, errors: list[str]
+) -> None:
     unexpected = set(fields) - {"name", "description", "metadata"}
     if unexpected:
         errors.append(f"{path}: unexpected frontmatter keys {sorted(unexpected)}")
@@ -81,10 +82,14 @@ def root_version(errors: list[str]) -> str | None:
         return None
     version = match.group(1)
 
-    changelog = CHANGELOG_VERSION_PATTERN.search((REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8"))
+    changelog = CHANGELOG_VERSION_PATTERN.search(
+        (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    )
     if not changelog or changelog.group(1) != version:
         errors.append(f"CHANGELOG.md: latest entry must be [{version}]")
-    badge = README_BADGE_PATTERN.search((REPO_ROOT / "README.md").read_text(encoding="utf-8"))
+    badge = README_BADGE_PATTERN.search(
+        (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    )
     if not badge or badge.group(1) != version:
         errors.append(f"README.md: version badge must show {version}")
     return version
@@ -98,10 +103,14 @@ def validate_root(errors: list[str]) -> None:
     fields, raw_frontmatter, text = parsed
     check_name_and_description(path, fields, REPO_ROOT.name, errors)
     if len(raw_frontmatter) > FRONTMATTER_CHAR_LIMIT:
-        errors.append(f"{path}: frontmatter is {len(raw_frontmatter)} chars (limit {FRONTMATTER_CHAR_LIMIT})")
+        errors.append(
+            f"{path}: frontmatter is {len(raw_frontmatter)} chars (limit {FRONTMATTER_CHAR_LIMIT})"
+        )
     for technique in TECHNIQUES:
         if f"./{technique}/SKILL.md" not in text:
-            errors.append(f"{path}: routing table does not reference ./{technique}/SKILL.md")
+            errors.append(
+                f"{path}: routing table does not reference ./{technique}/SKILL.md"
+            )
     check_local_references(path, text, errors)
 
 
@@ -148,16 +157,29 @@ def validate_openai_yaml(errors: list[str]) -> None:
         errors.append(f"{path}: interface block is required")
         return
     interface = data["interface"]
-    for required in ["display_name", "short_description", "default_prompt", "icon_small", "icon_large", "brand_color"]:
+    for required in [
+        "display_name",
+        "short_description",
+        "default_prompt",
+        "icon_small",
+        "icon_large",
+        "brand_color",
+    ]:
         if required not in interface:
             errors.append(f"{path}: missing interface.{required}")
     for icon_key in ["icon_small", "icon_large"]:
         icon_path = interface.get(icon_key)
-        if isinstance(icon_path, str) and icon_path.startswith("./") and not (REPO_ROOT / icon_path[2:]).exists():
+        if (
+            isinstance(icon_path, str)
+            and icon_path.startswith("./")
+            and not (REPO_ROOT / icon_path[2:]).exists()
+        ):
             errors.append(f"{path}: missing referenced icon {icon_path}")
 
 
-def validate_json_fixture(path: Path, required_keys: set[str], errors: list[str]) -> None:
+def validate_json_fixture(
+    path: Path, required_keys: set[str], errors: list[str]
+) -> None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -187,7 +209,11 @@ def main() -> int:
         validate_technique(technique, version, errors)
 
     validate_openai_yaml(errors)
-    validate_json_fixture(REPO_ROOT / "evals" / "trigger-queries.json", {"query", "should_trigger"}, errors)
+    validate_json_fixture(
+        REPO_ROOT / "evals" / "trigger-queries.json",
+        {"query", "should_trigger"},
+        errors,
+    )
     validate_json_fixture(
         REPO_ROOT / "evals" / "technique-selection-cases.json",
         {"id", "scenario", "expected_primary"},

@@ -17,7 +17,7 @@ from miniagent.environments import (
 )
 from miniagent.environments.persistence import persist_workspace_spec
 from miniagent.metering.pricing import ModelPrice, PriceConfig
-from miniagent.models.config import ModelTarget, GenerationOptions
+from miniagent.models.config import GenerationOptions, ModelTarget
 from miniagent.models.messages import AssistantMessage
 from miniagent.models.protocol import (
     FinishReason,

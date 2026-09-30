@@ -30,7 +30,9 @@ from pathlib import Path
 Tuple = tuple[tuple[str, str], ...]
 
 
-def load_model(path: Path) -> tuple[dict[str, list[str]], list[dict[str, str]], int | None]:
+def load_model(
+    path: Path,
+) -> tuple[dict[str, list[str]], list[dict[str, str]], int | None]:
     data = json.loads(path.read_text(encoding="utf-8"))
     raw_params = data.get("parameters")
     if not isinstance(raw_params, dict) or not raw_params:
@@ -42,11 +44,15 @@ def load_model(path: Path) -> tuple[dict[str, list[str]], list[dict[str, str]], 
             raise ValueError(f"parameter {name!r} needs a non-empty list of values")
         params[str(name)] = [str(value) for value in values]
 
-    constraints = [{str(k): str(v) for k, v in c.items()} for c in data.get("constraints", [])]
+    constraints = [
+        {str(k): str(v) for k, v in c.items()} for c in data.get("constraints", [])
+    ]
     for constraint in constraints:
         for name, value in constraint.items():
             if name not in params or value not in params[name]:
-                raise ValueError(f"constraint {constraint} uses unknown parameter or value {name}={value}")
+                raise ValueError(
+                    f"constraint {constraint} uses unknown parameter or value {name}={value}"
+                )
 
     return params, constraints, data.get("strength")
 
@@ -56,7 +62,9 @@ def violates(assignment: dict[str, str], constraints: list[dict[str, str]]) -> b
     return any(all(assignment.get(k) == v for k, v in c.items()) for c in constraints)
 
 
-def required_tuples(params: dict[str, list[str]], constraints: list[dict[str, str]], strength: int) -> list[Tuple]:
+def required_tuples(
+    params: dict[str, list[str]], constraints: list[dict[str, str]], strength: int
+) -> list[Tuple]:
     names = list(params)
     tuples: list[Tuple] = []
     for combo in itertools.combinations(names, strength):
@@ -68,7 +76,10 @@ def required_tuples(params: dict[str, list[str]], constraints: list[dict[str, st
 
 
 def tuples_in(test: dict[str, str], names: list[str], strength: int) -> set[Tuple]:
-    return {tuple((n, test[n]) for n in combo) for combo in itertools.combinations(names, strength)}
+    return {
+        tuple((n, test[n]) for n in combo)
+        for combo in itertools.combinations(names, strength)
+    }
 
 
 def complete(
@@ -100,7 +111,9 @@ def complete(
             return dict(assignment)
         name = order[index]
         values = params[name]
-        for value in sorted(values, key=lambda v: (-gain(assignment, name, v), values.index(v))):
+        for value in sorted(
+            values, key=lambda v: (-gain(assignment, name, v), values.index(v))
+        ):
             assignment[name] = value
             if not violates(assignment, constraints):
                 result = search(assignment, index + 1)
@@ -163,10 +176,14 @@ def verify(
     problems: list[str] = []
     covered: set[Tuple] = set()
     for index, test in enumerate(tests, start=1):
-        unknown = [f"{k}={v}" for k, v in test.items() if k not in params or v not in params[k]]
+        unknown = [
+            f"{k}={v}" for k, v in test.items() if k not in params or v not in params[k]
+        ]
         missing = [n for n in names if n not in test]
         if unknown or missing:
-            problems.append(f"test {index}: unknown {unknown or '-'}; missing parameters {missing or '-'}")
+            problems.append(
+                f"test {index}: unknown {unknown or '-'}; missing parameters {missing or '-'}"
+            )
             continue
         if violates(test, constraints):
             problems.append(f"test {index}: violates a constraint")
@@ -175,7 +192,11 @@ def verify(
 
     required = required_tuples(params, constraints, strength)
     not_covered = [t for t in required if t not in covered]
-    impossible = [t for t in not_covered if complete(dict(t), params, constraints, set(), strength) is None]
+    impossible = [
+        t
+        for t in not_covered
+        if complete(dict(t), params, constraints, set(), strength) is None
+    ]
     missing = [t for t in not_covered if t not in impossible]
     feasible = len(required) - len(impossible)
     return {
@@ -194,7 +215,9 @@ def format_tuple(t: Tuple) -> str:
 
 
 def strength_label(strength: int) -> str:
-    return {1: "Each-choice (1-wise)", 2: "Pairwise (2-wise)", 3: "3-wise"}.get(strength, f"{strength}-wise")
+    return {1: "Each-choice (1-wise)", 2: "Pairwise (2-wise)", 3: "3-wise"}.get(
+        strength, f"{strength}-wise"
+    )
 
 
 def cartesian_size(params: dict[str, list[str]]) -> int:
@@ -204,7 +227,11 @@ def cartesian_size(params: dict[str, list[str]]) -> int:
     return size
 
 
-def allowed_size(params: dict[str, list[str]], constraints: list[dict[str, str]], limit: int = 1_000_000) -> int | None:
+def allowed_size(
+    params: dict[str, list[str]],
+    constraints: list[dict[str, str]],
+    limit: int = 1_000_000,
+) -> int | None:
     """Number of full combinations that respect the constraints; None when too many to count."""
     if not constraints:
         return cartesian_size(params)
@@ -212,15 +239,22 @@ def allowed_size(params: dict[str, list[str]], constraints: list[dict[str, str]]
         return None
     names = list(params)
     return sum(
-        1 for values in itertools.product(*params.values())
+        1
+        for values in itertools.product(*params.values())
         if not violates(dict(zip(names, values)), constraints)
     )
 
 
-def coverage_lines(params, constraints, tests, required, impossible, strength) -> list[str]:
+def coverage_lines(
+    params, constraints, tests, required, impossible, strength
+) -> list[str]:
     feasible = len(required) - len(impossible)
     allowed = allowed_size(params, constraints)
-    total = f"{allowed} allowed combinations" if allowed is not None else "the full set of allowed combinations"
+    total = (
+        f"{allowed} allowed combinations"
+        if allowed is not None
+        else "the full set of allowed combinations"
+    )
     if constraints and allowed is not None:
         total += f" ({cartesian_size(params)} before constraints)"
     lines = [
@@ -228,16 +262,28 @@ def coverage_lines(params, constraints, tests, required, impossible, strength) -
         f"Tests: {len(tests)} instead of {total}.",
     ]
     if impossible:
-        lines.append("Impossible under the constraints (not counted): " + "; ".join(format_tuple(t) for t in impossible))
+        lines.append(
+            "Impossible under the constraints (not counted): "
+            + "; ".join(format_tuple(t) for t in impossible)
+        )
     return lines
 
 
 def render_markdown(params, constraints, tests, required, impossible, strength) -> str:
     names = list(params)
-    out = ["| Test | " + " | ".join(names) + " | Expected result |", "|---|" + "---|" * (len(names) + 1)]
+    out = [
+        "| Test | " + " | ".join(names) + " | Expected result |",
+        "|---|" + "---|" * (len(names) + 1),
+    ]
     for index, test in enumerate(tests, start=1):
-        out.append(f"| C{index:02d} | " + " | ".join(test[n] for n in names) + " | (fill in) |")
-    return "\n".join(out + [""] + coverage_lines(params, constraints, tests, required, impossible, strength))
+        out.append(
+            f"| C{index:02d} | " + " | ".join(test[n] for n in names) + " | (fill in) |"
+        )
+    return "\n".join(
+        out
+        + [""]
+        + coverage_lines(params, constraints, tests, required, impossible, strength)
+    )
 
 
 def render_matrix(params, constraints, tests, required, impossible, strength) -> str:
@@ -247,8 +293,16 @@ def render_matrix(params, constraints, tests, required, impossible, strength) ->
         "|---|" + "---|" * len(columns),
     ]
     for index, test in enumerate(tests, start=1):
-        out.append(f"| C{index:02d} | " + " | ".join("X" if test[n] == v else "" for n, v in columns) + " |")
-    return "\n".join(out + [""] + coverage_lines(params, constraints, tests, required, impossible, strength))
+        out.append(
+            f"| C{index:02d} | "
+            + " | ".join("X" if test[n] == v else "" for n, v in columns)
+            + " |"
+        )
+    return "\n".join(
+        out
+        + [""]
+        + coverage_lines(params, constraints, tests, required, impossible, strength)
+    )
 
 
 def render_tree(params) -> str:
@@ -262,11 +316,23 @@ def render_tree(params) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate or verify n-wise test combinations.")
-    parser.add_argument("model", help="JSON model with parameters and optional constraints")
-    parser.add_argument("--strength", type=int, help="interaction strength (default: model value or 2)")
-    parser.add_argument("--format", choices=["markdown", "matrix", "tree", "json"], default="markdown")
-    parser.add_argument("--verify", metavar="TESTS_JSON", help="check an existing test set instead of generating one")
+    parser = argparse.ArgumentParser(
+        description="Generate or verify n-wise test combinations."
+    )
+    parser.add_argument(
+        "model", help="JSON model with parameters and optional constraints"
+    )
+    parser.add_argument(
+        "--strength", type=int, help="interaction strength (default: model value or 2)"
+    )
+    parser.add_argument(
+        "--format", choices=["markdown", "matrix", "tree", "json"], default="markdown"
+    )
+    parser.add_argument(
+        "--verify",
+        metavar="TESTS_JSON",
+        help="check an existing test set instead of generating one",
+    )
     args = parser.parse_args()
 
     try:
@@ -283,7 +349,12 @@ def main() -> int:
     if args.verify:
         data = json.loads(Path(args.verify).read_text(encoding="utf-8"))
         tests = data["tests"] if isinstance(data, dict) else data
-        report = verify([{str(k): str(v) for k, v in t.items()} for t in tests], params, constraints, strength)
+        report = verify(
+            [{str(k): str(v) for k, v in t.items()} for t in tests],
+            params,
+            constraints,
+            strength,
+        )
         print(json.dumps(report, indent=2))
         return 0 if not report["missing"] and not report["problems"] else 1
 
@@ -293,20 +364,27 @@ def main() -> int:
 
     tests, required, impossible = generate(params, constraints, strength)
     if args.format == "json":
-        print(json.dumps({
-            "strength": strength,
-            "parameters": params,
-            "constraints": constraints,
-            "tests": tests,
-            "feasible_tuples": len(required) - len(impossible),
-            "impossible": [format_tuple(t) for t in impossible],
-            "cartesian_size": cartesian_size(params),
-            "allowed_size": allowed_size(params, constraints),
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "strength": strength,
+                    "parameters": params,
+                    "constraints": constraints,
+                    "tests": tests,
+                    "feasible_tuples": len(required) - len(impossible),
+                    "impossible": [format_tuple(t) for t in impossible],
+                    "cartesian_size": cartesian_size(params),
+                    "allowed_size": allowed_size(params, constraints),
+                },
+                indent=2,
+            )
+        )
     elif args.format == "matrix":
         print(render_matrix(params, constraints, tests, required, impossible, strength))
     else:
-        print(render_markdown(params, constraints, tests, required, impossible, strength))
+        print(
+            render_markdown(params, constraints, tests, required, impossible, strength)
+        )
     return 0
 
 

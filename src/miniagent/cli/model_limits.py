@@ -1,11 +1,11 @@
-from pathlib import Path
 import tomllib
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
 class ModelLimits(BaseModel):
-    model_config = ConfigDict(extra='forbid', frozen=True, strict=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     context_window_tokens: int = Field(gt=0)
     max_output_tokens: int = Field(gt=0)
@@ -17,7 +17,7 @@ class _ModelEntry(ModelLimits):
 
 
 class _LimitsFile(BaseModel):
-    model_config = ConfigDict(extra='forbid', strict=True)
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     models: list[_ModelEntry]
 
@@ -28,9 +28,12 @@ def load_model_limits(path: Path, provider: str, model: str) -> ModelLimits:
     for entry in entries:
         key = (entry.provider, entry.model)
         if key in seen:
-            raise ValueError(f'duplicate model limits: {key}')
+            raise ValueError(f"duplicate model limits: {key}")
         seen.add(key)
     for entry in entries:
         if (entry.provider, entry.model) == (provider, model):
-            return ModelLimits(context_window_tokens=entry.context_window_tokens, max_output_tokens=entry.max_output_tokens)
-    raise ValueError(f'missing model limits: {provider}/{model}')
+            return ModelLimits(
+                context_window_tokens=entry.context_window_tokens,
+                max_output_tokens=entry.max_output_tokens,
+            )
+    raise ValueError(f"missing model limits: {provider}/{model}")

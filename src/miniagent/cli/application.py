@@ -16,8 +16,8 @@ from miniagent.runtime import (
     RunRecoveryContext,
     RunResult,
     RunStatus,
-    RuntimeStore,
     RuntimeConfig,
+    RuntimeStore,
 )
 from miniagent.tools.registry import ToolRegistry
 

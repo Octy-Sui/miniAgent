@@ -15,8 +15,8 @@ from miniagent.runtime.state import (
     RunLifecycle,
     RunState,
     RunStatus,
-    ToolBatch,
     StepRange,
+    ToolBatch,
 )
 from miniagent.tools.contracts import ToolCall
 
@@ -83,7 +83,9 @@ def accept_model_response(
     usage = state.usage
     if response.usage is not None:
         usage = add_request_usage(usage, response.usage, request_cost)
-    conversation = state.conversation.model_copy(update={"messages": (*state.conversation.messages, response.message)})
+    conversation = state.conversation.model_copy(
+        update={"messages": (*state.conversation.messages, response.message)}
+    )
     execution = state.execution
     if tool_calls is not None:
         execution = execution.model_copy(
@@ -120,7 +122,9 @@ def complete_tool(
         raise ValueError("Completed tool result does not match the batch cursor")
     return _replace(
         state,
-        conversation=state.conversation.model_copy(update={"messages": (*state.conversation.messages, message)}),
+        conversation=state.conversation.model_copy(
+            update={"messages": (*state.conversation.messages, message)}
+        ),
         execution=state.execution.model_copy(
             update={
                 "tool_batch": batch.model_copy(
@@ -137,10 +141,14 @@ def complete_tool_step(state: RunState, *, failed: bool) -> RunState:
         raise ValueError("Tool step cannot finish before every call completes")
     end = len(state.conversation.messages)
     start = end - len(batch.calls) - 1
-    completed = StepRange(step_number=state.execution.steps_started, message_start=start, message_end=end)
+    completed = StepRange(
+        step_number=state.execution.steps_started, message_start=start, message_end=end
+    )
     return _replace(
         state,
-        conversation=state.conversation.model_copy(update={"completed_steps": (*state.conversation.completed_steps, completed)}),
+        conversation=state.conversation.model_copy(
+            update={"completed_steps": (*state.conversation.completed_steps, completed)}
+        ),
         execution=state.execution.model_copy(
             update={
                 "tool_batch": None,

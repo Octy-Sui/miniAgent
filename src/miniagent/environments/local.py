@@ -75,13 +75,17 @@ class LocalWorkspaceBackend:
             )
             await self._initialize_baseline(repository)
             base_revision = (
-                await self._require_success(
-                    ["git", "rev-parse", "--verify", "HEAD^{commit}"],
-                    cwd=repository,
-                    action="read local workspace baseline",
-                    capture_all=True,
+                (
+                    await self._require_success(
+                        ["git", "rev-parse", "--verify", "HEAD^{commit}"],
+                        cwd=repository,
+                        action="read local workspace baseline",
+                        capture_all=True,
+                    )
                 )
-            ).stdout.decode().strip()
+                .stdout.decode()
+                .strip()
+            )
             self._write_marker(workspace_dir, spec.run_id, workspace_id)
             return LocalWorkspace(
                 backend=self,
@@ -116,13 +120,17 @@ class LocalWorkspaceBackend:
             await asyncio.to_thread(self._extract_checkpoint, content, workspace_dir)
             repository = workspace_dir / "repo"
             base_revision = (
-                await self._require_success(
-                    ["git", "rev-parse", "--verify", "HEAD^{commit}"],
-                    cwd=repository,
-                    action="read recovered local workspace baseline",
-                    capture_all=True,
+                (
+                    await self._require_success(
+                        ["git", "rev-parse", "--verify", "HEAD^{commit}"],
+                        cwd=repository,
+                        action="read recovered local workspace baseline",
+                        capture_all=True,
+                    )
                 )
-            ).stdout.decode().strip()
+                .stdout.decode()
+                .strip()
+            )
             if base_revision != checkpoint.base_revision:
                 raise ValueError("Local workspace checkpoint baseline changed")
             self._write_marker(workspace_dir, spec.run_id, workspace_id)
@@ -141,19 +149,27 @@ class LocalWorkspaceBackend:
         if not source.is_dir():
             raise ValueError(f"Local workspace source is not a directory: {source}")
         if self.root == source or self.root.is_relative_to(source):
-            raise ValueError("Local workspace root cannot be inside the source directory")
+            raise ValueError(
+                "Local workspace root cannot be inside the source directory"
+            )
         if source.is_relative_to(self.root):
-            raise ValueError("Local workspace source cannot be inside the workspace root")
+            raise ValueError(
+                "Local workspace source cannot be inside the workspace root"
+            )
 
     async def _source_paths(self, source: Path) -> list[PurePosixPath]:
         top_level = (
-            await self._require_success(
-                ["git", "rev-parse", "--show-toplevel"],
-                cwd=source,
-                action="inspect local workspace source",
-                capture_all=True,
+            (
+                await self._require_success(
+                    ["git", "rev-parse", "--show-toplevel"],
+                    cwd=source,
+                    action="inspect local workspace source",
+                    capture_all=True,
+                )
             )
-        ).stdout.decode().strip()
+            .stdout.decode()
+            .strip()
+        )
         if Path(top_level).resolve() != source:
             raise ValueError("Local workspace source must be the Git worktree root")
         result = await self._require_success(
@@ -184,8 +200,9 @@ class LocalWorkspaceBackend:
             target_path.parent.mkdir(parents=True, exist_ok=True)
             if source_path.is_symlink():
                 link_target = Path(os.readlink(source_path))
-                if link_target.is_absolute() or not source_path.resolve().is_relative_to(
-                    source
+                if (
+                    link_target.is_absolute()
+                    or not source_path.resolve().is_relative_to(source)
                 ):
                     raise ValueError(f"Source symlink escapes the worktree: {relative}")
                 target_path.symlink_to(link_target)
@@ -485,13 +502,17 @@ class LocalWorkspace:
                 )
                 restored = replacement / "repo"
                 restored_revision = (
-                    await self.backend._require_success(
-                        ["git", "rev-parse", "--verify", "HEAD^{commit}"],
-                        cwd=restored,
-                        action="validate restored local workspace",
-                        capture_all=True,
+                    (
+                        await self.backend._require_success(
+                            ["git", "rev-parse", "--verify", "HEAD^{commit}"],
+                            cwd=restored,
+                            action="validate restored local workspace",
+                            capture_all=True,
+                        )
                     )
-                ).stdout.decode().strip()
+                    .stdout.decode()
+                    .strip()
+                )
                 if restored_revision != self.base_revision:
                     raise ValueError("Workspace checkpoint Git baseline changed")
                 await asyncio.to_thread(shutil.rmtree, repository)
@@ -580,7 +601,9 @@ class LocalWorkspace:
             if workspace_dir != expected or not workspace_dir.is_relative_to(
                 self.backend.root
             ):
-                raise LocalWorkspaceError("Refusing to destroy an unsafe workspace path")
+                raise LocalWorkspaceError(
+                    "Refusing to destroy an unsafe workspace path"
+                )
             marker = workspace_dir / ".miniagent-workspace"
             if marker.read_text(encoding="utf-8") != self.backend._marker_content(
                 self.run_id,

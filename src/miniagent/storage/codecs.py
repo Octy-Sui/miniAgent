@@ -24,8 +24,8 @@ _SUPPORTED_VERSIONS = {"run": 2, "event": 2, "snapshot": 2, "approval": 1}
 def encode_datetime(value: datetime) -> str:
     if value.tzinfo is None:
         raise ValueError("Stored datetimes must be timezone-aware")
-    return value.astimezone(UTC).isoformat(timespec="microseconds").replace(
-        "+00:00", "Z"
+    return (
+        value.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
     )
 
 

@@ -41,8 +41,8 @@ def parse_args(argv=None):
         metavar="INPUT_JSON",
         help=(
             "Path to a JSON file containing an array of risk items "
-            "(default: stdin). Each item: {\"id\": str, \"probability\": 1-5, "
-            "\"impact\": 1-5}."
+            '(default: stdin). Each item: {"id": str, "probability": 1-5, '
+            '"impact": 1-5}.'
         ),
     )
     parser.add_argument(
@@ -57,27 +57,27 @@ def parse_args(argv=None):
 def validate_item(item, index):
     """Validate a single risk item. Returns (item, error_message)."""
     if not isinstance(item, dict):
-        return None, "item {} is not an object".format(index)
+        return None, f"item {index} is not an object"
     item_id = item.get("id")
     if item_id is None:
-        return None, "item {} missing required field 'id'".format(index)
+        return None, f"item {index} missing required field 'id'"
     if not isinstance(item_id, str) or not item_id.strip():
-        return None, "item {} field 'id' must be a non-empty string".format(index)
+        return None, f"item {index} field 'id' must be a non-empty string"
     prob = item.get("probability")
     if prob is None:
-        return None, "item '{}' missing required field 'probability'".format(item_id)
+        return None, f"item '{item_id}' missing required field 'probability'"
     impact = item.get("impact")
     if impact is None:
-        return None, "item '{}' missing required field 'impact'".format(item_id)
+        return None, f"item '{item_id}' missing required field 'impact'"
     # Accept int only (not bool, not float)
     if isinstance(prob, bool) or not isinstance(prob, int):
-        return None, "item '{}' field 'probability' must be an integer".format(item_id)
+        return None, f"item '{item_id}' field 'probability' must be an integer"
     if isinstance(impact, bool) or not isinstance(impact, int):
-        return None, "item '{}' field 'impact' must be an integer".format(item_id)
+        return None, f"item '{item_id}' field 'impact' must be an integer"
     if not (1 <= prob <= 5):
-        return None, "item '{}' field 'probability' must be 1-5".format(item_id)
+        return None, f"item '{item_id}' field 'probability' must be 1-5"
     if not (1 <= impact <= 5):
-        return None, "item '{}' field 'impact' must be 1-5".format(item_id)
+        return None, f"item '{item_id}' field 'impact' must be 1-5"
     return item, None
 
 
@@ -89,7 +89,7 @@ def load_and_validate(source_text):
     try:
         data = json.loads(source_text)
     except (json.JSONDecodeError, ValueError) as exc:
-        return None, "invalid JSON: {}".format(exc)
+        return None, f"invalid JSON: {exc}"
 
     if not isinstance(data, list):
         return None, "input must be a JSON array of risk items"
@@ -113,12 +113,14 @@ def compute_rankings(items):
     """
     scored = []
     for item in items:
-        scored.append({
-            "id": item["id"],
-            "probability": item["probability"],
-            "impact": item["impact"],
-            "score": item["probability"] * item["impact"],
-        })
+        scored.append(
+            {
+                "id": item["id"],
+                "probability": item["probability"],
+                "impact": item["impact"],
+                "score": item["probability"] * item["impact"],
+            }
+        )
     # Sort descending by score, then ascending by id for deterministic tie-break
     scored.sort(key=lambda x: (-x["score"], x["id"]))
     for rank, entry in enumerate(scored, start=1):
@@ -159,7 +161,7 @@ def main(argv=None):
             with open(args.input, "r", encoding="utf-8") as fh:
                 source_text = fh.read()
     except OSError as exc:
-        print("error: cannot read input: {}".format(exc), file=sys.stderr)
+        print(f"error: cannot read input: {exc}", file=sys.stderr)
         return 1
 
     if not source_text.strip():
@@ -168,7 +170,7 @@ def main(argv=None):
 
     items, err = load_and_validate(source_text)
     if err:
-        print("error: {}".format(err), file=sys.stderr)
+        print(f"error: {err}", file=sys.stderr)
         return 1
 
     rankings = compute_rankings(items)

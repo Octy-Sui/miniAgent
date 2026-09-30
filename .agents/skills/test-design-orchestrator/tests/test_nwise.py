@@ -7,8 +7,15 @@ import itertools
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parents[1] / "classification-tree-nwise" / "scripts" / "nwise.py"
+SCRIPT = (
+    Path(__file__).resolve().parents[1]
+    / "classification-tree-nwise"
+    / "scripts"
+    / "nwise.py"
+)
 spec = importlib.util.spec_from_file_location("nwise", SCRIPT)
+if spec is None or spec.loader is None:
+    raise ImportError(f"Cannot load nwise module from {SCRIPT}")
 nwise = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(nwise)
 
@@ -18,12 +25,17 @@ PARAMS = {
     "Sort": ["relevance", "price asc", "price desc", "newest"],
     "Tier": ["free", "premium"],
 }
-CONSTRAINTS = [{"Tier": "free", "Sort": "price asc"}, {"Tier": "free", "Sort": "price desc"}]
+CONSTRAINTS = [
+    {"Tier": "free", "Sort": "price asc"},
+    {"Tier": "free", "Sort": "price desc"},
+]
 
 
 def pairs_of(test):
     names = list(PARAMS)
-    return {tuple((n, test[n]) for n in combo) for combo in itertools.combinations(names, 2)}
+    return {
+        tuple((n, test[n]) for n in combo) for combo in itertools.combinations(names, 2)
+    }
 
 
 class GenerateTests(unittest.TestCase):

@@ -14,14 +14,15 @@ from miniagent.policy import (
     ApprovalResolution,
     PolicyDecision,
 )
+from miniagent.runtime.context import CompactionPlan
 from miniagent.runtime.events import (
-    CompactionAttempt,
-    CompactionRequested,
-    CompactionAttemptRecorded,
-    CompactionFailed,
     ApprovalInvalidated,
     ApprovalRequested,
     ApprovalResolved,
+    CompactionAttempt,
+    CompactionAttemptRecorded,
+    CompactionFailed,
+    CompactionRequested,
     EvaluationCompleted,
     EvaluationStart,
     ModelRequested,
@@ -37,10 +38,8 @@ from miniagent.runtime.events import (
     ToolStarted,
 )
 from miniagent.runtime.journal import RunJournal
-from miniagent.runtime.context import CompactionPlan
-from miniagent.runtime.state import ConversationState
 from miniagent.runtime.result import RunError, RunResult, TerminationReason
-from miniagent.runtime.state import RunState, RunStatus
+from miniagent.runtime.state import ConversationState, RunState, RunStatus
 from miniagent.runtime.termination import tool_step_failed
 from miniagent.runtime.trace_context import RunTraceContext, ToolCorrelation
 from miniagent.runtime.transitions import (
@@ -149,25 +148,75 @@ class RunExecution:
             reason=TerminationReason.MAX_STEPS_REACHED,
         )
 
-    async def begin_compaction_attempt(self, plan: CompactionPlan, attempt: int) -> None:
-        state = self.state.model_copy(update={'usage': self.state.usage.model_copy(update={'model_requests': self.state.usage.model_requests + 1})})
+    async def begin_compaction_attempt(
+        self, plan: CompactionPlan, attempt: int
+    ) -> None:
+        state = self.state.model_copy(
+            update={
+                "usage": self.state.usage.model_copy(
+                    update={"model_requests": self.state.usage.model_requests + 1}
+                )
+            }
+        )
         target = state.definition.agent_spec.model
-        event = self.trace.run_event(CompactionRequested(provider=target.provider, model=target.model, attempt=attempt, source_snapshot_version=plan.source_snapshot_version, covered_messages=plan.covered_messages))
+        event = self.trace.run_event(
+            CompactionRequested(
+                provider=target.provider,
+                model=target.model,
+                attempt=attempt,
+                source_snapshot_version=plan.source_snapshot_version,
+                covered_messages=plan.covered_messages,
+            )
+        )
         await self.journal.record_activity(state, [event])
         self.state = state
 
     async def record_compaction_attempt(self, attempt: CompactionAttempt) -> None:
         state = self.state
         if attempt.usage is not None:
-            state = state.model_copy(update={'usage': add_request_usage(state.usage, attempt.usage, attempt.request_cost)})
-        await self.journal.record_activity(state, [self.trace.run_event(CompactionAttemptRecorded(result=attempt))])
+            state = state.model_copy(
+                update={
+                    "usage": add_request_usage(
+                        state.usage, attempt.usage, attempt.request_cost
+                    )
+                }
+            )
+        await self.journal.record_activity(
+            state, [self.trace.run_event(CompactionAttemptRecorded(result=attempt))]
+        )
         self.state = state
 
-    async def fail_compaction(self, code: str, reason: str, attempts: tuple[CompactionAttempt, ...] = ()) -> None:
-        await self.journal.record_activity(self.state, [self.trace.run_event(CompactionFailed(code=code, reason=reason, attempts=attempts))])
+    async def fail_compaction(
+        self, code: str, reason: str, attempts: tuple[CompactionAttempt, ...] = ()
+    ) -> None:
+        await self.journal.record_activity(
+            self.state,
+            [
+                self.trace.run_event(
+                    CompactionFailed(code=code, reason=reason, attempts=attempts)
+                )
+            ],
+        )
 
-    async def publish_compaction(self, conversation: ConversationState, plan: CompactionPlan, *, attempts: tuple[CompactionAttempt, ...], new_tokens: int, summary_input_tokens: int, source_snapshot_id: UUID | None) -> None:
-        state, event = self.journal.prepare_compaction(self.state, conversation, plan, attempts=attempts, new_tokens=new_tokens, summary_input_tokens=summary_input_tokens, source_snapshot_id=source_snapshot_id)
+    async def publish_compaction(
+        self,
+        conversation: ConversationState,
+        plan: CompactionPlan,
+        *,
+        attempts: tuple[CompactionAttempt, ...],
+        new_tokens: int,
+        summary_input_tokens: int,
+        source_snapshot_id: UUID | None,
+    ) -> None:
+        state, event = self.journal.prepare_compaction(
+            self.state,
+            conversation,
+            plan,
+            attempts=attempts,
+            new_tokens=new_tokens,
+            summary_input_tokens=summary_input_tokens,
+            source_snapshot_id=source_snapshot_id,
+        )
         await self.journal.compact(state, event)
         self.state = state
 
@@ -189,7 +238,9 @@ class RunExecution:
 
     async def record_model_failure(self, code: str) -> None:
         trace = deepcopy(self.trace)
-        event = trace.model_event(ModelResponded(finish_reason='error', tool_call_count=0, error_code=code))
+        event = trace.model_event(
+            ModelResponded(finish_reason="error", tool_call_count=0, error_code=code)
+        )
         trace.end_model()
         await self.journal.record_activity(self.state, [event])
         self.trace = trace
@@ -198,8 +249,23 @@ class RunExecution:
         trace = deepcopy(self.trace)
         trace.begin_model()
         target = self.state.definition.agent_spec.model
-        state = self.state.model_copy(update={'usage': self.state.usage.model_copy(update={'model_requests': self.state.usage.model_requests + 1})})
-        await self.journal.record_activity(state, [trace.model_event(ModelRequested(provider=target.provider, model=target.model, attempt=2))])
+        state = self.state.model_copy(
+            update={
+                "usage": self.state.usage.model_copy(
+                    update={"model_requests": self.state.usage.model_requests + 1}
+                )
+            }
+        )
+        await self.journal.record_activity(
+            state,
+            [
+                trace.model_event(
+                    ModelRequested(
+                        provider=target.provider, model=target.model, attempt=2
+                    )
+                )
+            ],
+        )
         self.state = state
         self.trace = trace
 

@@ -108,9 +108,7 @@ class ToolRegistry:
             "name": binding.definition.name,
             "version": binding.contract_version,
             "input_schema": orjson.loads(orjson.dumps(binding.definition.input_schema)),
-            "execution_options": orjson.loads(
-                orjson.dumps(binding.execution_options)
-            ),
+            "execution_options": orjson.loads(orjson.dumps(binding.execution_options)),
         }
 
     def definitions(self, allowed_tools: Sequence[str]) -> list[ToolDefinition]:

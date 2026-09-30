@@ -5,16 +5,16 @@
 from typing import Any
 
 import orjson
-from openai import AsyncOpenAI, APIConnectionError, APIStatusError, omit
+from openai import APIConnectionError, APIStatusError, AsyncOpenAI, omit
 
 from miniagent.models.messages import AssistantMessage, Message
 from miniagent.models.protocol import (
     FinishReason,
+    ModelContextLimitError,
+    ModelProviderError,
     ModelRequest,
     ModelResponse,
     ModelUsage,
-    ModelProviderError,
-    ModelContextLimitError,
 )
 from miniagent.tools.contracts import ToolCall
 
@@ -115,14 +115,24 @@ class QwenProvider:
                         },
                     }
                     for tool in request.tools
-                ] if request.tools else omit,
+                ]
+                if request.tools
+                else omit,
                 temperature=request.generation.temperature,
                 max_tokens=request.generation.max_output_tokens,
             )
         except APIStatusError as exc:
-            code = str(exc.code or '').lower()
+            code = str(exc.code or "").lower()
             message = str(exc).lower()
-            if exc.status_code in (400, 413) and (code in {'context_length_exceeded', 'context_window_exceeded', 'inputtokensexceedlimit'} or 'maximum context length' in message):
+            if exc.status_code in (400, 413) and (
+                code
+                in {
+                    "context_length_exceeded",
+                    "context_window_exceeded",
+                    "inputtokensexceedlimit",
+                }
+                or "maximum context length" in message
+            ):
                 raise ModelContextLimitError(str(exc)) from exc
             if exc.status_code == 429 or exc.status_code >= 500:
                 raise ModelProviderError(str(exc), retryable=True) from exc

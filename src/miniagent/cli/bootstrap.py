@@ -14,8 +14,8 @@ from miniagent.cli.application import (
     Application,
     ApplicationDependencies,
 )
-from miniagent.cli.settings import Settings
 from miniagent.cli.model_limits import load_model_limits
+from miniagent.cli.settings import Settings
 from miniagent.environments import (
     DockerOptions,
     DockerWorkspaceBackend,
@@ -111,10 +111,20 @@ class BootstrapConfig:
 
 async def bootstrap(config: BootstrapConfig) -> Application:
     settings = Settings()
-    limits = load_model_limits(settings.model_limits_file, config.agent.model.provider, config.agent.model.model)
+    limits = load_model_limits(
+        settings.model_limits_file,
+        config.agent.model.provider,
+        config.agent.model.model,
+    )
     runtime_config = RuntimeConfig(context_window_tokens=limits.context_window_tokens)
     runtime_config.validate_output_limit(limits.max_output_tokens)
-    agent = config.agent.model_copy(update={"generation": config.agent.generation.model_copy(update={"max_output_tokens": limits.max_output_tokens})})
+    agent = config.agent.model_copy(
+        update={
+            "generation": config.agent.generation.model_copy(
+                update={"max_output_tokens": limits.max_output_tokens}
+            )
+        }
+    )
     run_id = uuid4()
     workspace_config = WorkspaceConfig(
         kind=config.workspace_kind or WorkspaceKind(settings.workspace_backend),

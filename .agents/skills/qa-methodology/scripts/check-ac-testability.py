@@ -59,7 +59,9 @@ TESTABLE_PATTERNS = [
     re.compile(r"\bstatus\s+code\s+\d{3}\b", re.IGNORECASE),
     re.compile(r"\bHTTP\s+\d{3}\b", re.IGNORECASE),
     re.compile(r"\b\d{3}\s+(OK|Created|Bad Request|Not Found|Error)\b", re.IGNORECASE),
-    re.compile(r"\bwithin\s+\d+\s*(ms|s|seconds|milliseconds|minutes)\b", re.IGNORECASE),
+    re.compile(
+        r"\bwithin\s+\d+\s*(ms|s|seconds|milliseconds|minutes)\b", re.IGNORECASE
+    ),
     re.compile(r"\bless\s+than\s+\d", re.IGNORECASE),
     re.compile(r"\bat\s+most\s+\d", re.IGNORECASE),
     re.compile(r"\bat\s+least\s+\d", re.IGNORECASE),
@@ -70,7 +72,9 @@ TESTABLE_PATTERNS = [
     re.compile(r"\bnavigates?\s+to\b", re.IGNORECASE),
     re.compile(r"\bredir(e)?cts?\b", re.IGNORECASE),
     re.compile(r"\blog(s|ged|ging)?\s+(the|a|an|this)\b", re.IGNORECASE),
-    re.compile(r"\bsends?\s+(an?\s+)?(email|notification|request|event)\b", re.IGNORECASE),
+    re.compile(
+        r"\bsends?\s+(an?\s+)?(email|notification|request|event)\b", re.IGNORECASE
+    ),
     re.compile(r"\bcreates?\s+(a|an|the)\b", re.IGNORECASE),
     re.compile(r"\bdeletes?\s+(a|an|the)\b", re.IGNORECASE),
     re.compile(r"\bupdates?\s+(a|an|the)\b", re.IGNORECASE),
@@ -157,10 +161,10 @@ def classify_ac(text):
     # If there are concrete observable outcomes, it's testable
     # even if it also has a vague phrase (the concrete part dominates)
     if testable_hits:
-        return "testable", ["has observable outcome: {}".format(testable_hits[0])]
+        return "testable", [f"has observable outcome: {testable_hits[0]}"]
 
     if vague_hits:
-        reasons = ["vague language: {}".format(h) for h in vague_hits]
+        reasons = [f"vague language: {h}" for h in vague_hits]
         reasons.append("no observable outcome specified")
         return "untestable", reasons
 
@@ -168,7 +172,9 @@ def classify_ac(text):
     # If it has no "should/shall/must" verb, treat as not-an-AC
     if re.search(r"\b(should|shall|must)\b", text, re.IGNORECASE):
         # Has requirement language but no observable outcome
-        return "untestable", ["requirement stated but no observable outcome or verification path"]
+        return "untestable", [
+            "requirement stated but no observable outcome or verification path"
+        ]
 
     # Not a requirement statement at all
     return "testable", ["no requirement language detected; treated as context"]
@@ -190,11 +196,13 @@ def check_testability(text):
 
     for line in ac_lines:
         verdict, reasons = classify_ac(line)
-        results.append({
-            "criterion": line,
-            "verdict": verdict,
-            "reasons": reasons,
-        })
+        results.append(
+            {
+                "criterion": line,
+                "verdict": verdict,
+                "reasons": reasons,
+            }
+        )
         if verdict == "untestable":
             has_untestable = True
 
@@ -212,7 +220,7 @@ def format_results(results):
         icon = "PASS" if r["verdict"] == "testable" else "FAIL"
         lines.append("[{}] {}".format(icon, r["criterion"]))
         for reason in r["reasons"]:
-            lines.append("       {}".format(reason))
+            lines.append(f"       {reason}")
         lines.append("")
     return "\n".join(lines)
 
@@ -229,7 +237,7 @@ def main(argv=None):
             with open(args.input, "r", encoding="utf-8") as fh:
                 source_text = fh.read()
     except OSError as exc:
-        print("error: cannot read input: {}".format(exc), file=sys.stderr)
+        print(f"error: cannot read input: {exc}", file=sys.stderr)
         return 2
 
     if not source_text.strip():

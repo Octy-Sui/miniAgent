@@ -105,10 +105,7 @@ class TestAcTestabilityClassification(unittest.TestCase):
 
     def test_all_vague_exit_1(self):
         """All-vague spec exits 1."""
-        spec = (
-            "- The system should be robust\n"
-            "- The system should be scalable\n"
-        )
+        spec = "- The system should be robust\n- The system should be scalable\n"
         rc, out, _ = run_ac([], spec)
         self.assertEqual(rc, 1)
 
@@ -198,9 +195,7 @@ class TestAcTestabilityIdempotency(unittest.TestCase):
     def test_no_input_mutation(self):
         """Input file is not modified."""
         spec = "- The API returns 200 with {id} when X\n"
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".md", delete=False
-        ) as tmp:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as tmp:
             tmp.write(spec)
             tmp_path = tmp.name
         try:
@@ -221,9 +216,7 @@ class TestAcTestabilityFileInput(unittest.TestCase):
     def test_file_input(self):
         """Reading from a file path works."""
         spec = "- The API returns 201 when the resource is created\n"
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".md", delete=False
-        ) as tmp:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as tmp:
             tmp.write(spec)
             tmp_path = tmp.name
         try:
