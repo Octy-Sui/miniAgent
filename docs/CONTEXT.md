@@ -56,6 +56,18 @@ _Avoid_: Finish reason, model status
 The durable facts required to inspect or resume a Run, identified by one stable Run ID.
 _Avoid_: Runtime object, process state
 
+**Working Context**:
+The selected recent conversation and tool observations presented to the active Agent, alongside the task instructions and Task Memory.
+_Avoid_: Complete run history, run state
+
+**Task Memory**:
+A Run-scoped record of evidence-backed observations, hypotheses, rejected strategies, changes, and verification status retained across context compactions. It distinguishes observations from interpretations and preserves their sources.
+_Avoid_: Long-term memory, run trace
+
+**Context Compaction**:
+The replacement of older Working Context with source-linked Task Memory while preserving the Run's original evidence and execution state.
+_Avoid_: History deletion, workspace restore
+
 **Run Event**:
 An immutable, ordered fact about something that happened during a Run. Run Events are the audit history from which current state can be explained or reconstructed.
 _Avoid_: Message, log line
