@@ -187,6 +187,22 @@ class RunExecution:
         self.state = next_state
         self.trace = next_trace
 
+    async def record_model_failure(self, code: str) -> None:
+        trace = deepcopy(self.trace)
+        event = trace.model_event(ModelResponded(finish_reason='error', tool_call_count=0, error_code=code))
+        trace.end_model()
+        await self.journal.record_activity(self.state, [event])
+        self.trace = trace
+
+    async def begin_model_retry(self) -> None:
+        trace = deepcopy(self.trace)
+        trace.begin_model()
+        target = self.state.definition.agent_spec.model
+        state = self.state.model_copy(update={'usage': self.state.usage.model_copy(update={'model_requests': self.state.usage.model_requests + 1})})
+        await self.journal.record_activity(state, [trace.model_event(ModelRequested(provider=target.provider, model=target.model, attempt=2))])
+        self.state = state
+        self.trace = trace
+
     async def record_model_response(
         self,
         response: ModelResponse,

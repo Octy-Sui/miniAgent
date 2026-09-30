@@ -17,7 +17,7 @@ from miniagent.environments import (
 )
 from miniagent.environments.persistence import persist_workspace_spec
 from miniagent.metering.pricing import ModelPrice, PriceConfig
-from miniagent.models.config import ModelTarget
+from miniagent.models.config import ModelTarget, GenerationOptions
 from miniagent.models.messages import AssistantMessage
 from miniagent.models.protocol import (
     FinishReason,
@@ -132,6 +132,7 @@ async def make_application(
             agent=AgentSpec(
                 name="test",
                 system_prompt="Test.",
+                generation=GenerationOptions(max_output_tokens=100),
                 model=ModelTarget(provider="test", model="test-model"),
             ),
             task="task",

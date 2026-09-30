@@ -67,12 +67,14 @@ class ModelRequested(_Payload):
     type: Literal[RunEventType.MODEL_REQUESTED] = RunEventType.MODEL_REQUESTED
     provider: str
     model: str
+    attempt: int = Field(default=1, ge=1)
 
 
 class ModelResponded(_Payload):
     type: Literal[RunEventType.MODEL_RESPONDED] = RunEventType.MODEL_RESPONDED
     finish_reason: str
     tool_call_count: int = Field(ge=0)
+    error_code: str | None = None
 
 
 class ToolScopePayload(_Payload):

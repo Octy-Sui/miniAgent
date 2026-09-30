@@ -71,3 +71,13 @@ class ModelResponse(BaseModel):
 
 class ModelProvider(Protocol):
     async def generate(self, request: ModelRequest) -> ModelResponse: ...
+
+
+class ModelProviderError(RuntimeError):
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        self.retryable = retryable
+        super().__init__(message)
+
+
+class ModelContextLimitError(ModelProviderError):
+    pass

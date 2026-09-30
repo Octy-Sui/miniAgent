@@ -5,7 +5,7 @@
 from typing import Any
 
 import orjson
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, APIConnectionError, APIStatusError, omit
 
 from miniagent.models.messages import AssistantMessage, Message
 from miniagent.models.protocol import (
@@ -13,6 +13,8 @@ from miniagent.models.protocol import (
     ModelRequest,
     ModelResponse,
     ModelUsage,
+    ModelProviderError,
+    ModelContextLimitError,
 )
 from miniagent.tools.contracts import ToolCall
 
@@ -26,6 +28,7 @@ class QwenProvider:
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
+            max_retries=0,
         )
 
     def _to_provider_message(self, message: Message) -> dict[str, Any]:
@@ -96,25 +99,36 @@ class QwenProvider:
         return mapping.get(finish_reason, FinishReason.UNKNOWN)
 
     async def generate(self, request: ModelRequest) -> ModelResponse:
-        response = await self.client.chat.completions.create(
-            model=request.model,
-            messages=[
-                self._to_provider_message(message) for message in request.messages
-            ],  # ty: ignore[invalid-argument-type]
-            tools=[
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.input_schema,
-                    },
-                }
-                for tool in request.tools
-            ],
-            temperature=request.generation.temperature,
-            max_tokens=request.generation.max_output_tokens,
-        )
+        try:
+            response = await self.client.chat.completions.create(
+                model=request.model,
+                messages=[
+                    self._to_provider_message(message) for message in request.messages
+                ],  # ty: ignore[invalid-argument-type]
+                tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": tool.input_schema,
+                        },
+                    }
+                    for tool in request.tools
+                ] if request.tools else omit,
+                temperature=request.generation.temperature,
+                max_tokens=request.generation.max_output_tokens,
+            )
+        except APIStatusError as exc:
+            code = str(exc.code or '').lower()
+            message = str(exc).lower()
+            if exc.status_code in (400, 413) and (code in {'context_length_exceeded', 'context_window_exceeded', 'inputtokensexceedlimit'} or 'maximum context length' in message):
+                raise ModelContextLimitError(str(exc)) from exc
+            if exc.status_code == 429 or exc.status_code >= 500:
+                raise ModelProviderError(str(exc), retryable=True) from exc
+            raise
+        except APIConnectionError as exc:
+            raise ModelProviderError(str(exc), retryable=True) from exc
         choice = response.choices[0]
         provider_message = choice.message
 

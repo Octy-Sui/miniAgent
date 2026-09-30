@@ -2,6 +2,8 @@
 # Created: 2026-09-10 16:35:13
 # Author : octy Sui
 
+import asyncio
+
 from datetime import UTC, datetime
 from dataclasses import replace
 from uuid import UUID, uuid4
@@ -11,7 +13,7 @@ from miniagent.evaluation import EvaluationRequest, Evaluator, PassThroughEvalua
 from miniagent.metering.pricing import PriceConfig
 from miniagent.metering.usage import calculate_request_cost
 from miniagent.models.messages import SystemMessage, UserMessage
-from miniagent.models.protocol import ModelProvider, ModelRequest
+from miniagent.models.protocol import ModelProvider, ModelRequest, ModelContextLimitError, ModelProviderError
 from miniagent.policy import (
     ApprovalHandler,
     DefaultPolicyEngine,
@@ -188,24 +190,48 @@ class AgentRuntime:
             return self._context_failure('COMPACTION_INPUT_TOO_LARGE', reason) if plan.hard_trigger else old_request
         if not should_compact(plan, summary_request_tokens=summary_tokens, remaining_steps=execution.state.definition.config.max_steps - execution.state.execution.steps_started):
             return old_request
-        await execution.begin_compaction_attempt(plan, 1)
-        try:
-            response = await await_with_cancellation(self.provider.generate(summary_request), self.cancellation_token)
-        except CancellationRequested:
-            await execution.record_compaction_attempt(CompactionAttempt(attempt=1, error_code='CANCELLED'))
-            await execution.fail_compaction('COMPACTION_FAILED', 'compaction cancelled', (CompactionAttempt(attempt=1, error_code='CANCELLED'),))
-            raise
-        except Exception as exc:
-            attempt = CompactionAttempt(attempt=1, error_code=type(exc).__name__)
+        attempts: list[CompactionAttempt] = []
+        response = None
+        failure = 'summary generation failed'
+        config = execution.state.definition.config
+        for number in range(1, config.compaction_max_retries + 2):
+            if self.cancellation_token.is_cancelled:
+                raise CancellationRequested
+            await execution.begin_compaction_attempt(plan, number)
+            try:
+                response = await await_with_cancellation(asyncio.wait_for(self.provider.generate(summary_request), timeout=config.compaction_timeout_seconds), self.cancellation_token)
+            except CancellationRequested:
+                attempt = CompactionAttempt(attempt=number, error_code='CANCELLED')
+                attempts.append(attempt)
+                await execution.record_compaction_attempt(attempt)
+                await execution.fail_compaction('COMPACTION_FAILED', 'compaction cancelled', tuple(attempts))
+                raise
+            except Exception as exc:
+                failure = f'{type(exc).__name__}: {exc}'
+                attempt = CompactionAttempt(attempt=number, error_code=type(exc).__name__)
+                attempts.append(attempt)
+                await execution.record_compaction_attempt(attempt)
+                response = None
+                if isinstance(exc, TimeoutError) or isinstance(exc, ModelProviderError) and exc.retryable:
+                    continue
+                break
+            cost = None
+            if self.pricing is not None and response.usage is not None:
+                target = execution.state.definition.agent_spec.model
+                cost = calculate_request_cost(provider=target.provider, model=target.model, usage=response.usage, pricing=self.pricing)
+            attempt = CompactionAttempt(attempt=number, usage=response.usage, request_cost=cost, provider_request_id=response.provider_request_id, error_code=response.error.code if response.error else None)
+            attempts.append(attempt)
             await execution.record_compaction_attempt(attempt)
-            await execution.fail_compaction('COMPACTION_FAILED', str(exc), (attempt,))
-            return self._context_failure('COMPACTION_FAILED', str(exc)) if plan.hard_trigger else old_request
-        cost = None
-        if self.pricing is not None and response.usage is not None:
-            target = execution.state.definition.agent_spec.model
-            cost = calculate_request_cost(provider=target.provider, model=target.model, usage=response.usage, pricing=self.pricing)
-        attempt = CompactionAttempt(attempt=1, usage=response.usage, request_cost=cost, provider_request_id=response.provider_request_id)
-        await execution.record_compaction_attempt(attempt)
+            if response.error is not None:
+                failure = response.error.message
+                retryable = response.error.retryable
+                response = None
+                if retryable:
+                    continue
+            break
+        if response is None:
+            await execution.fail_compaction('COMPACTION_FAILED', failure, tuple(attempts))
+            return self._context_failure('COMPACTION_FAILED', failure) if plan.hard_trigger else old_request
         try:
             conversation = await validate_summary(response, plan, recorder.store)
             candidate_request = old_request.model_copy(update={'messages': conversation.messages})
@@ -214,9 +240,9 @@ class AgentRuntime:
             if new_tokens > target_tokens:
                 raise InvalidSummaryError('candidate summary exceeds target input budget')
         except InvalidSummaryError as exc:
-            await execution.fail_compaction('COMPACTION_INVALID_SUMMARY', str(exc), (attempt,))
+            await execution.fail_compaction('COMPACTION_INVALID_SUMMARY', str(exc), tuple(attempts))
             return self._context_failure('COMPACTION_INVALID_SUMMARY', str(exc)) if plan.hard_trigger else old_request
-        await execution.publish_compaction(conversation, plan, attempts=(attempt,), new_tokens=new_tokens, summary_input_tokens=summary_tokens, source_snapshot_id=source.snapshot_id if source is not None else None)
+        await execution.publish_compaction(conversation, plan, attempts=tuple(attempts), new_tokens=new_tokens, summary_input_tokens=summary_tokens, source_snapshot_id=source.snapshot_id if source is not None else None)
         return self._build_request(execution.state)
 
     async def _run_step(
@@ -232,24 +258,27 @@ class AgentRuntime:
             provider=agent.model.provider,
             model=agent.model.model,
         )
-        try:
-            response = await await_with_cancellation(
-                self.provider.generate(request),
-                self.cancellation_token,
-            )
-        except CancellationRequested:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            return TerminateRun(
-                RunTermination(
-                    status=RunStatus.FAILED,
-                    reason=TerminationReason.MODEL_FAILED,
-                    error=RunError(
-                        code="PROVIDER_EXCEPTION",
-                        message=f"{type(exc).__name__}: {exc}",
-                    ),
-                )
-            )
+        for business_attempt in range(2):
+            try:
+                response = await await_with_cancellation(self.provider.generate(request), self.cancellation_token)
+            except CancellationRequested:
+                raise
+            except ModelContextLimitError as exc:
+                await execution.record_model_failure('CONTEXT_CAPACITY_EXCEEDED')
+                if business_attempt == 1:
+                    return TerminateRun(self._context_failure('CONTEXT_CAPACITY_EXCEEDED', str(exc)))
+                previous_version = execution.state.context.current_version
+                retry_request = await self._prepare_request(execution, force=True)
+                if isinstance(retry_request, RunTermination):
+                    return TerminateRun(retry_request)
+                if execution.state.context.current_version == previous_version:
+                    return TerminateRun(self._context_failure('COMPACTION_FAILED', 'Provider rejected context and compaction did not publish'))
+                request = retry_request
+                await execution.begin_model_retry()
+                continue
+            except Exception as exc:  # noqa: BLE001
+                return TerminateRun(RunTermination(status=RunStatus.FAILED, reason=TerminationReason.MODEL_FAILED, error=RunError(code="PROVIDER_EXCEPTION", message=f"{type(exc).__name__}: {exc}")))
+            break
 
         if isinstance(self.estimator, QwenPromptTokenEstimator) and response.usage is not None:
             self.estimator.observe(request, response.usage.input_tokens)

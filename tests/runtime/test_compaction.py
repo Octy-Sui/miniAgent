@@ -234,3 +234,84 @@ async def test_compaction_continues_same_run_before_business_step(tmp_path) -> N
     assert record.state.execution.steps_started == 5
     assert record.state.context.current_version == 1
     await validate_compaction_record(record, store)
+
+
+@pytest.mark.parametrize(('kind',), [('transient',), ('timeout',)])
+async def test_summary_retries_are_bounded_without_new_steps(tmp_path, kind) -> None:
+    import asyncio
+    from miniagent.models.protocol import ModelProviderError
+    from miniagent.runtime.execution import RunTermination
+
+    runtime, execution, provider, store = await pipeline(tmp_path)
+    if kind == 'transient':
+        provider.responses = [ModelProviderError('temporary', retryable=True)] * 3
+    else:
+        class SlowProvider:
+            def __init__(self): self.requests = []
+            async def generate(self, request):
+                self.requests.append(request)
+                await asyncio.Event().wait()
+        provider = SlowProvider()
+        runtime.provider = provider
+        execution.state = execution.state.model_copy(update={'definition': execution.state.definition.model_copy(update={'config': execution.state.definition.config.model_copy(update={'compaction_timeout_seconds': .01})})})
+    outcome = await runtime._prepare_request(execution)
+    assert isinstance(outcome, RunTermination)
+    assert len(provider.requests) == 2
+    assert execution.state.execution.steps_started == 6
+    assert execution.state.usage.model_requests == 2
+    assert execution.state.context.current_version is None
+    failed = (await store.list_events(execution.state.identity.run_id))[-1].payload
+    assert len(failed.attempts) == 2
+    assert all(attempt.usage is None for attempt in failed.attempts)
+
+
+async def test_nonrecoverable_summary_error_is_not_retried(tmp_path) -> None:
+    runtime, execution, provider, store = await pipeline(tmp_path, old=7000)
+    provider.responses = [ValueError('not recoverable')]
+    outcome = await runtime._prepare_request(execution)
+    assert outcome.messages == execution.state.conversation.messages
+    assert len(provider.requests) == 1
+    assert execution.state.context.current_version is None
+
+
+async def test_cancellation_stops_summary_without_retry(tmp_path) -> None:
+    import asyncio
+    from miniagent.runtime.cancellation import CancellationRequested
+    from test_runtime import BlockingProvider
+
+    runtime, execution, provider, store = await pipeline(tmp_path)
+    blocking = BlockingProvider()
+    runtime.provider = blocking
+    task = asyncio.create_task(runtime._prepare_request(execution))
+    await blocking.started.wait()
+    runtime.cancellation_token.cancel()
+    with pytest.raises(CancellationRequested):
+        await task
+    assert blocking.cancelled
+    assert execution.state.usage.model_requests == 1
+    assert execution.state.execution.steps_started == 6
+    failed = (await store.list_events(execution.state.identity.run_id))[-1].payload
+    assert failed.attempts[0].usage is None
+
+
+@pytest.mark.parametrize(('second_rejects',), [(False,), (True,)])
+async def test_context_limit_retries_same_step_once(tmp_path, second_rejects) -> None:
+    from miniagent.models.protocol import ModelContextLimitError, ModelResponse, FinishReason
+    from miniagent.runtime.execution import TerminateRun, EvaluateCandidate
+    from miniagent.runtime.approval import ApprovalCoordinator
+    from miniagent.runtime.tool_runner import ToolCallRunner
+    from miniagent.tools.registry import ToolRegistry
+
+    runtime, execution, provider, store = await pipeline(tmp_path, old=1000)
+    provider.responses = [ModelContextLimitError('context rejected'), summary_response(), ModelContextLimitError('again') if second_rejects else ModelResponse(message=AssistantMessage(content='done'), finish_reason=FinishReason.STOP)]
+    runner = ToolCallRunner(tools=ToolRegistry([]), policy_engine=runtime.policy_engine, policy_context=runtime.policy_context, approval=ApprovalCoordinator(config=execution.state.definition.config, handler=None, policy_engine=runtime.policy_engine, cancellation_token=runtime.cancellation_token), cancellation_token=runtime.cancellation_token)
+    outcome = await runtime._run_step(execution, execution.state.definition.agent_spec, runner)
+    assert isinstance(outcome, TerminateRun if second_rejects else EvaluateCandidate)
+    assert len(provider.requests) == 3
+    assert execution.state.execution.steps_started == 7
+    assert execution.state.usage.model_requests == 3
+    assert execution.state.usage.tool_calls == 0
+    assert execution.state.context.current_version == 1
+    events = await store.list_events(execution.state.identity.run_id)
+    assert sum(event.type.value == 'step_started' for event in events) == 1
+    assert sum(event.type.value == 'model_requested' for event in events) == 2
