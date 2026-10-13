@@ -1,6 +1,5 @@
 import asyncio
 import os
-import sys
 from datetime import UTC, datetime
 from time import monotonic
 from uuid import uuid4
@@ -24,46 +23,6 @@ from miniagent.environments import (
 )
 from miniagent.environments.contracts import PatchExportCleanupError
 from miniagent.environments.docker import DockerCommandResult
-
-
-@pytest.fixture
-def export_workspace(tmp_path):
-    executable = tmp_path / "docker-export"
-    executable.write_text(
-        f"#!{sys.executable}\n"
-        + """import json, os, sys, time
-from pathlib import Path
-root = Path(__file__).parent
-args = sys.argv[1:]
-with (root / "export-calls.jsonl").open("a") as stream:
-    stream.write(json.dumps(args) + "\\n")
-if "rm" in args:
-    (root / "cleanup-started").write_text(str(os.getpid()))
-    mode = (root / "mode").read_text()
-    if mode == "hang":
-        time.sleep(30)
-    elif mode == "error":
-        sys.exit(1)
-elif "diff" in args:
-    if "--name-only" in args:
-        sys.stdout.buffer.write(b"changed.txt\\0")
-    else:
-        print("diff --git a/changed.txt b/changed.txt")
-"""
-    )
-    executable.chmod(0o755)
-    (tmp_path / "mode").write_text("ok")
-    backend = DockerWorkspaceBackend(
-        artifact_store=UnusedArtifactStore(), docker_executable=str(executable)
-    )
-    return DockerWorkspace(
-        backend=backend,
-        spec=workspace_spec(),
-        _workspace_id="test",
-        container_id="agent-container",
-        image_id="image",
-        base_revision="actual-base",
-    )
 
 
 async def test_export_patch_shares_budget_with_cleanup(export_workspace, tmp_path):
