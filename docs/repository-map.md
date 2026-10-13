@@ -12,7 +12,7 @@
 
 miniAgent 是 Python 3.13 的最小 Agent Runtime。当前产品路径接受一个 CLI task，
 创建隔离 Workspace，让模型在 bounded Step loop 中调用工具，输出结构化 `RunResult`，
-并把 Run/Event/Snapshot/Approval 原子持久化；应用层结束时尝试登记 patch artifact，
+并把 Run/Event/Snapshot/Approval 原子持久化；Docker在评测前冻结候选patch并独立校验，Local结束时登记诊断patch，
 仅当 Run 成功且 finalization 无错误时销毁 Workspace
 （`src/miniagent/cli/application.py`, `src/miniagent/runtime/recording.py`）。
 
@@ -28,8 +28,9 @@ miniagent CLI
       → PolicyEngine → allow / deny / same-process approval
       → ReadFileTool / ShellTool → Workspace.execute(Command)
       → render_tool_result(ToolResult) → bounded JSON tool message
-      → termination decision → PassThroughEvaluator
-    → patch export → FileArtifactStore manifest
+      → termination decision → Local PassThroughEvaluator / Docker candidate submission → SWEbenchEvaluator
+      → EvaluationCompleted artifact refs + terminal SQLite commit
+    → one verified manifest collection → ApplicationResult
     → conditional Workspace.destroy()
   → ApplicationResult(RunResult, artifacts, finalization errors)
 ```
@@ -60,7 +61,8 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；应用生命周期位
 | wired | 必填模型容量/输出配置、安全 Step 边界压缩、结构化摘要来源校验、原子压缩 Event/Snapshot | `src/miniagent/cli/model_limits.py`, `src/miniagent/runtime/context.py`, `src/miniagent/runtime/journal.py`, `tests/runtime/test_compaction.py` |
 | contract-only | 压缩历史重载校验函数；产品未接入跨进程重载入口 | `src/miniagent/runtime/context.py`, `tests/runtime/test_compaction.py` |
 | wired | 测试专用压缩验收 freeze/live/report 工具；真实 Qwen 验收仍 PENDING，摘要语义质量 DEFER | `tests/acceptance/context_compaction/`, `docs/superpowers/acceptance/context-compaction-protocol.md` |
-| roadmap | 跨进程审批恢复、dashboard、SWE-bench orchestration | `docs/blueprint.md`, `docs/policy-engine-design.md` |
+| wired | Docker逐任务预检、唯一候选提交、独立SWE-bench 5.0.2、有界取消/清理、评测证据交付 | `src/miniagent/evaluation/swebench*.py`, `src/miniagent/cli/candidate_submission.py`, `tests/evaluation/`, `tests/integration/test_swebench_evaluation.py` |
+| roadmap | 跨进程审批恢复、dashboard、批量 SWE-bench orchestration | `docs/blueprint.md`, `docs/policy-engine-design.md` |
 
 ## Task routes
 
