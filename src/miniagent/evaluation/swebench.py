@@ -299,7 +299,7 @@ class SWEbenchEvaluator:
         attempt: EvaluationAttempt,
         error: EvaluationError | None,
         diagnostics: list[str],
-        cancelled: bool,
+        cancelled: asyncio.Event,
         config: dict,
     ) -> tuple[list[ArtifactRef], EvaluationError | None]:
         refs = [attempt.patch_ref]
@@ -342,7 +342,7 @@ class SWEbenchEvaluator:
             return json.dumps(
                 {
                     "verdict": "cancelled"
-                    if cancelled
+                    if cancelled.is_set()
                     else "failed"
                     if error
                     else "passed",
@@ -374,7 +374,7 @@ class SWEbenchEvaluator:
                     try:
                         path = _attempt_path(attempt, name)
                         if not path.is_file():
-                            if error is None and not cancelled:
+                            if error is None and not cancelled.is_set():
                                 raise FileNotFoundError(
                                     f"Necessary evidence missing: {name}"
                                 )
@@ -389,7 +389,7 @@ class SWEbenchEvaluator:
                                 :4096
                             ]
                         )
-                        if error is None and not cancelled:
+                        if error is None and not cancelled.is_set():
                             error = EvaluationError(
                                 code="EVALUATION_ARTIFACT_FAILED",
                                 message=f"Necessary evidence could not be registered: {name}",
@@ -410,7 +410,7 @@ class SWEbenchEvaluator:
                     :4096
                 ]
             )
-            if error is None and not cancelled:
+            if error is None and not cancelled.is_set():
                 error = EvaluationError(
                     code="EVALUATION_ARTIFACT_FAILED", message=diagnostics[-1]
                 )
@@ -557,15 +557,19 @@ class SWEbenchEvaluator:
             error = EvaluationError(
                 code="EVALUATION_CLEANUP_FAILED", message=cleanup_diagnostics[0][:4096]
             )
+        cancellation_observed = asyncio.Event()
+        if cancelled is not None:
+            cancellation_observed.set()
         collecting = asyncio.create_task(
             self._collect(
-                request, attempt, error, diagnostics, cancelled is not None, config
+                request, attempt, error, diagnostics, cancellation_observed, config
             )
         )
         try:
             refs, error = await asyncio.shield(collecting)
         except asyncio.CancelledError as exc:
             cancelled = cancelled or exc
+            cancellation_observed.set()
             refs, error = await asyncio.shield(collecting)
         if cancelled is not None:
             cancelled.add_note(f"Evaluation attempt retained at {attempt.directory}")

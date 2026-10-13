@@ -5,12 +5,26 @@ from uuid import uuid4
 
 import pytest
 
+from miniagent.agents import AgentSpec
 from miniagent.artifacts import FileArtifactStore
+from miniagent.cli.application import ApplicationDependencies
+from miniagent.cli.candidate_submission import (
+    CandidateSubmission,
+)
 from miniagent.environments import (
     LocalOptions,
     LocalWorkspaceBackend,
     LocalWorkspaceSpec,
 )
+from miniagent.environments.persistence import persist_workspace_spec
+from miniagent.metering.pricing import ModelPrice, PriceConfig
+from miniagent.models.config import GenerationOptions, ModelTarget
+from miniagent.models.messages import AssistantMessage
+from miniagent.models.protocol import FinishReason, ModelResponse, ModelUsage
+from miniagent.policy import PolicyContext
+from miniagent.runtime import RunRecoveryContext
+from miniagent.storage import SQLiteRunStore
+from miniagent.tools.registry import ToolRegistry
 
 
 @pytest.fixture
@@ -48,3 +62,55 @@ async def submission_case(tmp_path: Path):
         LocalWorkspaceSpec(run_id=uuid4(), options=LocalOptions(source_dir=source))
     )
     return workspace, store
+
+
+class StaticProvider:
+    async def generate(self, request):
+        return ModelResponse(
+            message=AssistantMessage(content="done"),
+            finish_reason=FinishReason.STOP,
+            usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
+        )
+
+
+@pytest.fixture
+async def delivery_case(submission_case, tmp_path):
+    workspace, store = submission_case
+    journal = SQLiteRunStore(tmp_path / "journal.sqlite3")
+    await journal.initialize()
+    submission = CandidateSubmission(workspace, store)
+    deps = ApplicationDependencies(
+        agent=AgentSpec(
+            name="test",
+            system_prompt="Test.",
+            generation=GenerationOptions(max_output_tokens=100),
+            model=ModelTarget(provider="test", model="test-model"),
+        ),
+        task="issue",
+        run_id=workspace.run_id,
+        provider=StaticProvider(),
+        tools=ToolRegistry([]),
+        workspace=workspace,
+        artifact_store=store,
+        pricing=PriceConfig(
+            models=[
+                ModelPrice(
+                    provider="test",
+                    model="test-model",
+                    input_per_token=0,
+                    output_per_token=0,
+                )
+            ]
+        ),
+        policy_context=PolicyContext(
+            workspace_id=workspace.workspace_id, workspace_kind="local", revision="test"
+        ),
+        approval_handler=None,
+        run_store=journal,
+        recovery_context=RunRecoveryContext(
+            workspace_id=workspace.workspace_id,
+            workspace_spec=persist_workspace_spec(workspace.spec),
+        ),
+        candidate_submission=submission,
+    )
+    return deps, submission

@@ -154,7 +154,7 @@ async def bootstrap(config: BootstrapConfig) -> Application:
             raise EvaluationPreparationError(
                 "HARNESS_VERSION_MISMATCH", "SWE-bench executable is unavailable"
             )
-        executable = Path(harness_path).resolve()
+        executable = Path(harness_path).absolute()
         await verify_harness_version(executable)
         docker_path = shutil.which(
             settings.evaluation_docker_executable, path=environment.get("PATH")
@@ -163,7 +163,7 @@ async def bootstrap(config: BootstrapConfig) -> Application:
             raise EvaluationPreparationError(
                 "DOCKER_CONNECTION_INVALID", "Docker executable is unavailable"
             )
-        docker_executable = Path(docker_path).resolve()
+        docker_executable = Path(docker_path).absolute()
         connection = await resolve_docker_connection(docker_executable, environment)
         if (
             await inspect_image(docker_executable, connection, prepared.actual_image)

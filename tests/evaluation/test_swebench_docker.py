@@ -1,6 +1,8 @@
+import asyncio
 import json
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -204,3 +206,33 @@ async def test_harness_version_is_checked(tmp_path, version, valid):
             EvaluationPreparationError, match="HARNESS_VERSION_MISMATCH"
         ):
             await verify_harness_version(executable)
+
+
+async def test_uv_tool_without_version_option_uses_bound_distribution_metadata(
+    tmp_path,
+):
+    environment = tmp_path / "tool-env"
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "venv", "--without-pip", str(environment)
+    )
+    assert await process.wait() == 0
+    python = environment / "bin/python"
+    query = await asyncio.create_subprocess_exec(
+        str(python),
+        "-c",
+        "import sysconfig; print(sysconfig.get_path('purelib'))",
+        stdout=asyncio.subprocess.PIPE,
+    )
+    output, _ = await query.communicate()
+    assert query.returncode == 0
+    distribution = Path(output.decode().strip()) / "swebench-5.0.2.dist-info"
+    distribution.mkdir()
+    (distribution / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: swebench\nVersion: 5.0.2\n"
+    )
+    executable = environment / "bin/swebench"
+    executable.write_text(
+        f"#!{python}\nimport sys\nprint('No such option: --version', file=sys.stderr)\nsys.exit(2)\n"
+    )
+    executable.chmod(0o755)
+    assert await verify_harness_version(executable) == "5.0.2"

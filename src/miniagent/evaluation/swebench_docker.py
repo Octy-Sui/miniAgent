@@ -293,11 +293,32 @@ async def resolve_docker_connection(
 
 
 async def verify_harness_version(executable: Path) -> str:
+    deadline = asyncio.get_running_loop().time() + 10.0
     try:
         code, stdout, stderr = await _run_command(
             [str(executable), "--version"], environment={}, timeout_seconds=10.0
         )
-        if code or not re.search(rb"(?<![\d.])5\.0\.2(?![\d.])", stdout + stderr):
+        if code and b"No such option: --version" in stderr:
+            with executable.open("rb") as stream:
+                header = stream.readline(4096).decode("utf-8").strip()
+            if not header.startswith("#!/") or " " in header[2:]:
+                raise ValueError("Cannot bind uv tool interpreter for version check")
+            interpreter = header[2:]
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise TimeoutError("Version check budget exhausted")
+            code, stdout, stderr = await _run_command(
+                [
+                    interpreter,
+                    "-c",
+                    "from importlib.metadata import version; print(version('swebench'))",
+                ],
+                environment={},
+                timeout_seconds=remaining,
+            )
+            if code or stdout.strip() != b"5.0.2":
+                raise ValueError("Expected bound swebench distribution 5.0.2")
+        elif code or not re.search(rb"(?<![\d.])5\.0\.2(?![\d.])", stdout + stderr):
             raise ValueError("Expected swebench 5.0.2")
         return "5.0.2"
     except (OSError, TimeoutError, ValueError) as exc:

@@ -169,3 +169,29 @@ async def test_wrong_harness_version_is_rejected_before_docker(configured_host):
             )
         )
     assert not (configured_host / "docker-calls.jsonl").exists()
+
+
+async def test_multicall_docker_symlink_keeps_invocation_name(
+    configured_host, monkeypatch
+):
+    executable = configured_host / "docker-test"
+    text = executable.read_text()
+    text = text.replace(
+        "root = Path(__file__).parent",
+        'if Path(sys.argv[0]).name not in {"docker-selection", "docker"}:\n    sys.exit(127)\nroot = Path(__file__).parent',
+    )
+    executable.write_text(text)
+    selected = configured_host / "docker-selection"
+    selected.symlink_to(executable)
+    monkeypatch.setenv("EVALUATION_DOCKER_EXECUTABLE", str(selected))
+    application = await bootstrap(
+        BootstrapConfig(
+            agent=DEFAULT_AGENT,
+            task="issue",
+            source_dir=configured_host,
+            workspace_kind=WorkspaceKind.DOCKER,
+            docker_image="agent",
+            swebench_task=SWEbenchTaskContext(instance_id="django__django-11477"),
+        )
+    )
+    await application.dependencies.workspace.destroy()

@@ -39,6 +39,8 @@ elif "diff" in args:
         sys.stdout.buffer.write(b"changed.txt\\0")
     else:
         sys.stdout.write(" " if (root / "mode").read_text() == "whitespace" else "diff --git a/changed.txt b/changed.txt\\n")
+        if (root / "mode").read_text() == "large":
+            sys.stdout.write("x" * (16 * 1024 * 1024))
 """
     )
     executable.chmod(0o755)
