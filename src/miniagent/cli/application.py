@@ -7,7 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 from miniagent.agents import AgentSpec
-from miniagent.artifacts import ArtifactRef, ArtifactStore
+from miniagent.artifacts import ArtifactNotFoundError, ArtifactRef, ArtifactStore
 from miniagent.cli.candidate_submission import CandidateSubmission
 from miniagent.environments import Workspace
 from miniagent.evaluation import Evaluator, PassThroughEvaluator
@@ -152,6 +152,14 @@ class Application:
                     self.dependencies.run_id
                 )
             refs = {record.artifact_id: record.reference() for record in records}
+            if (
+                submission.patch_ref is not None
+                and refs.get(submission.patch_ref.artifact_id) != submission.patch_ref
+            ):
+                raise ArtifactNotFoundError(
+                    "Submitted patch is missing or changed in artifact collection: "
+                    f"{submission.patch_ref.artifact_id}"
+                )
             return list(refs.values()), errors
         except Exception as exc:  # noqa: BLE001
             errors.append(
