@@ -1,0 +1,269 @@
+{
+  "task_base_sha256": "002f706b7c35a165247b532542425ccbfda9b87b35778ddc3c416b057e509bee",
+  "sources": [
+    {
+      "dataset": "princeton-nlp/SWE-bench_Verified",
+      "revision": "c104f840cc67f8b6eec6f759ebc8b2693d585d4a",
+      "file": "data/test-00000-of-00001.parquet",
+      "sha256": "a45b1fe4e2f0c8390b2b2938ac83e92ed5979000856808f3679c07812e9e6dcd"
+    },
+    {
+      "dataset": "SWE-bench/SWE-bench_Verified",
+      "revision": "78f471bf655a3137b2e8a75af1501690ec009ec3",
+      "file": "data/test-00000-of-00001.parquet",
+      "sha256": "030cfd7f2a704c4c0226e7f104c725a3b41230b1d3517f9c915ad7ea5be3fa25"
+    }
+  ],
+  "tasks": [
+    {
+      "instance_id": "astropy__astropy-12907",
+      "selection": "development",
+      "repo": "astropy/astropy",
+      "version": "4.3",
+      "base_commit": "d16bfe05a744909de4b27f5875fe0d4ed41ce607",
+      "image": "docker.io/swebench/sweb.eval.x86_64.astropy_1776_astropy-12907@sha256:7485c1e3c8861efd0c6a4a78b952857592e541031039000d25e9481f045dc4a3",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "django__django-11477",
+      "selection": "development",
+      "repo": "django/django",
+      "version": "3.0",
+      "base_commit": "e28671187903e6aca2428374fdd504fca3032aee",
+      "image": "docker.io/swebench/sweb.eval.x86_64.django_1776_django-11477@sha256:18fa05d1fc555eb673f798a17cfc1a32b86b6cd9f9a56c64b7840cd5e35e7c10",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-7571",
+      "selection": "development",
+      "repo": "pytest-dev/pytest",
+      "version": "6.0",
+      "base_commit": "422685d0bdc110547535036c1ff398b5e1c44145",
+      "image": "docker.io/swebench/sweb.eval.x86_64.pytest-dev_1776_pytest-7571@sha256:a4cdd92a11a554106948342c614cbcaa9a7fc7f42b261859c9deef149a673cfe",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "sympy__sympy-13647",
+      "selection": "development",
+      "repo": "sympy/sympy",
+      "version": "1.1",
+      "base_commit": "67e3c956083d0128a621f65ee86a7dacd4f9f19f",
+      "image": "docker.io/swebench/sweb.eval.x86_64.sympy_1776_sympy-13647@sha256:d27b2eed2f5d195f63c48acf32a64c562a0121d7ee28effd548702507b4ada8a",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "pydata__xarray-3677",
+      "selection": "development",
+      "repo": "pydata/xarray",
+      "version": "0.12",
+      "base_commit": "ef6e6a7b86f8479b9a1fecf15ad5b88a2326b31e",
+      "image": "docker.io/swebench/sweb.eval.x86_64.pydata_1776_xarray-3677@sha256:97f5f793df1b6df512d8be87cd9c3180c407f858764f0af3d9d98934deca24a9",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "astropy__astropy-14539",
+      "selection": "evaluation",
+      "repo": "astropy/astropy",
+      "version": "5.1",
+      "base_commit": "c0a24c1dc957a3b565294213f435fefb2ec99714",
+      "image": "docker.io/swebench/sweb.eval.x86_64.astropy_1776_astropy-14539@sha256:84363223c36a289d101970473e56ad12199e9b5dcbd1deef5568f4fab743ff05",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "django__django-16485",
+      "selection": "evaluation",
+      "repo": "django/django",
+      "version": "5.0",
+      "base_commit": "39f83765e12b0e5d260b7939fc3fe281d879b279",
+      "image": "docker.io/swebench/sweb.eval.x86_64.django_1776_django-16485@sha256:beb779e5314f19ed69da3214744fda2b26025511054dc7f367d617f88b216966",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "pydata__xarray-4695",
+      "selection": "evaluation",
+      "repo": "pydata/xarray",
+      "version": "0.12",
+      "base_commit": "51ef2a66c4e0896eab7d2b03e3dfb3963e338e3c",
+      "image": "docker.io/swebench/sweb.eval.x86_64.pydata_1776_xarray-4695@sha256:93a1265e6fe32cda6fe8d5fb5f8eba4d689fedeaae1228abc7948f2403de98a5",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "pylint-dev__pylint-7080",
+      "selection": "evaluation",
+      "repo": "pylint-dev/pylint",
+      "version": "2.15",
+      "base_commit": "3c5eca2ded3dd2b59ebaf23eb289453b5d2930f0",
+      "image": "docker.io/swebench/sweb.eval.x86_64.pylint-dev_1776_pylint-7080@sha256:d81b3855816c07747fbfd694352ce24fb8152cec70d136b292de55ff6afe2db6",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-14053",
+      "selection": "evaluation",
+      "repo": "scikit-learn/scikit-learn",
+      "version": "0.22",
+      "base_commit": "6ab8c86c383dd847a1be7103ad115f174fe23ffd",
+      "image": "docker.io/swebench/sweb.eval.x86_64.scikit-learn_1776_scikit-learn-14053@sha256:5a0a67e6c20dc0ec7587d1efa8ae25c3b3775be682e67df94767c68b388a6d42",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "sympy__sympy-20801",
+      "selection": "evaluation",
+      "repo": "sympy/sympy",
+      "version": "1.8",
+      "base_commit": "e11d3fed782146eebbffdc9ced0364b223b84b6c",
+      "image": "docker.io/swebench/sweb.eval.x86_64.sympy_1776_sympy-20801@sha256:c2a2bea936145e76f1674773b1174a7f71bf5a498889e8242bb4e9f7c76e8237",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "django__django-11734",
+      "selection": "evaluation",
+      "repo": "django/django",
+      "version": "3.0",
+      "base_commit": "999891bd80b3d02dd916731a7a239e1036174885",
+      "image": "docker.io/swebench/sweb.eval.x86_64.django_1776_django-11734@sha256:5ddbc111ccc7ed091855034eacff1c58347df158d6acd0c015feab17587d36a2",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "django__django-16032",
+      "selection": "evaluation",
+      "repo": "django/django",
+      "version": "4.2",
+      "base_commit": "0c3981eb5094419fe200eb46c71b5376a2266166",
+      "image": "docker.io/swebench/sweb.eval.x86_64.django_1776_django-16032@sha256:2b05c0e1e5815995e627e3780e332cafad8b06acb1fee06a9b7db4e2cff18066",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-8399",
+      "selection": "evaluation",
+      "repo": "pytest-dev/pytest",
+      "version": "6.3",
+      "base_commit": "6e7dc8bac831cd8cf7a53b08efa366bd84f0c0fe",
+      "image": "docker.io/swebench/sweb.eval.x86_64.pytest-dev_1776_pytest-8399@sha256:b9a5d37ff455b7ecc581bc9432bab3f7e2c73ed429539a7230cee50a4b79beb4",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8551",
+      "selection": "evaluation",
+      "repo": "sphinx-doc/sphinx",
+      "version": "3.4",
+      "base_commit": "57ed10c68057c96491acbd3e62254ccfaf9e3861",
+      "image": "docker.io/swebench/sweb.eval.x86_64.sphinx-doc_1776_sphinx-8551@sha256:0cee9556d1dab507161552be8bd82757ee1a835fe660a832a6df023bcb60b67d",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-25102",
+      "selection": "evaluation",
+      "repo": "scikit-learn/scikit-learn",
+      "version": "1.3",
+      "base_commit": "f9a1cf072da9d7375d6c2163f68a6038b13b310f",
+      "image": "docker.io/swebench/sweb.eval.x86_64.scikit-learn_1776_scikit-learn-25102@sha256:b9d4474791bd7ebf1c5bbab468b77802d1fe7368819ff9c9e97076d8cb736472",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "django__django-16667",
+      "selection": "evaluation",
+      "repo": "django/django",
+      "version": "5.0",
+      "base_commit": "02c356f2f3945b8075735d485c3cf48cad991011",
+      "image": "docker.io/swebench/sweb.eval.x86_64.django_1776_django-16667@sha256:a0f59024db622ca13d7b34fe9356230a199588e8895a958e3501ea39251368a6",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "psf__requests-2931",
+      "selection": "evaluation",
+      "repo": "psf/requests",
+      "version": "2.9",
+      "base_commit": "5f7a3a74aab1625c2bb65f643197ee885e3da576",
+      "image": "docker.io/swebench/sweb.eval.x86_64.psf_1776_requests-2931@sha256:852d3d1ddb3c859675e5bb7d9269cb27c1bf8a6e95965108ad8a38b3495fc1d0",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-7236",
+      "selection": "evaluation",
+      "repo": "pytest-dev/pytest",
+      "version": "5.4",
+      "base_commit": "c98bc4cd3d687fe9b392d8eecd905627191d4f06",
+      "image": "docker.io/swebench/sweb.eval.x86_64.pytest-dev_1776_pytest-7236@sha256:edcc72fd067a1b88f55fc9676cd2fa8ad6f0e624a3ae7d92eae232b7f39efadf",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "pydata__xarray-3151",
+      "selection": "evaluation",
+      "repo": "pydata/xarray",
+      "version": "0.12",
+      "base_commit": "118f4d996e7711c9aced916e6049af9f28d5ec66",
+      "image": "docker.io/swebench/sweb.eval.x86_64.pydata_1776_xarray-3151@sha256:320eea88d5a1b8553e7bf3f51c705b2230936800bac59f9cc0acd920a5d44d6b",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "django__django-14349",
+      "selection": "evaluation",
+      "repo": "django/django",
+      "version": "4.0",
+      "base_commit": "a708f39ce67af174df90c5b5e50ad1976cec7cb8",
+      "image": "docker.io/swebench/sweb.eval.x86_64.django_1776_django-14349@sha256:cf38516897206f8b489543ed8e792249af107f5767e6148287636c5e195acb7b",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8120",
+      "selection": "evaluation",
+      "repo": "sphinx-doc/sphinx",
+      "version": "3.3",
+      "base_commit": "795747bdb6b8fb7d717d5bbfc2c3316869e66a73",
+      "image": "docker.io/swebench/sweb.eval.x86_64.sphinx-doc_1776_sphinx-8120@sha256:1a40447f75c5833ce370d51be4b22d4ef7501e800600834131a3c69fba60cb3f",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "astropy__astropy-7671",
+      "selection": "evaluation",
+      "repo": "astropy/astropy",
+      "version": "1.3",
+      "base_commit": "a7141cd90019b62688d507ae056298507678c058",
+      "image": "docker.io/swebench/sweb.eval.x86_64.astropy_1776_astropy-7671@sha256:e4a644271876ead58b4e1cd05780e0ddb17ca421bf7b2f6f5dca9269d574e201",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "django__django-15957",
+      "selection": "evaluation",
+      "repo": "django/django",
+      "version": "4.2",
+      "base_commit": "f387d024fc75569d2a4a338bfda76cc2f328f627",
+      "image": "docker.io/swebench/sweb.eval.x86_64.django_1776_django-15957@sha256:7e2694f891d96ec8eaef27b746823acaa6dd28d65832b79db2bd18a816b3437e",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    },
+    {
+      "instance_id": "sympy__sympy-17630",
+      "selection": "evaluation",
+      "repo": "sympy/sympy",
+      "version": "1.5",
+      "base_commit": "58e78209c8577b9890e957b624466e5beed7eb08",
+      "image": "docker.io/swebench/sweb.eval.x86_64.sympy_1776_sympy-17630@sha256:950c79918a3185786c91b207a0fc7cb9d0d5513a0ef4bf81f0ec2e2f07340a21",
+      "platform": "linux/amd64",
+      "workspace_path": "/testbed"
+    }
+  ]
+}
