@@ -31,11 +31,13 @@ Docker context/HOST/TLS 在 bootstrap 冻结。支持 Unix、TCP 明文、验证
 
 ## 本轮证据
 
-定向领域检查：261 passed、1 skipped（原有可选 Docker 集成）；Ruff 与 ty check 通过。最终全分支检查与独立 review 的结果记录在配套执行记录中。受控进程和真实 Docker 的证据分开报告。
+定向领域检查：261 passed、1 skipped（原有可选 Docker 集成）。review 修复后全量检查：394 passed、3 skipped；Ruff 与 ty check 通过。独立 review 无 Critical、两项 Important 经一次 RED→GREEN 修复或显式摘要契约调整；局部 fixture import 的 Minor 留待后续。执行记录见 `independent-evaluator-progress.md`。受控进程和真实 Docker 的证据分开报告。
 
 仅使用当前已缓存的 `django__django-11477` 开发镜像；没有拉取其他镜像，没有恢复25项预检下载。真实测试驱动用宿主参考 patch 修改 Agent Workspace，然后由边界 Provider 提交候选文本；参考 patch、gold 文件和隐藏测试不进入 ModelRequest、不提交仓库。这证明校验链路，不证明模型解决能力。
 
 最终真实测试：`tests/integration/test_swebench_evaluation.py`，2 passed / 53.70s。
+
+review 修复后仍仅用上述同一缓存镜像复验：2 passed / 53.56s。有效 Run `8d20f932-61ec-4dcb-82c8-55cf53ea10db` 为 SUCCEEDED，无效 Run `6c2c6052-dae6-4ca1-b2d7-0b5da12c1e39` 为 FAILED，各交付9份 artifact；日志 `/private/tmp/miniagent-real-evaluation-tests-review-fix.log`。
 
 | 候选 | Run ID | 终态 | 已验证交付 |
 |---|---|---|---|
@@ -61,6 +63,10 @@ Docker context/HOST/TLS 在 bootstrap 冻结。支持 Unix、TCP 明文、验证
 | 4×32MiB | 37,306,368 | 71,499,776 | 71,712,768 |
 
 ## 交付边界与未执行项
+
+最终 review 明确调整摘要契约：`evaluation_summary` 是不可变的 `evaluation_evidence_snapshot`，其 `terminal_status_source=Run`。已成功核对报告且收集完成的快照记为 `report_resolved`，未完成的原始摘要记为 `collecting`，已观察到的错误/取消记为 `failed`/`cancelled`；不会写入最终 `passed`。发布期间发生的取消不能回写已发布内容，必须结合持久化 Run 终态判断。成功 Run 仍要求完整登记且 EvaluationCompleted 与终态同事务提交。预算耗尽后保留 `collecting` 表示未完成，具体错误来自 Run 和原始证据；不额外开启 I/O 预算强写更正摘要。
+
+准备数据错误只公开错误类别及数据根位置，不插入被拒绝的输入值、校验上下文或原始异常消息；合成 patch/test_patch 泄露回归已验证。
 
 正常交付只来自 list_for_run 的全量完整性校验。任一内容损坏/收集超时都会令全量汇总失败，仅在原deadline剩余时间内独立验证内存已有patch ref后交付patch；不能用Runtime私有refs补齐报告。已持久化Run终态不改写，finalization错误保留Agent Workspace并令CLI非零。
 
