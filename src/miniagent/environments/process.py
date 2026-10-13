@@ -1,5 +1,31 @@
 import asyncio
+import os
+import signal
 from contextlib import suppress
+from time import monotonic
+
+
+async def reap_process(
+    process: asyncio.subprocess.Process,
+    tasks: list[asyncio.Task[object]],
+    *,
+    deadline: float,
+) -> tuple[str, ...]:
+    with suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
+    waiter = asyncio.create_task(process.wait())
+    done, _ = await asyncio.wait([waiter], timeout=max(0.0, deadline - monotonic()))
+    diagnostics = []
+    if not done:
+        waiter.cancel()
+        diagnostics.append(f"CLI PID {process.pid} was not confirmed reaped")
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        _, pending = await asyncio.wait(tasks, timeout=max(0.0, deadline - monotonic()))
+        if pending:
+            diagnostics.append(f"CLI PID {process.pid} stream tasks remain pending")
+    return tuple(diagnostics)
 
 
 async def read_stream(

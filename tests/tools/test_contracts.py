@@ -78,7 +78,9 @@ class EvidenceWorkspace:
     async def restore(self, checkpoint: WorkspaceCheckpoint) -> None:
         raise AssertionError("not used")
 
-    async def export_patch(self) -> Patch:
+    async def export_patch(
+        self, *, timeout_seconds: float = 60.0, cleanup_timeout_seconds: float = 5.0
+    ) -> Patch:
         raise AssertionError("not used")
 
     async def destroy(self) -> None:

@@ -1,5 +1,8 @@
+import asyncio
 import os
+import sys
 from datetime import UTC, datetime
+from time import monotonic
 from uuid import uuid4
 
 import pytest
@@ -19,7 +22,84 @@ from miniagent.environments import (
     ResourceLimits,
     WorkspaceCheckpoint,
 )
+from miniagent.environments.contracts import PatchExportCleanupError
 from miniagent.environments.docker import DockerCommandResult
+
+
+@pytest.fixture
+def export_workspace(tmp_path):
+    executable = tmp_path / "docker-export"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        + """import json, os, sys, time
+from pathlib import Path
+root = Path(__file__).parent
+args = sys.argv[1:]
+with (root / "export-calls.jsonl").open("a") as stream:
+    stream.write(json.dumps(args) + "\\n")
+if "rm" in args:
+    (root / "cleanup-started").write_text(str(os.getpid()))
+    mode = (root / "mode").read_text()
+    if mode == "hang":
+        time.sleep(30)
+    elif mode == "error":
+        sys.exit(1)
+elif "diff" in args:
+    if "--name-only" in args:
+        sys.stdout.buffer.write(b"changed.txt\\0")
+    else:
+        print("diff --git a/changed.txt b/changed.txt")
+"""
+    )
+    executable.chmod(0o755)
+    (tmp_path / "mode").write_text("ok")
+    backend = DockerWorkspaceBackend(
+        artifact_store=UnusedArtifactStore(), docker_executable=str(executable)
+    )
+    return DockerWorkspace(
+        backend=backend,
+        spec=workspace_spec(),
+        _workspace_id="test",
+        container_id="agent-container",
+        image_id="image",
+        base_revision="actual-base",
+    )
+
+
+async def test_export_patch_shares_budget_with_cleanup(export_workspace, tmp_path):
+    (tmp_path / "mode").write_text("hang")
+    started = monotonic()
+    with pytest.raises(PatchExportCleanupError, match="cleanup|Cleanup"):
+        await export_workspace.export_patch(
+            timeout_seconds=0.6, cleanup_timeout_seconds=0.2
+        )
+    assert monotonic() - started < 1.0
+    pid = int((tmp_path / "cleanup-started").read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
+async def test_cancel_during_index_cleanup_preserves_cancellation(
+    export_workspace, tmp_path
+):
+    (tmp_path / "mode").write_text("hang")
+    exporting = asyncio.create_task(
+        export_workspace.export_patch(timeout_seconds=0.8, cleanup_timeout_seconds=0.3)
+    )
+    while not (tmp_path / "cleanup-started").exists() and not exporting.done():
+        await asyncio.sleep(0.01)
+    exporting.cancel()
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await exporting
+    assert "index" in " ".join(caught.value.__notes__)
+
+
+async def test_cleanup_failure_rejects_generated_diff(export_workspace, tmp_path):
+    (tmp_path / "mode").write_text("error")
+    with pytest.raises(PatchExportCleanupError, match="cleanup|Cleanup"):
+        await export_workspace.export_patch(
+            timeout_seconds=2.0, cleanup_timeout_seconds=0.5
+        )
 
 
 class UnusedArtifactStore(ArtifactStore):
@@ -44,6 +124,7 @@ class ScriptedDockerBackend(DockerWorkspaceBackend):
         timeout_seconds: float | None = None,
         max_output_bytes: int | None = None,
         capture_all: bool = False,
+        cleanup_deadline: float | None = None,
     ) -> DockerCommandResult:
         self.commands.append(argv)
         response = self.responses.pop(0)

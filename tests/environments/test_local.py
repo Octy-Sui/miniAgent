@@ -1,6 +1,7 @@
 import asyncio
 import subprocess
 from pathlib import Path
+from time import monotonic
 from uuid import uuid4
 
 import pytest
@@ -53,6 +54,40 @@ def local_backend(tmp_path: Path) -> LocalWorkspaceBackend:
         root=tmp_path / "workspaces",
         artifact_store=FileArtifactStore(tmp_path / "artifacts"),
     )
+
+
+async def test_export_without_arguments_remains_supported(tmp_path, source_repository):
+    workspace = await local_backend(tmp_path).create(
+        LocalWorkspaceSpec(
+            run_id=uuid4(), options=LocalOptions(source_dir=source_repository)
+        )
+    )
+    (workspace.root / "tracked.txt").write_text("changed\n")
+    assert (await workspace.export_patch()).files == ["tracked.txt"]
+
+
+async def test_export_lock_wait_counts_against_budget(tmp_path, source_repository):
+    workspace = await local_backend(tmp_path).create(
+        LocalWorkspaceSpec(
+            run_id=uuid4(), options=LocalOptions(source_dir=source_repository)
+        )
+    )
+    executing = asyncio.create_task(
+        workspace.execute(Command(argv=["/bin/sh", "-c", "touch busy; sleep 2"]))
+    )
+    while not (workspace.root / "busy").exists():
+        await asyncio.sleep(0.01)
+    started = monotonic()
+    try:
+        with pytest.raises(TimeoutError):
+            await workspace.export_patch(
+                timeout_seconds=0.2, cleanup_timeout_seconds=0.05
+            )
+        assert monotonic() - started < 0.5
+    finally:
+        executing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await executing
 
 
 async def test_workspace_snapshots_current_source_without_modifying_it(

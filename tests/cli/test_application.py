@@ -76,7 +76,9 @@ class FinalizationWorkspace:
     async def restore(self, checkpoint: WorkspaceCheckpoint) -> None:
         raise AssertionError("not used")
 
-    async def export_patch(self) -> Patch:
+    async def export_patch(
+        self, *, timeout_seconds: float = 60.0, cleanup_timeout_seconds: float = 5.0
+    ) -> Patch:
         if self.export_error:
             raise RuntimeError("export failed")
         return Patch(content="diff", files=["result.txt"], base_revision="abc")

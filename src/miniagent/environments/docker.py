@@ -4,6 +4,7 @@
 
 import asyncio
 import hashlib
+import math
 import posixpath
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -19,9 +20,15 @@ from miniagent.environments.contracts import (
     ExecutionResult,
     ExecutionStatus,
     Patch,
+    PatchExportCleanupError,
     WorkspaceCheckpoint,
 )
-from miniagent.environments.process import decode_output, read_stream, write_stdin
+from miniagent.environments.process import (
+    decode_output,
+    read_stream,
+    reap_process,
+    write_stdin,
+)
 
 
 class DockerWorkspaceError(RuntimeError):
@@ -260,6 +267,7 @@ class DockerWorkspaceBackend:
         timeout_seconds: float | None = None,
         max_output_bytes: int | None = None,
         capture_all: bool = False,
+        cleanup_deadline: float | None = None,
     ) -> DockerCommandResult:
         command = ["container", "exec"]
         if stdin is not None:
@@ -274,6 +282,7 @@ class DockerWorkspaceBackend:
             timeout_seconds=timeout_seconds,
             max_output_bytes=max_output_bytes,
             capture_all=capture_all,
+            cleanup_deadline=cleanup_deadline,
         )
 
     async def _require_exec_success(
@@ -288,6 +297,7 @@ class DockerWorkspaceBackend:
         timeout_seconds: float | None = None,
         max_output_bytes: int | None = None,
         capture_all: bool = False,
+        cleanup_deadline: float | None = None,
     ) -> DockerCommandResult:
         result = await self._exec(
             container_id,
@@ -298,6 +308,7 @@ class DockerWorkspaceBackend:
             timeout_seconds=timeout_seconds,
             max_output_bytes=max_output_bytes,
             capture_all=capture_all,
+            cleanup_deadline=cleanup_deadline,
         )
         if result.exit_code != 0:
             raise self._command_error(action, result)
@@ -338,6 +349,7 @@ class DockerWorkspaceBackend:
         timeout_seconds: float | None = None,
         max_output_bytes: int | None = None,
         capture_all: bool = False,
+        cleanup_deadline: float | None = None,
     ) -> DockerCommandResult:
         started_at = monotonic()
         process = await asyncio.create_subprocess_exec(
@@ -346,6 +358,7 @@ class DockerWorkspaceBackend:
             stdin=asyncio.subprocess.PIPE if stdin is not None else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
         if process.stdout is None or process.stderr is None:
             raise DockerWorkspaceError("Docker process output pipes are unavailable")
@@ -372,18 +385,23 @@ class DockerWorkspaceBackend:
                 )
             )
 
+        if cleanup_deadline is not None:
+            remaining = max(0.0, cleanup_deadline - monotonic())
+            timeout_seconds = min(
+                timeout_seconds if timeout_seconds is not None else remaining,
+                max(0.0, remaining - min(0.1, remaining / 4)),
+            )
+
         try:
             await asyncio.wait_for(
                 asyncio.gather(*tasks),
                 timeout=timeout_seconds,
             )
-        except BaseException:
-            if process.returncode is None:
-                process.kill()
-                await process.wait()
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+        except BaseException as exc:
+            for diagnostic in await reap_process(
+                process, tasks, deadline=cleanup_deadline or monotonic() + 5.0
+            ):
+                exc.add_note(diagnostic)
             raise
 
         if process.returncode is None:
@@ -561,24 +579,43 @@ class DockerWorkspace:
                 raise
             self.state = DockerWorkspaceState.ACTIVE
 
-    async def export_patch(self) -> Patch:
-        async with self._operation_lock:
-            self._require_active()
-            temporary_index = f"/tmp/miniagent-index-{uuid4().hex}"
-            environment = {"GIT_INDEX_FILE": temporary_index}
-            git = [
-                "git",
-                "-c",
-                f"safe.directory={self.spec.options.workdir}",
-                "-C",
-                self.spec.options.workdir,
-            ]
-            try:
+    async def export_patch(
+        self, *, timeout_seconds: float = 60.0, cleanup_timeout_seconds: float = 5.0
+    ) -> Patch:
+        if not (
+            math.isfinite(timeout_seconds)
+            and math.isfinite(cleanup_timeout_seconds)
+            and 0 < cleanup_timeout_seconds < timeout_seconds
+        ):
+            raise ValueError(
+                "Export cleanup timeout must be positive and below total timeout"
+            )
+        deadline = monotonic() + timeout_seconds
+        work_deadline = deadline - cleanup_timeout_seconds
+        acquired = False
+        temporary_index = None
+        primary: BaseException | None = None
+        try:
+            async with asyncio.timeout_at(work_deadline):
+                await self._operation_lock.acquire()
+                acquired = True
+                self._require_active()
+                temporary_index = f"/tmp/miniagent-index-{uuid4().hex}"
+                environment = {"GIT_INDEX_FILE": temporary_index}
+                git = [
+                    "git",
+                    "-c",
+                    f"safe.directory={self.spec.options.workdir}",
+                    "-C",
+                    self.spec.options.workdir,
+                ]
                 await self.backend._require_exec_success(
                     self.container_id,
                     [*git, "read-tree", self.base_revision],
                     cwd=self.spec.options.workdir,
                     environment=environment,
+                    timeout_seconds=max(0.0, work_deadline - monotonic()),
+                    cleanup_deadline=deadline,
                     action="prepare workspace patch",
                 )
                 await self.backend._require_exec_success(
@@ -586,6 +623,8 @@ class DockerWorkspace:
                     [*git, "add", "-A", "--", "."],
                     cwd=self.spec.options.workdir,
                     environment=environment,
+                    timeout_seconds=max(0.0, work_deadline - monotonic()),
+                    cleanup_deadline=deadline,
                     action="index workspace changes",
                 )
                 patch = await self.backend._require_exec_success(
@@ -602,6 +641,8 @@ class DockerWorkspace:
                     ],
                     cwd=self.spec.options.workdir,
                     environment=environment,
+                    timeout_seconds=max(0.0, work_deadline - monotonic()),
+                    cleanup_deadline=deadline,
                     action="export workspace patch",
                     capture_all=True,
                 )
@@ -619,25 +660,67 @@ class DockerWorkspace:
                     ],
                     cwd=self.spec.options.workdir,
                     environment=environment,
+                    timeout_seconds=max(0.0, work_deadline - monotonic()),
+                    cleanup_deadline=deadline,
                     action="list workspace changes",
                     capture_all=True,
                 )
-            finally:
-                await self.backend._exec(
-                    self.container_id,
-                    ["rm", "-f", "--", temporary_index],
-                    cwd=self.spec.options.workdir,
-                )
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            try:
+                if temporary_index is not None:
+                    cleanup_deadline = min(
+                        deadline, monotonic() + cleanup_timeout_seconds
+                    )
 
-            return Patch(
-                content=patch.stdout.decode("utf-8", errors="replace"),
-                files=[
-                    path.decode("utf-8", errors="replace")
-                    for path in changed_files.stdout.split(b"\0")
-                    if path
-                ],
-                base_revision=self.base_revision,
-            )
+                    async def cleanup_index() -> None:
+                        async with asyncio.timeout_at(cleanup_deadline):
+                            result = await self.backend._exec(
+                                self.container_id,
+                                ["rm", "-f", "--", temporary_index],
+                                cwd=self.spec.options.workdir,
+                                timeout_seconds=max(
+                                    0.0, cleanup_deadline - monotonic()
+                                ),
+                                cleanup_deadline=cleanup_deadline,
+                            )
+                            if result.exit_code:
+                                raise PatchExportCleanupError(
+                                    "Docker index cleanup command failed"
+                                )
+
+                    cleaning = asyncio.create_task(cleanup_index())
+                    try:
+                        await asyncio.shield(cleaning)
+                    except asyncio.CancelledError as exc:
+                        try:
+                            await asyncio.shield(cleaning)
+                        except Exception as cleanup_error:  # noqa: BLE001
+                            exc.add_note(
+                                f"Patch export cleanup failed: temporary index {temporary_index} in container {self.container_id}: {cleanup_error}"
+                            )
+                        raise
+                    except Exception as cleanup_error:
+                        detail = f"Patch export cleanup failed: temporary index {temporary_index} in container {self.container_id}: {cleanup_error}"
+                        if primary is not None:
+                            primary.add_note(detail)
+                        else:
+                            raise PatchExportCleanupError(detail) from cleanup_error
+            finally:
+                if acquired:
+                    self._operation_lock.release()
+
+        return Patch(
+            content=patch.stdout.decode("utf-8", errors="replace"),
+            files=[
+                path.decode("utf-8", errors="replace")
+                for path in changed_files.stdout.split(b"\0")
+                if path
+            ],
+            base_revision=self.base_revision,
+        )
 
     async def destroy(self) -> None:
         async with self._operation_lock:

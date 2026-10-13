@@ -74,6 +74,10 @@ class Patch(BaseModel):
     base_revision: str | None = None
 
 
+class PatchExportCleanupError(RuntimeError):
+    pass
+
+
 class Workspace(Protocol):
     @property
     def workspace_id(self) -> str: ...
@@ -87,7 +91,9 @@ class Workspace(Protocol):
 
     async def restore(self, checkpoint: WorkspaceCheckpoint) -> None: ...
 
-    async def export_patch(self) -> Patch: ...
+    async def export_patch(
+        self, *, timeout_seconds: float = 60.0, cleanup_timeout_seconds: float = 5.0
+    ) -> Patch: ...
 
     async def destroy(self) -> None: ...
 

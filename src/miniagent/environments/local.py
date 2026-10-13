@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import math
 import os
 import shutil
 import signal
@@ -20,9 +21,15 @@ from miniagent.environments.contracts import (
     ExecutionResult,
     ExecutionStatus,
     Patch,
+    PatchExportCleanupError,
     WorkspaceCheckpoint,
 )
-from miniagent.environments.process import decode_output, read_stream, write_stdin
+from miniagent.environments.process import (
+    decode_output,
+    read_stream,
+    reap_process,
+    write_stdin,
+)
 
 
 class LocalWorkspaceError(RuntimeError):
@@ -252,6 +259,7 @@ class LocalWorkspaceBackend:
         timeout_seconds: float | None = None,
         max_output_bytes: int | None = None,
         capture_all: bool = False,
+        cleanup_deadline: float | None = None,
     ) -> LocalCommandResult:
         result = await self._run(
             argv,
@@ -261,6 +269,7 @@ class LocalWorkspaceBackend:
             timeout_seconds=timeout_seconds,
             max_output_bytes=max_output_bytes,
             capture_all=capture_all,
+            cleanup_deadline=cleanup_deadline,
         )
         if result.exit_code != 0:
             stderr = result.stderr.decode("utf-8", errors="replace").strip()
@@ -278,6 +287,7 @@ class LocalWorkspaceBackend:
         timeout_seconds: float | None = None,
         max_output_bytes: int | None = None,
         capture_all: bool = False,
+        cleanup_deadline: float | None = None,
     ) -> LocalCommandResult:
         started_at = monotonic()
         process = await asyncio.create_subprocess_exec(
@@ -314,13 +324,20 @@ class LocalWorkspaceBackend:
                 )
             )
 
+        if cleanup_deadline is not None:
+            remaining = max(0.0, cleanup_deadline - monotonic())
+            timeout_seconds = min(
+                timeout_seconds if timeout_seconds is not None else remaining,
+                max(0.0, remaining - min(0.1, remaining / 4)),
+            )
+
         try:
             await asyncio.wait_for(asyncio.gather(*tasks), timeout=timeout_seconds)
-        except BaseException:
-            await self._kill_process_group(process)
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+        except BaseException as exc:
+            for diagnostic in await reap_process(
+                process, tasks, deadline=cleanup_deadline or monotonic() + 5.0
+            ):
+                exc.add_note(diagnostic)
             raise
 
         if process.returncode is None:
@@ -524,24 +541,45 @@ class LocalWorkspace:
                 await asyncio.to_thread(shutil.rmtree, replacement, True)
             self.state = LocalWorkspaceState.ACTIVE
 
-    async def export_patch(self) -> Patch:
-        async with self._operation_lock:
-            self._require_active()
-            temporary_index = self.root.parent / f"index-{uuid4().hex}"
-            environment = self.spec.environment_values | {
-                "GIT_INDEX_FILE": str(temporary_index)
-            }
-            try:
+    async def export_patch(
+        self, *, timeout_seconds: float = 60.0, cleanup_timeout_seconds: float = 5.0
+    ) -> Patch:
+        if not (
+            math.isfinite(timeout_seconds)
+            and math.isfinite(cleanup_timeout_seconds)
+            and 0 < cleanup_timeout_seconds < timeout_seconds
+        ):
+            raise ValueError(
+                "Export cleanup timeout must be positive and below total timeout"
+            )
+        deadline = monotonic() + timeout_seconds
+        work_deadline = deadline - cleanup_timeout_seconds
+        acquired = False
+        temporary_index = None
+        primary: BaseException | None = None
+        try:
+            async with asyncio.timeout_at(work_deadline):
+                await self._operation_lock.acquire()
+                acquired = True
+                self._require_active()
+                temporary_index = self.root.parent / f"index-{uuid4().hex}"
+                environment = self.spec.environment_values | {
+                    "GIT_INDEX_FILE": str(temporary_index)
+                }
                 await self.backend._require_success(
                     ["git", "read-tree", self.base_revision],
                     cwd=self.root,
                     environment=environment,
+                    timeout_seconds=max(0.0, work_deadline - monotonic()),
+                    cleanup_deadline=deadline,
                     action="prepare local workspace patch",
                 )
                 await self.backend._require_success(
                     ["git", "add", "-A", "--", "."],
                     cwd=self.root,
                     environment=environment,
+                    timeout_seconds=max(0.0, work_deadline - monotonic()),
+                    cleanup_deadline=deadline,
                     action="index local workspace changes",
                 )
                 patch = await self.backend._require_success(
@@ -557,6 +595,8 @@ class LocalWorkspace:
                     ],
                     cwd=self.root,
                     environment=environment,
+                    timeout_seconds=max(0.0, work_deadline - monotonic()),
+                    cleanup_deadline=deadline,
                     action="export local workspace patch",
                     capture_all=True,
                 )
@@ -573,21 +613,57 @@ class LocalWorkspace:
                     ],
                     cwd=self.root,
                     environment=environment,
+                    timeout_seconds=max(0.0, work_deadline - monotonic()),
+                    cleanup_deadline=deadline,
                     action="list local workspace changes",
                     capture_all=True,
                 )
-            finally:
-                temporary_index.unlink(missing_ok=True)
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            try:
+                if temporary_index is not None:
+                    cleanup_deadline = min(
+                        deadline, monotonic() + cleanup_timeout_seconds
+                    )
 
-            return Patch(
-                content=patch.stdout.decode("utf-8", errors="replace"),
-                files=[
-                    path.decode("utf-8", errors="replace")
-                    for path in changed_files.stdout.split(b"\0")
-                    if path
-                ],
-                base_revision=self.base_revision,
-            )
+                    async def cleanup_index() -> None:
+                        async with asyncio.timeout_at(cleanup_deadline):
+                            await asyncio.to_thread(
+                                temporary_index.unlink, missing_ok=True
+                            )
+
+                    cleaning = asyncio.create_task(cleanup_index())
+                    try:
+                        await asyncio.shield(cleaning)
+                    except asyncio.CancelledError as exc:
+                        try:
+                            await asyncio.shield(cleaning)
+                        except Exception as cleanup_error:  # noqa: BLE001
+                            exc.add_note(
+                                f"Patch export cleanup failed: temporary index {temporary_index}: {cleanup_error}"
+                            )
+                        raise
+                    except Exception as cleanup_error:
+                        detail = f"Patch export cleanup failed: temporary index {temporary_index}: {cleanup_error}"
+                        if primary is not None:
+                            primary.add_note(detail)
+                        else:
+                            raise PatchExportCleanupError(detail) from cleanup_error
+            finally:
+                if acquired:
+                    self._operation_lock.release()
+
+        return Patch(
+            content=patch.stdout.decode("utf-8", errors="replace"),
+            files=[
+                path.decode("utf-8", errors="replace")
+                for path in changed_files.stdout.split(b"\0")
+                if path
+            ],
+            base_revision=self.base_revision,
+        )
 
     async def destroy(self) -> None:
         async with self._operation_lock:
