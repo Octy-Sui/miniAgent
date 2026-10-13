@@ -36,7 +36,7 @@
 
 ## 执行状态与集中确认项
 
-**执行进度：Task 1–11 已实现并验收；最终独立分支 review 另行记录。** 原计划阶段只交付文档；随后用户明确要求按计划开发，采用下列推荐方案。 架构稿仍标注待审阅；本计划将其推荐方案写成一个可审阅的完整执行版本，不把推荐项当作用户已批准。
+**本次只交付计划，不进入产品实现。** 架构稿仍标注待审阅；本计划将其推荐方案写成一个可审阅的完整执行版本，不把推荐项当作用户已批准。
 
 | 项目 | 本计划采用的待确认值 | 改选后的影响 |
 |---|---|---|
@@ -97,7 +97,7 @@
 - `InstanceReport` frozen Pydantic，公开 `resolved: bool`；`ReportValidationError(ValueError)` 公开 `code: str`，仅 `REPORT_INVALID` / `REPORT_MISMATCH`。报告原 bytes 不在模型中重新序列化替代原文件。Task 2 调用时将 record 的 tuple 测试字段转换为 list，保持此签名一致。
 - Consumes: 外部 5.0.2 报告；不依赖 SWE-bench 包，不执行进程。
 
-- [x] **Step 1: 写失败测试。** 基准 `report_bytes` 为标准 JSON bytes：顶层只有 `django__django-11477`；patch_exists/applied/resolved 为 true，patch_is_None/infra_failure 为 false；两测试组 success 分别为 `["f"]`、`["p"]`，failure 均为空。断言：
+- [ ] **Step 1: 写失败测试。** 基准 `report_bytes` 为标准 JSON bytes：顶层只有 `django__django-11477`；patch_exists/applied/resolved 为 true，patch_is_None/infra_failure 为 false；两测试组 success 分别为 `["f"]`、`["p"]`，failure 均为空。断言：
 
 ```python
 def test_complete_report_passes(report_bytes):
@@ -116,10 +116,10 @@ def test_string_resolved_is_invalid(report_with_string_resolved):
 
 同文件逐个反例：整数 bool、每个必需 bool 缺失、可选 infra_failure 缺失可接受、额外顶层任务/错误任务→REPORT_MISMATCH、无效 JSON→REPORT_INVALID。resolved=true 配合 patch 字段矛盾/infra_failure=true/漏测/重复/多测/非空 failure/缺组或缺列表→REPORT_INVALID；两组重叠但分别满足规则、规则为空且报告为空组可接受。有效 unresolved 的失败列表覆盖规则时 `.resolved is False`；unresolved 且尚无 tests_status（5.0.2 无可解析测试输出报告）可解析但不能通过。U7 / TA-12、13。
 
-- [x] **Step 2: RED。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/evaluation/test_swebench_report.py -q`；预期缺少模块/函数或新报告拒绝断言失败。
-- [x] **Step 3: 实现上述接口。** 消费布尔字段使用 StrictBool，消费模型 extra=allow，JSON 顶层只允许目标一个 key。resolved=true 才要求完整通过结构；unresolved 若提供 tests_status，仍校验其结构与所提供集合的矛盾，不因失败列表非空而报基础设施错误。集合规则采用集中确认项 Q4。
-- [x] **Step 4: GREEN。** 重跑 Step 2，全部 PASS；执行变更文件 Ruff。
-- [x] **Step 5: Review 后提交。** `git add src/miniagent/evaluation/swebench_report.py tests/evaluation/test_swebench_report.py`；`git commit -m "feat(models): validate independent evaluation reports"`。
+- [ ] **Step 2: RED。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/evaluation/test_swebench_report.py -q`；预期缺少模块/函数或新报告拒绝断言失败。
+- [ ] **Step 3: 实现上述接口。** 消费布尔字段使用 StrictBool，消费模型 extra=allow，JSON 顶层只允许目标一个 key。resolved=true 才要求完整通过结构；unresolved 若提供 tests_status，仍校验其结构与所提供集合的矛盾，不因失败列表非空而报基础设施错误。集合规则采用集中确认项 Q4。
+- [ ] **Step 4: GREEN。** 重跑 Step 2，全部 PASS；执行变更文件 Ruff。
+- [ ] **Step 5: Review 后提交。** `git add src/miniagent/evaluation/swebench_report.py tests/evaluation/test_swebench_report.py`；`git commit -m "feat(models): validate independent evaluation reports"`。
 
 ### Task 2: 支持清单、设置及逐任务数据快照
 
@@ -139,7 +139,7 @@ def test_string_resolved_is_invalid(report_with_string_resolved):
 - Settings 增加 A§5.2 十字段及 `swebench_artifact_timeout_seconds: float = 30.0`、`artifact_collection_timeout_seconds: float = 30.0`，后两者分别提供输入/登记阶段与最终收集预算；timeout 正数，测试秒数正整数，process > test，submission > export_cleanup。
 - Test fixture `prepared_bundle(tmp_path) -> Path`：安全支持清单全部 25 ID，5/20 分组；合成 eval_script、规则 f/p、基准通过报告；来源和摘要合法，所选 `django__django-11477` passed，其余 not_run，ready=false。不拷贝真实隐藏测试。
 
-- [x] **Step 1: 写失败测试。** 使用真实临时 bundle，断言：
+- [ ] **Step 1: 写失败测试。** 使用真实临时 bundle，断言：
 
 ```python
 def test_selected_ready_task_does_not_require_global_ready(prepared_bundle):
@@ -156,10 +156,10 @@ def test_pull_is_disabled_by_default():
 
 参数化：空/缺上下文字段、extra、空覆盖；任务重复/缺失/多出、分组不是5/20、tasks/list摘要损坏、source revision/hash不符、gold/non评测字段、清单字符串不是 JSON list、空脚本→拒绝；所选 cancelled/failed/not_run→TASK_NOT_READY；报告损坏、路径含逃逸或外部 symlink→EVALUATION_DATA_INVALID。加载后改共享文件，prepared.record 保持旧规则。覆盖镜像仅改变 actual_image，image_preflight_verified=false，共享 bytes 不变。配置值 `0`、负数、cleanup==submission、process==test 拒绝。U1、U2、U10、U13 / TA-01～04、23。
 
-- [x] **Step 2: RED。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/evaluation/test_swebench_data.py tests/evaluation/test_evaluation_settings.py -q`；预期新接口缺失。
-- [x] **Step 3: 实现资源、模型、加载与设置。** 从 `docs/swebench-task-base.json` 只复制白名单字段：instance_id、selection、repo、version、base_commit、image、platform、workspace_path；资源顶层保留原 task-base bytes 的 SHA-256 与两源 revision/hash。宿主 manifest.task_base_sha256 校验此来源摘要，不错误地与投影后的资源文件摘要比较。资源读取使用 importlib.resources，不依赖 cwd。manifest 消费字段严格建模、额外准备元数据允许扩展；只读 manifest/tasks/所选 report，不读取 gold、Parquet 或开发/正式输出副本。报告路径允许现有数据根内的相对路径，核对 report_sha256 和 Task 1 判定。
-- [x] **Step 4: GREEN 及打包检查。** 重跑 Step 2；`uv build --wheel --out-dir /private/tmp/miniagent-evaluator-wheel`，以 `python3 -m zipfile -l <实际生成wheel>` 确认包含 `miniagent/evaluation/data/swebench-verified-25.json`。预期全部 PASS、资源存在且不含 patch/test_patch/hints/problem_statement。执行 Ruff。
-- [x] **Step 5: Review 后提交。** 只 stage 上述实际改动文件；`git commit -m "feat(config): bind ready swebench task snapshots"`。不要 stage 原始 task-base 或准备数据。
+- [ ] **Step 2: RED。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/evaluation/test_swebench_data.py tests/evaluation/test_evaluation_settings.py -q`；预期新接口缺失。
+- [ ] **Step 3: 实现资源、模型、加载与设置。** 从 `docs/swebench-task-base.json` 只复制白名单字段：instance_id、selection、repo、version、base_commit、image、platform、workspace_path；资源顶层保留原 task-base bytes 的 SHA-256 与两源 revision/hash。宿主 manifest.task_base_sha256 校验此来源摘要，不错误地与投影后的资源文件摘要比较。资源读取使用 importlib.resources，不依赖 cwd。manifest 消费字段严格建模、额外准备元数据允许扩展；只读 manifest/tasks/所选 report，不读取 gold、Parquet 或开发/正式输出副本。报告路径允许现有数据根内的相对路径，核对 report_sha256 和 Task 1 判定。
+- [ ] **Step 4: GREEN 及打包检查。** 重跑 Step 2；`uv build --wheel --out-dir /private/tmp/miniagent-evaluator-wheel`，以 `python3 -m zipfile -l <实际生成wheel>` 确认包含 `miniagent/evaluation/data/swebench-verified-25.json`。预期全部 PASS、资源存在且不含 patch/test_patch/hints/problem_statement。执行 Ruff。
+- [ ] **Step 5: Review 后提交。** 只 stage 上述实际改动文件；`git commit -m "feat(config): bind ready swebench task snapshots"`。不要 stage 原始 task-base 或准备数据。
 
 ### Task 3: 冻结评测 Docker 连接与准备检查
 
@@ -174,10 +174,10 @@ def test_pull_is_disabled_by_default():
 - `async resolve_docker_connection(executable: Path, environment: dict[str, str]) -> EvaluationDockerConnection`。
 - `docker_argv(executable: Path, connection: EvaluationDockerConnection, args: list[str]) -> list[str]`；`harness_environment(environment: dict[str, str], connection: EvaluationDockerConnection) -> dict[str, str]`。
 - `async check_daemon(executable: Path, connection: EvaluationDockerConnection, *, timeout_seconds: float = 10.0) -> None`；`async inspect_image(executable: Path, connection: EvaluationDockerConnection, image: str, *, timeout_seconds: float = 10.0) -> str | None` 返回预检查 image ID，缺失返回 None，其他执行/连接失败不伪装成缺镜像。
-- `async verify_harness_version(executable: Path) -> str` 先调用所选可执行文件 `--version`；5.0.2 不支持该选项时，通过该 uv tool 的绝对 shebang 解释器查询 distribution metadata；总限时10s，必须为5.0.2。
+- `async verify_harness_version(executable: Path) -> str` 调用实际绝对可执行文件 `--version`，限时10s，必须为5.0.2。
 - 外部 fixture 写可执行脚本：context show/inspect、info、image inspect，从临时 JSON 场景配置响应，记录 argv/env，不读取/改变本机 Docker。
 
-- [x] **Step 1: 写失败测试。** context A 与 HOST B 同时存在，受控 CLI info ID为A；读取记录断言：
+- [ ] **Step 1: 写失败测试。** context A 与 HOST B 同时存在，受控 CLI info ID为A；读取记录断言：
 
 ```python
 async def test_context_wins_and_binding_survives_environment_change(docker_cli):
@@ -192,10 +192,10 @@ async def test_context_wins_and_binding_survives_environment_change(docker_cli):
 
 再测 HOST优先于当前context、无两变量时context show；验证TLS三材料及SDK等价环境、无TLS删除残留变量、父env不变；SSH/npipe/SkipTLSVerify拒绝、材料缺失/损坏inspect拒绝、DOCKER_TLS单独启用拒绝；daemon ID缺失/变化、命令超时稳定错误，不回退B。版本不符→HARNESS_VERSION_MISMATCH，超时/不可执行明确准备失败。U3 / TA-05、06；U13禁止pull检查。
 
-- [x] **Step 2: RED。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/evaluation/test_swebench_docker.py -q`；预期新接口缺失。
-- [x] **Step 3: 实现连接与检查函数。** 来源、TLS规则精确按 A§6.1，context证书从 inspect 的TLSPath/docker材料解析；Unix/证书路径绝对化。外部命令各10s上限，stdout有界，进程回收计入该调用预算。每个实际Docker调用显式endpoint/TLS，移除context/未采用TLS覆盖；harness环境可保留registry认证，不能保存完整env到artifact。准备后不再读取context。无法读取版本（含超时/不可执行）使用 HARNESS_VERSION_MISMATCH 并附实际原因，Docker CLI启动/检查失败使用 DOCKER_CONNECTION_INVALID；不增加未定义的准备错误码。
-- [x] **Step 4: GREEN。** 重跑 Step 2；全部 PASS、B 无访问/删除记录；执行 Ruff。
-- [x] **Step 5: Review 后提交。** stage 本任务四文件；`git commit -m "feat(env): freeze evaluator docker connections"`。
+- [ ] **Step 2: RED。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/evaluation/test_swebench_docker.py -q`；预期新接口缺失。
+- [ ] **Step 3: 实现连接与检查函数。** 来源、TLS规则精确按 A§6.1，context证书从 inspect 的TLSPath/docker材料解析；Unix/证书路径绝对化。外部命令各10s上限，stdout有界，进程回收计入该调用预算。每个实际Docker调用显式endpoint/TLS，移除context/未采用TLS覆盖；harness环境可保留registry认证，不能保存完整env到artifact。准备后不再读取context。无法读取版本（含超时/不可执行）使用 HARNESS_VERSION_MISMATCH 并附实际原因，Docker CLI启动/检查失败使用 DOCKER_CONNECTION_INVALID；不增加未定义的准备错误码。
+- [ ] **Step 4: GREEN。** 重跑 Step 2；全部 PASS、B 无访问/删除记录；执行 Ruff。
+- [ ] **Step 5: Review 后提交。** stage 本任务四文件；`git commit -m "feat(env): freeze evaluator docker connections"`。
 
 ### Task 4: Workspace 导出与内部清理共享预算
 
@@ -211,7 +211,7 @@ async def test_context_wins_and_binding_survives_environment_change(docker_cli):
 - 对普通超时抛 TimeoutError；新增 `PatchExportCleanupError(RuntimeError)` 于 contracts.py，公开给提交层映射 PATCH_EXPORT_CLEANUP_FAILED。原导出主错误优先，清理诊断 add_note；取消在原 CancelledError 的 notes 附未清理路径/container/PID。
 - Consumes: 现有公开 Workspace/Command/Patch；适配器不能访问 backend 私有接口。
 
-- [x] **Step 1: 写失败测试。** Local使用真实Git临时仓库；Docker使用受控外部CLI（不要新增内部backend mock）。新测试 `test_export_patch_shares_budget_with_cleanup`、`test_cancel_during_index_cleanup_preserves_cancellation`、`test_cleanup_failure_rejects_generated_diff`、`test_export_without_arguments_remains_supported`、`test_export_lock_wait_counts_against_budget`。关键断言：
+- [ ] **Step 1: 写失败测试。** Local使用真实Git临时仓库；Docker使用受控外部CLI（不要新增内部backend mock）。新测试 `test_export_patch_shares_budget_with_cleanup`、`test_cancel_during_index_cleanup_preserves_cancellation`、`test_cleanup_failure_rejects_generated_diff`、`test_export_without_arguments_remains_supported`、`test_export_lock_wait_counts_against_budget`。关键断言：
 
 ```python
 with pytest.raises(asyncio.CancelledError) as caught:
@@ -223,10 +223,10 @@ assert original_index_bytes == original_index.read_bytes()
 
 测试进程以文件握手暴露卡住阶段，拒绝TERM时监督器记录PID；断言 CLI 已回收或明确记录未回收身份，不宣称远端Git已退出。diff已生成但清理失败仍抛 PatchExportCleanupError。保留既有 binary/full-index/真实base_revision行为测试。U10、U11 / TA-08。
 
-- [x] **Step 2: RED。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/environments/test_local.py tests/environments/test_docker.py -q`；预期 keyword 参数不支持/新清理行为断言失败。
-- [x] **Step 3: 修改导出契约及两个实现。** 从进入函数起计算monotonic deadline（含锁）；工作截止=总deadline−清理预留，每个命令传剩余预算。finally用shield独立任务，最多min(预留,总剩余)，等待/流任务回收也受预算，不留下不受约束后台清理。停止后续命令并保留诊断；无参数调用也有界。不要对所有Workspace命令做无关重构。
-- [x] **Step 4: GREEN。** 重跑 Step 2，执行 Ruff 和 `uv run ty check`；协议实现/调用方均兼容，全部 PASS。
-- [x] **Step 5: Review 后提交。** 精确 stage 当前任务文件；`git commit -m "enh(env): bound patch export and cleanup time"`。
+- [ ] **Step 2: RED。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/environments/test_local.py tests/environments/test_docker.py -q`；预期 keyword 参数不支持/新清理行为断言失败。
+- [ ] **Step 3: 修改导出契约及两个实现。** 从进入函数起计算monotonic deadline（含锁）；工作截止=总deadline−清理预留，每个命令传剩余预算。finally用shield独立任务，最多min(预留,总剩余)，等待/流任务回收也受预算，不留下不受约束后台清理。停止后续命令并保留诊断；无参数调用也有界。不要对所有Workspace命令做无关重构。
+- [ ] **Step 4: GREEN。** 重跑 Step 2，执行 Ruff 和 `uv run ty check`；协议实现/调用方均兼容，全部 PASS。
+- [ ] **Step 5: Review 后提交。** 精确 stage 当前任务文件；`git commit -m "enh(env): bound patch export and cleanup time"`。
 
 ### Task 5: 唯一候选提交及通用适配器
 
@@ -241,7 +241,7 @@ assert original_index_bytes == original_index.read_bytes()
 - SubmissionResult frozen内部dataclass，字段 `status: Literal["not_attempted", "submitted", "empty", "failed", "cancelled"]`、`submission_id: UUID | None`、`patch_ref: ArtifactRef | None`、`error: EvaluationError | None`、`diagnostics: tuple[str, ...]`。首次尝试前ID为空，开始时创建，所有终态保留该ID。
 - `WorkspaceCandidateEvaluator(submission: CandidateSubmission, evaluator: Evaluator)`；`async evaluate(self, request: EvaluationRequest) -> EvaluationResult`。
 
-- [x] **Step 1: 写失败测试。** 真实LocalWorkspace导出改动/真实FileArtifactStore，外部边界RecordingEvaluator只记录通用request。`test_submit_once_preserves_request_and_bytes` 断言：
+- [ ] **Step 1: 写失败测试。** 真实LocalWorkspace导出改动/真实FileArtifactStore，外部边界RecordingEvaluator只记录通用request。`test_submit_once_preserves_request_and_bytes` 断言：
 
 ```python
 assert received.run_id == request.run_id
@@ -255,10 +255,10 @@ assert len([r for r in await store.list_for_run(run_id) if r.type == "workspace_
 
 其他测试：重复提交submitted/empty/failed/cancelled状态无新的record/ID；提交后改Workspace不替换patch；空字符串→EMPTY_PATCH且下游零调用，`" "`不当空；提前失败诊断metadata.kind=diagnostic、无需attempt；导出失败/清理失败/剩余预算不足/登记目录不可写分别映射规定错误。取消重新抛，status=cancelled且notes保存。U4、U10、U11 / TA-07～09。
 
-- [x] **Step 2: RED。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/cli/test_candidate_submission.py -q`；预期模块缺失。
-- [x] **Step 3: 实现提交状态和适配器。** 同一deadline覆盖锁/导出/UTF-8/put；仅非空成功导出登记workspace_patch，metadata含submission_id/kind/stage/files/base_revision。Pydantic正常构造新candidate/request，只替换patch；提交失败返回passed=false/具体error，取消不转EvaluationResult。SubmissionResult不能保存SWE-bench结果或attempt。
-- [x] **Step 4: GREEN。** 重跑 Step 2及Task 4相关测试；全部 PASS，执行 Ruff。
-- [x] **Step 5: Review 后提交。** stage 两文件；`git commit -m "feat(cli): freeze candidate patches before evaluation"`。
+- [ ] **Step 2: RED。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/cli/test_candidate_submission.py -q`；预期模块缺失。
+- [ ] **Step 3: 实现提交状态和适配器。** 同一deadline覆盖锁/导出/UTF-8/put；仅非空成功导出登记workspace_patch，metadata含submission_id/kind/stage/files/base_revision。Pydantic正常构造新candidate/request，只替换patch；提交失败返回passed=false/具体error，取消不转EvaluationResult。SubmissionResult不能保存SWE-bench结果或attempt。
+- [ ] **Step 4: GREEN。** 重跑 Step 2及Task 4相关测试；全部 PASS，执行 Ruff。
+- [ ] **Step 5: Review 后提交。** stage 两文件；`git commit -m "feat(cli): freeze candidate patches before evaluation"`。
 
 ### Task 6: Attempt 输入、路径及无损 predictions
 
@@ -272,7 +272,7 @@ assert len([r for r in await store.list_for_run(run_id) if r.type == "workspace_
 - `async prepare_attempt(request: EvaluationRequest, *, prepared: PreparedTask, artifact_store: ArtifactStore, work_root: Path, model_name: str, timeout_seconds: float = 30.0) -> EvaluationAttempt`。
 - 输入失败内部 `EvaluationInputError` 带 `.code`；无patch/无效引用/非UTF8→PATCH_ARTIFACT_INVALID，零bytes→EMPTY_PATCH，工作目录/输入I/O错误→EVALUATION_ARTIFACT_FAILED。空/坏patch不得创建attempt。
 
-- [x] **Step 1: 写失败测试。** 通过真实ArtifactStore.put写corpus；内容含CRLF、Unicode、引号、反斜杠、有/无末尾换行；加真实Git binary/mode/rename diff。`test_predictions_round_trip_exact_bytes`：
+- [ ] **Step 1: 写失败测试。** 通过真实ArtifactStore.put写corpus；内容含CRLF、Unicode、引号、反斜杠、有/无末尾换行；加真实Git binary/mode/rename diff。`test_predictions_round_trip_exact_bytes`：
 
 ```python
 content = (attempt.directory / "predictions.jsonl").read_bytes()
@@ -286,10 +286,10 @@ assert prediction["model_name_or_path"] == "model-" + hashlib.sha256(model_name.
 
 `test_attempt_does_not_reuse_directory` 两次相同Run调用目录/attempt不同；恶意模型名不逃逸，非UTF8/损坏patch失败且无attempt。task.json严格单记录list，默认/覆盖镜像正确，共享包bytes不变；config原模型名、ref/hash/submission_id、三快照摘要和基线正确。U5、U6 / TA-10、11、14。
 
-- [x] **Step 2: RED。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/evaluation/test_swebench_inputs.py -q`；预期新接口缺失。
-- [x] **Step 3: 实现输入函数。** store.get_record/read验证归属Run、workspace_patch类型和submission_id；严格UTF8，标准JSON序列化bytes加LF。directory=`work_root/run_id.hex/attempt_id.hex`，mkdir不复用；harness_run_id=`run_id.hex-attempt_id.hex`。实例目录固定`logs/run_evaluation/<id>/<safe_model_key>/<instance_id>`。resolve限制所有inputs/evidence在attempt内；读写使用to_thread并受输入阶段deadline约束，线程取消限制照规格保留。
-- [x] **Step 4: GREEN。** 重跑 Step 2，全部 PASS，执行 Ruff。
-- [x] **Step 5: Review 后提交。** stage 两文件；`git commit -m "feat(models): prepare isolated swebench submissions"`。
+- [ ] **Step 2: RED。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/evaluation/test_swebench_inputs.py -q`；预期新接口缺失。
+- [ ] **Step 3: 实现输入函数。** store.get_record/read验证归属Run、workspace_patch类型和submission_id；严格UTF8，标准JSON序列化bytes加LF。directory=`work_root/run_id.hex/attempt_id.hex`，mkdir不复用；harness_run_id=`run_id.hex-attempt_id.hex`。实例目录固定`logs/run_evaluation/<id>/<safe_model_key>/<instance_id>`。resolve限制所有inputs/evidence在attempt内；读写使用to_thread并受输入阶段deadline约束，线程取消限制照规格保留。
+- [ ] **Step 4: GREEN。** 重跑 Step 2，全部 PASS，执行 Ruff。
+- [ ] **Step 5: Review 后提交。** stage 两文件；`git commit -m "feat(models): prepare isolated swebench submissions"`。
 
 ### Task 7: 完整 Evaluator、清理和必要证据
 
@@ -304,7 +304,7 @@ assert prediction["model_name_or_path"] == "model-" + hashlib.sha256(model_name.
 - 进程/清理函数保持包内private，不新增对外runner协议。config序列化 Settings 仅明确非敏感字段，不整体dump Settings。
 - Test fixture `harness_executable(tmp_path) -> Path`：读取单任务与predictions，从自身旁边scenario.json选择行为，写真实实例文件；argv/env/cwd及阶段握手写独立记录。支持完整通过、unresolved、坏/缺报告、错patch、非零、超时尾标、忽略TERM/子进程、大日志。Docker脚本支持邻居容器、数字后缀、inspect/remove及daemon改变。
 
-- [x] **Step 1: 写失败测试。** `test_complete_evidence_is_required_for_success` 使用合成就绪包、真实store、受控executables：
+- [ ] **Step 1: 写失败测试。** `test_complete_evidence_is_required_for_success` 使用合成就绪包、真实store、受控executables：
 
 ```python
 result = await evaluator.evaluate(request)
@@ -324,12 +324,12 @@ for ref in result.artifacts:
 
 多故障测试保留首次主错误：非零+清理失败、unresolved+登记失败、坏报告+登记失败、超时+清理失败；resolved+清理/登记失败分别以EVALUATION_CLEANUP_FAILED/EVALUATION_ARTIFACT_FAILED为主。真实磁盘故障用artifact根被文件占据等公开I/O故障；取消仍保持取消。顺序保存长stdout/stderr原bytes，摘要≤4096。U6～8、U10～13 / TA-11～15、18～20、22、23。
 
-- [x] **Step 2: RED。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/evaluation/test_swebench.py tests/evaluation/test_swebench_cleanup.py -q`；预期完整Evaluator缺失。
-- [x] **Step 3: 实现完整生命周期。** 执行前核对daemon ID/缓存镜像；argv精确按A§8.3，cwd=attempt，stdout/stderr直接文件，start_new_session=True。整体deadline从启动前起含启动/等待；报告固定实例路径，验证patch.diff bytes与predictions关联。成功必须符合Task 1全部条件，不读汇总report代替。
-- [x] **Step 4: 实现有界清理。** 正常结束也检查容器；异常先TERM组≤5s，必要KILL并有界回收，然后同连接info/查询/精确名称匹配/按ID删/确认消失，全阶段共享30s预算。名称regex锚定`^sweb\.eval\.<转义任务小写>\.<转义harness_run_id>(?:\.[0-9]+)?$`；禁止前缀批量删、禁止删镜像。记录ID/name/image ID及失败原因；shield任务仍在预算内await完成，取消notes/summary记录诊断再重新抛原取消。
-- [x] **Step 5: 实现顺序证据登记。** 成功文件清单按测试要求，所有路径resolve在attempt内。每次读一份、put一份、释放bytes；登记整体30s，不能每文件30s。config含A§10全字段与image观察来源，未观察实际image ID可null并解释；summary仅有界摘要/主附错误/未清理未登记身份，不放隐藏详情。先写config和summary原文件；其他文件登记完成后更新summary再登记，summary引用不自指。必要登记失败不能成功，尽力登记更新的summary，不重试原失败文件。attempt目录一律保留。
-- [x] **Step 6: GREEN。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/evaluation tests/cli/test_candidate_submission.py -q`；全部 PASS；执行 Ruff、ty check。记录受控进程证据，不称真实Docker通过。
-- [x] **Step 7: Review 后提交。** stage 本任务文件；`git commit -m "feat(models): verify candidates with independent swebench evidence"`。
+- [ ] **Step 2: RED。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/evaluation/test_swebench.py tests/evaluation/test_swebench_cleanup.py -q`；预期完整Evaluator缺失。
+- [ ] **Step 3: 实现完整生命周期。** 执行前核对daemon ID/缓存镜像；argv精确按A§8.3，cwd=attempt，stdout/stderr直接文件，start_new_session=True。整体deadline从启动前起含启动/等待；报告固定实例路径，验证patch.diff bytes与predictions关联。成功必须符合Task 1全部条件，不读汇总report代替。
+- [ ] **Step 4: 实现有界清理。** 正常结束也检查容器；异常先TERM组≤5s，必要KILL并有界回收，然后同连接info/查询/精确名称匹配/按ID删/确认消失，全阶段共享30s预算。名称regex锚定`^sweb\.eval\.<转义任务小写>\.<转义harness_run_id>(?:\.[0-9]+)?$`；禁止前缀批量删、禁止删镜像。记录ID/name/image ID及失败原因；shield任务仍在预算内await完成，取消notes/summary记录诊断再重新抛原取消。
+- [ ] **Step 5: 实现顺序证据登记。** 成功文件清单按测试要求，所有路径resolve在attempt内。每次读一份、put一份、释放bytes；登记整体30s，不能每文件30s。config含A§10全字段与image观察来源，未观察实际image ID可null并解释；summary仅有界摘要/主附错误/未清理未登记身份，不放隐藏详情。先写config和summary原文件；其他文件登记完成后更新summary再登记，summary引用不自指。必要登记失败不能成功，尽力登记更新的summary，不重试原失败文件。attempt目录一律保留。
+- [ ] **Step 6: GREEN。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/evaluation tests/cli/test_candidate_submission.py -q`；全部 PASS；执行 Ruff、ty check。记录受控进程证据，不称真实Docker通过。
+- [ ] **Step 7: Review 后提交。** stage 本任务文件；`git commit -m "feat(models): verify candidates with independent swebench evidence"`。
 
 ### Task 8: Runtime 终态证据与顺序 manifest 验证
 
@@ -346,7 +346,7 @@ for ref in result.artifacts:
 - `RunTraceContext.evaluation_event(payload: EventPayload, *, artifacts: list[ArtifactRef] | None = None) -> NewRunEvent`；_event同样接收optional artifacts，默认空列表，现有调用保持兼容。
 - FileArtifactStore.list_for_run签名与全量内容校验契约不变；不新增RunResult字段/SQLite表/payload字段。
 
-- [x] **Step 1: 写失败测试。** 用真实store写报告artifact，外部Evaluator返回ref，现有Runtime测试工厂注入，重开SQLite并读取公开events/snapshot；`test_evaluation_artifacts_commit_with_terminal_state`：
+- [ ] **Step 1: 写失败测试。** 用真实store写报告artifact，外部Evaluator返回ref，现有Runtime测试工厂注入，重开SQLite并读取公开events/snapshot；`test_evaluation_artifacts_commit_with_terminal_state`：
 
 ```python
 assert completed.artifacts == [report_ref]
@@ -358,10 +358,10 @@ assert result.reason is TerminationReason.TASK_VERIFIED
 
 失败评测也保存refs且FAILED/EVALUATION_FAILED；取消不产生EVALUATION_COMPLETED。复用SQLite公开事务冲突方式证明terminal batch失败不会只保存completed；不patch内部commit。store新增多大文件验证完整refs与单项损坏fail-fast；实际峰值实验归Task11。U9、U12 / TA-16、22。
 
-- [x] **Step 2: RED。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/runtime/test_runtime.py tests/artifacts/test_file_store.py -q`；预期事件refs缺失。
-- [x] **Step 3: 接入refs与顺序验证。** _evaluate暂存artifacts，finish在原同一commit的EvaluationCompleted事件带refs；不产生独立提前commit。list_for_run将内容校验gather改逐项await，仅records列表常驻，异常不返回部分records。
-- [x] **Step 4: GREEN。** 重跑Step2和 `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/storage/test_sqlite.py -q`；全部 PASS；执行 Ruff、ty check。
-- [x] **Step 5: Review 后提交。** stage 上述六文件；`git commit -m "enh(cli): persist evaluation evidence with run completion"`。
+- [ ] **Step 2: RED。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/runtime/test_runtime.py tests/artifacts/test_file_store.py -q`；预期事件refs缺失。
+- [ ] **Step 3: 接入refs与顺序验证。** _evaluate暂存artifacts，finish在原同一commit的EvaluationCompleted事件带refs；不产生独立提前commit。list_for_run将内容校验gather改逐项await，仅records列表常驻，异常不返回部分records。
+- [ ] **Step 4: GREEN。** 重跑Step2和 `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/storage/test_sqlite.py -q`；全部 PASS；执行 Ruff、ty check。
+- [ ] **Step 5: Review 后提交。** stage 上述六文件；`git commit -m "enh(cli): persist evaluation evidence with run completion"`。
 
 ### Task 9: Application 唯一交付来源、收集回退与展示
 
@@ -377,7 +377,7 @@ assert result.reason is TerminationReason.TASK_VERIFIED
 - FinalizationError.stage增加 `artifact_collection`；`ApplicationResult`公开签名不变。
 - Application在依赖无submission时为Local/直接调用创建默认CandidateSubmission；注入Runtime的evaluator来自dependencies。
 
-- [x] **Step 1: 写失败测试。** `test_delivery_reuses_validated_patch_after_workspace_changes`：评测后再改Workspace，store最终bytes仍为评测patch、只有一份patch记录。`test_collection_failure_only_returns_verified_patch`：先通过Evaluator登记有效refs，再用真实文件写坏一份evaluation artifact：
+- [ ] **Step 1: 写失败测试。** `test_delivery_reuses_validated_patch_after_workspace_changes`：评测后再改Workspace，store最终bytes仍为评测patch、只有一份patch记录。`test_collection_failure_only_returns_verified_patch`：先通过Evaluator登记有效refs，再用真实文件写坏一份evaluation artifact：
 
 ```python
 assert result.run_result.status is RunStatus.SUCCEEDED
@@ -390,11 +390,11 @@ assert workspace.root.exists()
 
 展示测试artifacts故意排为report、summary、patch，assert `Patch:` URI为patch；无patch不将report称patch。CLI不展示隐藏报告正文，长错误摘要≤4096；保持普通失败及signal退出规则。U4、U8、U9、U14 / TA-09、14、17、21、24。
 
-- [x] **Step 2: RED。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/cli/test_evaluation_delivery.py tests/cli/test_application.py tests/cli/test_main.py -q`；预期未注入Evaluator/终态后重新导出/列表顺序断言失败。
-- [x] **Step 3: 实现finalization与汇总。** 只not_attempted才诊断submit；取消提交diagnostics映射patch_export错误。diagnostic空patch沿用原Local行为：无artifact、无finalization错误；EMPTY_PATCH仅由正式评测适配器判候选失败。提交导出/超时/清理错误映射patch_export，put错误映射artifact_registration。每Run仅一次list_for_run，共享30s deadline；成功列表按artifact_id去重、按metadata.submission_id恢复发布完成patch引用。全量失败时只允许内存已有patch_ref在同deadline剩余内get_record验证；无剩余/失败→空artifacts，追加诊断，不用EvaluationResult或journal补refs。Run异常路径给原异常add_note，正常路径返回FinalizationError，不改Run状态。
-- [x] **Step 4: 实现展示。** 按type==workspace_patch查找；report/summary最多显示URI；错误消息单条最多4096字符，完整原文件仍保存。不要扩大CLI功能。
-- [x] **Step 5: GREEN。** 重跑Step2，现有应用直接构造测试若用了极简store，改为真实FileArtifactStore，不新增对内部finalization mock；全部PASS。执行 Ruff、ty check。
-- [x] **Step 6: Review 后提交。** stage 本任务五文件；`git commit -m "enh(cli): deliver verified evaluation artifacts"`。
+- [ ] **Step 2: RED。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/cli/test_evaluation_delivery.py tests/cli/test_application.py tests/cli/test_main.py -q`；预期未注入Evaluator/终态后重新导出/列表顺序断言失败。
+- [ ] **Step 3: 实现finalization与汇总。** 只not_attempted才诊断submit；取消提交diagnostics映射patch_export错误。diagnostic空patch沿用原Local行为：无artifact、无finalization错误；EMPTY_PATCH仅由正式评测适配器判候选失败。提交导出/超时/清理错误映射patch_export，put错误映射artifact_registration。每Run仅一次list_for_run，共享30s deadline；成功列表按artifact_id去重、按metadata.submission_id恢复发布完成patch引用。全量失败时只允许内存已有patch_ref在同deadline剩余内get_record验证；无剩余/失败→空artifacts，追加诊断，不用EvaluationResult或journal补refs。Run异常路径给原异常add_note，正常路径返回FinalizationError，不改Run状态。
+- [ ] **Step 4: 实现展示。** 按type==workspace_patch查找；report/summary最多显示URI；错误消息单条最多4096字符，完整原文件仍保存。不要扩大CLI功能。
+- [ ] **Step 5: GREEN。** 重跑Step2，现有应用直接构造测试若用了极简store，改为真实FileArtifactStore，不新增对内部finalization mock；全部PASS。执行 Ruff、ty check。
+- [ ] **Step 6: Review 后提交。** stage 本任务五文件；`git commit -m "enh(cli): deliver verified evaluation artifacts"`。
 
 ### Task 10: Bootstrap 在模型与 Workspace 前预检及注入
 
@@ -409,15 +409,15 @@ assert workspace.root.exists()
 - Produces: `BootstrapConfig.swebench_task: SWEbenchTaskContext | None = None`；bootstrap签名不变。
 - 不添加CLI任务参数；宿主配置遵循当前BaseSettings环境变量名（例如SWEBENCH_ALLOW_IMAGE_PULL）。
 
-- [x] **Step 1: 写失败测试。** Local在不存在data/harness/docker配置下成功，不产生评测预检命令；Docker无context→TASK_CONTEXT_REQUIRED、清单外→TASK_UNSUPPORTED、not_ready→TASK_NOT_READY、版本不符→HARNESS_VERSION_MISMATCH、禁止pull缺image→EVALUATION_IMAGE_UNAVAILABLE。所有准备失败断言Workspace创建记录/Provider请求为空，没有伪造Run/terminal事件。
+- [ ] **Step 1: 写失败测试。** Local在不存在data/harness/docker配置下成功，不产生评测预检命令；Docker无context→TASK_CONTEXT_REQUIRED、清单外→TASK_UNSUPPORTED、not_ready→TASK_NOT_READY、版本不符→HARNESS_VERSION_MISMATCH、禁止pull缺image→EVALUATION_IMAGE_UNAVAILABLE。所有准备失败断言Workspace创建记录/Provider请求为空，没有伪造Run/terminal事件。
 
 内部入口已就绪+ready=false允许；通过外部Provider产生candidate及受控harness回报，assert最终TASK_VERIFIED、同patch refs和SQLitecompleted。上下文T但task/model/Agent镜像含其他ID，仍评测T；自定义Agent镜像不做清单匹配。覆盖评测image记录false但可真实候选通过，共享tasks不变。冻结后外部场景切换context不换endpoint。CLI普通Docker准备错误简明非零、无新`--instance-id`；未知异常继续传播。U1、U3、U13、U14 / TA-01、03～06、23、24。
 
-- [x] **Step 2: RED。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/cli/test_swebench_bootstrap.py tests/cli/test_bootstrap.py tests/cli/test_main.py -q`；预期新config字段/预检缺失。
-- [x] **Step 3: 修改装配顺序。** 有效kind优先config，否则settings；Local短路不读取评测数据；Docker按A§6顺序检查上下文、数据、报告、版本、冻结连接、daemon、实际image，在create_workspace前完成。定位绝对可执行路径并保留 symlink 调用名（OrbStack multicall），一次宿主env快照。Workspace创建后将同store/submission/evaluator注入ApplicationDependencies，复用现有装配失败destroy规则；不把隐藏配置/数据放入Workspace或modelrequest。
-- [x] **Step 4: CLI已知错误呈现。** 仅捕获EvaluationPreparationError，输出含稳定码的≤4096字符摘要并现有失败退出码；Settings/未知错误不吞。准备失败不启动Runtime。
-- [x] **Step 5: GREEN。** 重跑Step2；`UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run miniagent --help`，预期原CLI参数面不变。执行 Ruff、ty check。
-- [x] **Step 6: Review 后提交。** stage 本任务五文件；`git commit -m "feat(cli): require ready independent evaluation for docker runs"`。
+- [ ] **Step 2: RED。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/cli/test_swebench_bootstrap.py tests/cli/test_bootstrap.py tests/cli/test_main.py -q`；预期新config字段/预检缺失。
+- [ ] **Step 3: 修改装配顺序。** 有效kind优先config，否则settings；Local短路不读取评测数据；Docker按A§6顺序检查上下文、数据、报告、版本、冻结连接、daemon、实际image，在create_workspace前完成。resolve可执行文件绝对路径，一次宿主env快照。Workspace创建后将同store/submission/evaluator注入ApplicationDependencies，复用现有装配失败destroy规则；不把隐藏配置/数据放入Workspace或modelrequest。
+- [ ] **Step 4: CLI已知错误呈现。** 仅捕获EvaluationPreparationError，输出含稳定码的≤4096字符摘要并现有失败退出码；Settings/未知错误不吞。准备失败不启动Runtime。
+- [ ] **Step 5: GREEN。** 重跑Step2；`UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run miniagent --help`，预期原CLI参数面不变。执行 Ruff、ty check。
+- [ ] **Step 6: Review 后提交。** stage 本任务五文件；`git commit -m "feat(cli): require ready independent evaluation for docker runs"`。
 
 ### Task 11: 跨组件取消、资源实验和真实开发任务验收
 
@@ -433,18 +433,18 @@ assert workspace.root.exists()
 - 真实测试默认skip，显式环境 `MINIAGENT_REAL_SWEBENCH=1` 启用；`MINIAGENT_SWEBENCH_REFERENCE_PATCH` 为宿主开发任务有效参考patch路径，`MINIAGENT_SWEBENCH_INSTANCE_ID` 必须是安全资源selection=development且已就绪的ID；这仅是pytest驱动配置，不是产品CLI入口。
 - fixture外部Provider在AgentWorkspace使用工具应用参考patch然后提交，不将gold bytes/路径放modelrequest；这是测评链路驱动，不证明模型解决能力。无效非空候选单独运行，不用正式任务调优。
 
-- [x] **Step 1: 写失败的跨组件验收测试。** `test_cancel_before_attempt_preserves_run_and_workspace`：外部Docker导出清理卡住后cancel token；assert CANCELLED/CANCEL_REQUESTED、无harness/attempt、稳定submission ID、finalization notes含资源身份、Workspace保留、elapsed≤配置预算+3s监督容差。`test_cancel_during_harness_collects_diagnostics_without_completed_event`：完整Runtime/Application/SQLite链路cancel，assert诊断manifests可追溯，无EvaluationCompleted，独立进程组回收、邻居不受影响。
+- [ ] **Step 1: 写失败的跨组件验收测试。** `test_cancel_before_attempt_preserves_run_and_workspace`：外部Docker导出清理卡住后cancel token；assert CANCELLED/CANCEL_REQUESTED、无harness/attempt、稳定submission ID、finalization notes含资源身份、Workspace保留、elapsed≤配置预算+3s监督容差。`test_cancel_during_harness_collects_diagnostics_without_completed_event`：完整Runtime/Application/SQLite链路cancel，assert诊断manifests可追溯，无EvaluationCompleted，独立进程组回收、邻居不受影响。
 
 大日志隔离子进程实验：在子进程基线后创建/读取真实store的`1/4/8`份各`16 MiB`日志，每份内容不同；分别测登记/汇总峰值RSS（macOS/Linux单位归一），固定数量再改最大单文件`8/16/32 MiB`。oracle为refs/hash完整、损坏仍拒绝及峰值增长形态记录；不设置无来源绝对阈值，不mock_read_content，不用tracemalloc代替真实RSS。发布中取消实验用真实大型put与manifest公开出现握手；已发布且list成功时恢复同submission_id的唯一patch，无第二次导出。不能稳定命中发布窗口时标记该精确实验未验证。
 
 真实测试 `test_real_ready_development_patch_is_verified` / `test_real_invalid_patch_fails`：分别assert Run状态/reason、predictions逐byte一致、实例报告/必要refs/SQLite、评测容器清理、成功销毁/失败保留AgentWorkspace。TLS验收单独用真实验证TLS daemon A及B邻居，不能用Unix成功替代TLS证据。U11、U12、U15 / TA-08、09、18～22、25。
 
-- [x] **Step 2: 验证RED或精确缺口。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/cli/test_evaluation_cancellation.py tests/artifacts/test_evaluation_memory.py -q`。新增测试先针对之前未覆盖路径；若前十任务实现已满足则如实记录首跑PASS，不人为破坏代码。真实测试默认SKIP不算GREEN。
-- [x] **Step 3: 修复新验收揭示的缺陷。** 仅在对应责任文件作最小修复，每个失败先确认根因再改；不为使实验通过绕开完整性校验、加内部mock或提高产品预算。出现范围变更先记录并更新计划/规格。
-- [x] **Step 4: 定向最终GREEN。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/evaluation tests/cli tests/environments tests/artifacts tests/runtime/test_runtime.py tests/storage/test_sqlite.py -q`，再变更文件Ruff和`uv run ty check`。全部通过才报告受控层完成；记录skip/环境缺口。
-- [x] **Step 5: 显式执行真实验收。** 确认宿主5.0.2/所选开发任务就绪/本机缓存镜像；设置上述测试驱动环境后运行 `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/integration/test_swebench_evaluation.py -q -rs`。真实输入输出和隐藏日志仅保存宿主证据目录。不得恢复目前已停止的镜像下载；无缓存/daemon/TLS环境则记录未执行，不改task集合、不以受控测试代替。父环境变更前后/daemon A/B邻居/实际image观察来源留证。
-- [x] **Step 6: 写验收记录和使用说明。** acceptance文件写内部BootstrapConfig调用示例、宿主设置/目录、逐任务门槛、普通Docker CLI限制、镜像覆盖和取消证据位置、原目录诊断入口、单文件内存/线程取消限制。逐项标明受控测试、真实Unix/TLS链路、发布窗口实验、25项准备的结果或未执行；附命令、版本、摘要、Run/attempt/submission IDs及宿主证据位置，不把隐藏日志贴入repo。
-- [x] **Step 7: Review 后提交。** 精确stage验收文件和实际修复；测试/修复与文档分别提交：`test: verify independent evaluation lifecycle`、`docs: document independent evaluation evidence and usage`。无缺陷则没有额外产品代码提交。
+- [ ] **Step 2: 验证RED或精确缺口。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/cli/test_evaluation_cancellation.py tests/artifacts/test_evaluation_memory.py -q`。新增测试先针对之前未覆盖路径；若前十任务实现已满足则如实记录首跑PASS，不人为破坏代码。真实测试默认SKIP不算GREEN。
+- [ ] **Step 3: 修复新验收揭示的缺陷。** 仅在对应责任文件作最小修复，每个失败先确认根因再改；不为使实验通过绕开完整性校验、加内部mock或提高产品预算。出现范围变更先记录并更新计划/规格。
+- [ ] **Step 4: 定向最终GREEN。** Run: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/evaluation tests/cli tests/environments tests/artifacts tests/runtime/test_runtime.py tests/storage/test_sqlite.py -q`，再变更文件Ruff和`uv run ty check`。全部通过才报告受控层完成；记录skip/环境缺口。
+- [ ] **Step 5: 显式执行真实验收。** 确认宿主5.0.2/所选开发任务就绪/本机缓存镜像；设置上述测试驱动环境后运行 `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest tests/integration/test_swebench_evaluation.py -q -rs`。真实输入输出和隐藏日志仅保存宿主证据目录。不得恢复目前已停止的镜像下载；无缓存/daemon/TLS环境则记录未执行，不改task集合、不以受控测试代替。父环境变更前后/daemon A/B邻居/实际image观察来源留证。
+- [ ] **Step 6: 写验收记录和使用说明。** acceptance文件写内部BootstrapConfig调用示例、宿主设置/目录、逐任务门槛、普通Docker CLI限制、镜像覆盖和取消证据位置、原目录诊断入口、单文件内存/线程取消限制。逐项标明受控测试、真实Unix/TLS链路、发布窗口实验、25项准备的结果或未执行；附命令、版本、摘要、Run/attempt/submission IDs及宿主证据位置，不把隐藏日志贴入repo。
+- [ ] **Step 7: Review 后提交。** 精确stage验收文件和实际修复；测试/修复与文档分别提交：`test: verify independent evaluation lifecycle`、`docs: document independent evaluation evidence and usage`。无缺陷则没有额外产品代码提交。
 
 ## 数据准备与全量实验的独立交付边界
 
