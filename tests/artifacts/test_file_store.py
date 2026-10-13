@@ -1,4 +1,5 @@
 from pathlib import Path
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import pytest
@@ -110,3 +111,21 @@ async def test_artifact_path_fields_must_be_safe_segments(tmp_path: Path) -> Non
             ArtifactWrite(run_id=uuid4(), type="evidence", name="../escape"),
             b"content",
         )
+
+
+async def test_multi_log_collection_rejects_any_corrupted_content(tmp_path):
+    store = FileArtifactStore(tmp_path / "artifacts")
+    run_id = uuid4()
+    refs = [
+        await store.put(
+            ArtifactWrite(run_id=run_id, type="evaluation_stdout"),
+            bytes([number]) * (1024 * 1024),
+        )
+        for number in range(4)
+    ]
+    assert {record.reference() for record in await store.list_for_run(run_id)} == set(
+        refs
+    )
+    Path(urlparse(refs[2].uri).path).write_bytes(b"corrupt")
+    with pytest.raises(ArtifactNotFoundError, match="content changed"):
+        await store.list_for_run(run_id)

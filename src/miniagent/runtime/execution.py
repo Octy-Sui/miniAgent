@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
+from miniagent.artifacts import ArtifactRef
 from miniagent.evaluation import CandidateOutput
 from miniagent.metering.usage import RequestCost, add_request_usage
 from miniagent.models.messages import ToolMessage
@@ -107,6 +108,7 @@ class _PendingApprovalResolution:
 class _PendingEvaluationResult:
     passed: bool
     final_output: str | None
+    artifacts: tuple[ArtifactRef, ...] = ()
 
 
 @dataclass(slots=True)
@@ -370,10 +372,12 @@ class RunExecution:
         *,
         passed: bool,
         final_output: str | None = None,
+        artifacts: list[ArtifactRef] | None = None,
     ) -> None:
         self.pending_evaluation_result = _PendingEvaluationResult(
             passed=passed,
             final_output=final_output,
+            artifacts=tuple(artifacts or ()),
         )
 
     async def begin_tool(
@@ -605,7 +609,8 @@ class RunExecution:
         if evaluation is not None:
             events.append(
                 next_trace.evaluation_event(
-                    EvaluationCompleted(passed=evaluation.passed)
+                    EvaluationCompleted(passed=evaluation.passed),
+                    artifacts=list(evaluation.artifacts),
                 )
             )
         if next_trace.has_evaluation:

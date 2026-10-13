@@ -2,6 +2,7 @@ import secrets
 from dataclasses import dataclass
 from uuid import UUID
 
+from miniagent.artifacts import ArtifactRef
 from miniagent.runtime.events import EventPayload, NewRunEvent
 
 
@@ -106,7 +107,9 @@ class RunTraceContext:
             raise RuntimeError("Cannot begin evaluation while another scope is active")
         self.evaluation = EvaluationScope(span_id=_span_id())
 
-    def evaluation_event(self, payload: EventPayload) -> NewRunEvent:
+    def evaluation_event(
+        self, payload: EventPayload, *, artifacts: list[ArtifactRef] | None = None
+    ) -> NewRunEvent:
         if self.evaluation is None:
             raise RuntimeError("Evaluation event requires an active evaluation")
         return self._event(
@@ -114,6 +117,7 @@ class RunTraceContext:
             span_id=self.evaluation.span_id,
             parent_span_id=self.run.span_id,
             include_step=False,
+            artifacts=artifacts,
         )
 
     def end_evaluation(self) -> None:
@@ -224,6 +228,7 @@ class RunTraceContext:
         span_id: str,
         parent_span_id: str | None = None,
         include_step: bool = True,
+        artifacts: list[ArtifactRef] | None = None,
     ) -> NewRunEvent:
         return NewRunEvent(
             run_id=self.run_id,
@@ -231,6 +236,7 @@ class RunTraceContext:
             step_number=self._require_step().number if include_step else None,
             span_id=span_id,
             parent_span_id=parent_span_id,
+            artifacts=artifacts or [],
         )
 
     def _active_tool(self) -> ToolScope | None:

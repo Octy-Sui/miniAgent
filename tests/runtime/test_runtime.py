@@ -11,6 +11,7 @@ import orjson
 import pytest
 
 from miniagent.agents import AgentSpec
+from miniagent.artifacts import ArtifactWrite, FileArtifactStore
 from miniagent.evaluation import EvaluationError
 from miniagent.metering.pricing import ModelPrice, PriceConfig
 from miniagent.models.config import GenerationOptions, ModelTarget
@@ -824,3 +825,45 @@ def test_request_rejects_changed_tool_contract(change: str) -> None:
     )
     with pytest.raises(ValueError, match="tool contract"):
         AgentRuntime(provider=QueueProvider([]), tools=registry)._build_request(state)
+
+
+@pytest.mark.parametrize(("passed",), [(True,), (False,)])
+async def test_evaluation_artifacts_commit_with_terminal_state(tmp_path, passed):
+    run_id = uuid4()
+    artifacts = FileArtifactStore(tmp_path / "artifacts")
+    report_ref = await artifacts.put(
+        ArtifactWrite(run_id=run_id, type="evaluation_report"), b"report"
+    )
+    store = SQLiteRunStore(tmp_path / "journal.sqlite3")
+    await store.initialize()
+    runtime = AgentRuntime(
+        provider=QueueProvider([final_response()]),
+        tools=registry(),
+        run_store=store,
+        evaluator=RecordingEvaluator(
+            EvaluationResult(passed=passed, artifacts=[report_ref])
+        ),
+    )
+    result = await runtime.run(agent(), "task", run_id=run_id)
+    reopened = SQLiteRunStore(tmp_path / "journal.sqlite3")
+    await reopened.initialize()
+    events = await reopened.list_events(run_id)
+    completed = next(
+        event for event in events if event.type is RunEventType.EVALUATION_COMPLETED
+    )
+    finished = next(
+        event for event in events if event.type is RunEventType.RUN_FINISHED
+    )
+    started = next(event for event in events if event.type is RunEventType.RUN_STARTED)
+    snapshot = await reopened.load_latest(run_id)
+    assert snapshot is not None
+    assert snapshot.state.lifecycle.status is result.status
+    assert completed.artifacts == [report_ref]
+    assert completed.sequence < finished.sequence
+    assert completed.span_id != started.span_id
+    assert result.status is (RunStatus.SUCCEEDED if passed else RunStatus.FAILED)
+    assert result.reason is (
+        TerminationReason.TASK_VERIFIED
+        if passed
+        else TerminationReason.EVALUATION_FAILED
+    )

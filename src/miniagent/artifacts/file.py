@@ -71,9 +71,8 @@ class FileArtifactStore:
         records = [await asyncio.to_thread(self._load_manifest, path) for path in paths]
         if any(record.run_id != run_id for record in records):
             raise ArtifactNotFoundError("Artifact manifest is outside its recorded run")
-        await asyncio.gather(
-            *(asyncio.to_thread(self._validate_content, record) for record in records)
-        )
+        for record in records:
+            await asyncio.to_thread(self._validate_content, record)
         return records
 
     def _publish(

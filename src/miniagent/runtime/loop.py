@@ -259,7 +259,7 @@ class AgentRuntime:
                     "COMPACTION_FAILED", "compaction cancelled", tuple(attempts)
                 )
                 raise
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 failure = f"{type(exc).__name__}: {exc}"
                 attempt = CompactionAttempt(
                     attempt=number, error_code=type(exc).__name__
@@ -529,6 +529,7 @@ class AgentRuntime:
         execution.stage_evaluation_result(
             passed=evaluation.passed,
             final_output=final_output,
+            artifacts=evaluation.artifacts,
         )
         return TerminateRun(termination)
 
