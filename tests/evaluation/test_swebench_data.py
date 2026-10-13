@@ -121,8 +121,12 @@ def test_invalid_record_is_rejected_even_with_matching_digest(
     manifest = json.loads(manifest_path.read_bytes())
     manifest["outputs"]["tasks.json"]["sha256"] = hashlib.sha256(content).hexdigest()
     manifest_path.write_text(json.dumps(manifest))
-    with pytest.raises(EvaluationPreparationError, match="EVALUATION_DATA_INVALID"):
+    with pytest.raises(
+        EvaluationPreparationError, match="EVALUATION_DATA_INVALID"
+    ) as caught:
         load_prepared_task(prepared_bundle, SWEbenchTaskContext(instance_id=INSTANCE))
+    if field in {"patch", "test_patch"}:
+        assert value not in str(caught.value)
 
 
 def test_tasks_digest_is_checked(prepared_bundle):

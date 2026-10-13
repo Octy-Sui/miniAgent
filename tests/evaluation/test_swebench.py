@@ -154,3 +154,37 @@ async def test_start_failure_is_diagnostic(evaluation_case):
     result = await evaluator.evaluate(request)
     assert result.error is not None
     assert result.error.code == "HARNESS_START_FAILED"
+
+
+async def test_summary_is_an_evidence_checkpoint_not_a_terminal_verdict(
+    evaluation_case,
+):
+    evaluator, request, store = evaluation_case
+    result = await evaluator.evaluate(request)
+    summary = json.loads(
+        await store.read(
+            next(ref for ref in result.artifacts if ref.type == "evaluation_summary")
+        )
+    )
+    assert summary["scope"] == "evaluation_evidence_snapshot"
+    assert summary["verdict"] == "report_resolved"
+    assert summary["terminal_status_source"] == "Run"
+
+
+async def test_collection_timeout_never_retains_an_optimistic_summary(evaluation_case):
+    evaluator, request, _ = evaluation_case
+    evaluator.settings = evaluator.settings.model_copy(
+        update={
+            "swebench_artifact_timeout_seconds": 0.015,
+        }
+    )
+    (evaluator.executable.parent / "harness-scenario.json").write_text(
+        json.dumps({"log_size": 32 * 1024 * 1024})
+    )
+    result = await evaluator.evaluate(request)
+    assert result.passed is False
+    summaries = list(
+        evaluator.settings.swebench_work_root.rglob("evaluation-summary.json")
+    )
+    assert summaries
+    assert json.loads(summaries[0].read_bytes())["verdict"] == "collecting"

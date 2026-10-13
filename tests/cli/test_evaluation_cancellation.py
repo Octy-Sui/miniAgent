@@ -86,8 +86,9 @@ async def test_cancel_before_attempt_preserves_run_and_workspace(
     assert monotonic() - started < 6
 
 
+@pytest.mark.parametrize(("window",), [("stdout",), ("summary",)])
 async def test_cancellation_during_evidence_collection_marks_summary_cancelled(
-    delivery_case, evaluation_case
+    delivery_case, evaluation_case, window
 ):
     deps, submission = delivery_case
     evaluator, _, _ = evaluation_case
@@ -105,10 +106,19 @@ async def test_cancellation_during_evidence_collection_marks_summary_cancelled(
     reached = False
     directory = deps.artifact_store.manifest_root / deps.run_id.hex
     while not running.done():
-        if any(
+        stdout_ready = any(
             json.loads(path.read_bytes())["type"] == "evaluation_stdout"
             for path in directory.glob("*.json")
-        ):
+        )
+        summaries = list(
+            evaluator.settings.swebench_work_root.rglob("evaluation-summary.json")
+        )
+        summary_ready = any(
+            json.loads(path.read_bytes()).get("verdict")
+            in {"passed", "report_resolved"}
+            for path in summaries
+        )
+        if stdout_ready if window == "stdout" else summary_ready:
             reached = True
             token.cancel()
             break
@@ -120,7 +130,12 @@ async def test_cancellation_during_evidence_collection_marks_summary_cancelled(
         ref for ref in result.artifacts if ref.type == "evaluation_summary"
     )
     summary = json.loads(await deps.artifact_store.read(summary_ref))
-    assert summary["verdict"] == "cancelled"
+    if window == "stdout":
+        assert summary["verdict"] == "cancelled"
+    else:
+        assert summary["scope"] == "evaluation_evidence_snapshot"
+        assert summary["verdict"] != "passed"
+        assert summary["terminal_status_source"] == "Run"
 
 
 async def test_published_patch_is_recovered_after_submission_cancellation(

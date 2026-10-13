@@ -338,14 +338,18 @@ class SWEbenchEvaluator:
                 content,
             )
 
-        def summary_bytes() -> bytes:
+        def summary_bytes(*, collecting: bool = False) -> bytes:
             return json.dumps(
                 {
+                    "scope": "evaluation_evidence_snapshot",
+                    "terminal_status_source": "Run",
                     "verdict": "cancelled"
                     if cancelled.is_set()
                     else "failed"
                     if error
-                    else "passed",
+                    else "collecting"
+                    if collecting
+                    else "report_resolved",
                     "error": error.model_dump() if error else None,
                     "message": error.message[:4096] if error else "",
                     "run_id": str(request.run_id),
@@ -364,7 +368,7 @@ class SWEbenchEvaluator:
             async with asyncio.timeout_at(deadline):
                 await asyncio.to_thread(
                     _attempt_path(attempt, "evaluation-summary.json").write_bytes,
-                    summary_bytes(),
+                    summary_bytes(collecting=True),
                 )
                 await asyncio.to_thread(
                     _attempt_path(attempt, "evaluation-config.json").write_bytes,

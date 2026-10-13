@@ -10,6 +10,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictBool,
+    ValidationError,
     field_validator,
 )
 
@@ -233,6 +234,12 @@ def load_prepared_task(data_root: Path, context: SWEbenchTaskContext) -> Prepare
     except (OSError, ValueError, KeyError, TypeError) as exc:
         if isinstance(exc, EvaluationPreparationError):
             raise
+        detail = (
+            "Structured data validation failed: "
+            + ", ".join(sorted({item["type"] for item in exc.errors()}))
+            if isinstance(exc, ValidationError)
+            else type(exc).__name__
+        )
         raise EvaluationPreparationError(
-            "EVALUATION_DATA_INVALID", f"{context.instance_id} at {root}: {exc}"
+            "EVALUATION_DATA_INVALID", f"{context.instance_id} at {root}: {detail}"
         ) from exc
