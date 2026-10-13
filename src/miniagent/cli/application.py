@@ -1,12 +1,16 @@
+import asyncio
 from dataclasses import dataclass, field
+from time import monotonic
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
 from miniagent.agents import AgentSpec
-from miniagent.artifacts import ArtifactRef, ArtifactStore, ArtifactWrite
+from miniagent.artifacts import ArtifactRef, ArtifactStore
+from miniagent.cli.candidate_submission import CandidateSubmission
 from miniagent.environments import Workspace
+from miniagent.evaluation import Evaluator, PassThroughEvaluator
 from miniagent.metering.pricing import PriceConfig
 from miniagent.models.protocol import ModelProvider
 from miniagent.policy import ApprovalHandler, PolicyContext
@@ -25,7 +29,12 @@ from miniagent.tools.registry import ToolRegistry
 class FinalizationError(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    stage: Literal["patch_export", "artifact_registration", "workspace_cleanup"]
+    stage: Literal[
+        "patch_export",
+        "artifact_registration",
+        "artifact_collection",
+        "workspace_cleanup",
+    ]
     code: str
     message: str
 
@@ -53,11 +62,17 @@ class ApplicationDependencies:
     run_store: RuntimeStore
     recovery_context: RunRecoveryContext
     config: RuntimeConfig = field(default_factory=RuntimeConfig)
+    evaluator: Evaluator = field(default_factory=PassThroughEvaluator)
+    candidate_submission: CandidateSubmission | None = None
+    artifact_collection_timeout_seconds: float = 30.0
 
 
 class Application:
     def __init__(self, dependencies: ApplicationDependencies) -> None:
         self.dependencies = dependencies
+        self.submission = dependencies.candidate_submission or CandidateSubmission(
+            dependencies.workspace, dependencies.artifact_store
+        )
 
     async def run(self, cancellation_token: CancellationToken) -> ApplicationResult:
         dependencies = self.dependencies
@@ -70,6 +85,7 @@ class Application:
             policy_context=dependencies.policy_context,
             approval_handler=dependencies.approval_handler,
             run_store=dependencies.run_store,
+            evaluator=dependencies.evaluator,
         )
         try:
             run_result = await runtime.run(
@@ -107,39 +123,57 @@ class Application:
     async def _finalize_patch(
         self,
     ) -> tuple[list[ArtifactRef], list[FinalizationError]]:
-        try:
-            patch = await self.dependencies.workspace.export_patch()
-        except Exception as exc:  # noqa: BLE001
-            return [], [
+        errors: list[FinalizationError] = []
+        if self.submission.result.status == "not_attempted":
+            await self.submission.submit(kind="diagnostic")
+        submission = self.submission.result
+        if submission.error is not None and submission.status != "empty":
+            errors.append(
+                FinalizationError(
+                    stage="artifact_registration"
+                    if submission.error.code == "ARTIFACT_REGISTRATION_FAILED"
+                    else "patch_export",
+                    code=submission.error.code,
+                    message=submission.error.message,
+                )
+            )
+        for diagnostic in submission.diagnostics:
+            errors.append(
                 FinalizationError(
                     stage="patch_export",
-                    code="PATCH_EXPORT_FAILED",
-                    message=f"{type(exc).__name__}: {exc}",
+                    code="PATCH_EXPORT_CLEANUP_FAILED",
+                    message=diagnostic,
                 )
-            ]
-        if not patch.content:
-            return [], []
-
-        metadata: dict[str, str | list[str]] = {"files": patch.files}
-        if patch.base_revision is not None:
-            metadata["base_revision"] = patch.base_revision
-        try:
-            artifact = await self.dependencies.artifact_store.put(
-                ArtifactWrite(
-                    run_id=self.dependencies.workspace.run_id,
-                    type="workspace_patch",
-                    name="changes.patch",
-                    media_type="text/x-diff",
-                    metadata=metadata,
-                ),
-                patch.content.encode("utf-8"),
             )
+        deadline = monotonic() + self.dependencies.artifact_collection_timeout_seconds
+        try:
+            async with asyncio.timeout_at(deadline):
+                records = await self.dependencies.artifact_store.list_for_run(
+                    self.dependencies.run_id
+                )
+            refs = {record.artifact_id: record.reference() for record in records}
+            return list(refs.values()), errors
         except Exception as exc:  # noqa: BLE001
-            return [], [
+            errors.append(
                 FinalizationError(
-                    stage="artifact_registration",
-                    code="ARTIFACT_REGISTRATION_FAILED",
+                    stage="artifact_collection",
+                    code="ARTIFACT_COLLECTION_FAILED",
                     message=f"{type(exc).__name__}: {exc}",
                 )
-            ]
-        return [artifact], []
+            )
+            if submission.patch_ref is not None and monotonic() < deadline:
+                try:
+                    async with asyncio.timeout_at(deadline):
+                        record = await self.dependencies.artifact_store.get_record(
+                            submission.patch_ref
+                        )
+                    return [record.reference()], errors
+                except Exception as patch_error:  # noqa: BLE001
+                    errors.append(
+                        FinalizationError(
+                            stage="artifact_collection",
+                            code="PATCH_ARTIFACT_INVALID",
+                            message=f"{type(patch_error).__name__}: {patch_error}",
+                        )
+                    )
+            return [], errors

@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from miniagent.agents import AgentSpec
-from miniagent.artifacts import ArtifactRecord, ArtifactRef, ArtifactWrite
+from miniagent.artifacts import FileArtifactStore
 from miniagent.cli.application import Application, ApplicationDependencies
 from miniagent.environments import (
     Command,
@@ -89,36 +89,17 @@ class FinalizationWorkspace:
         self.destroyed = True
 
 
-class RecordingArtifactStore:
-    def __init__(self, *, fail: bool = False) -> None:
-        self.fail = fail
-
-    async def put(self, request: ArtifactWrite, content: bytes) -> ArtifactRef:
-        if self.fail:
-            raise RuntimeError("manifest failed")
-        return ArtifactRef(
-            artifact_id=uuid4(),
-            uri="file:///artifact",
-            type=request.type,
-            media_type=request.media_type,
-            size_bytes=len(content),
-            sha256="a" * 64,
-        )
-
-    async def read(self, ref: ArtifactRef) -> bytes:
-        raise AssertionError("not used")
-
-    async def get_record(self, ref: ArtifactRef) -> ArtifactRecord:
-        raise AssertionError("not used")
-
-    async def list_for_run(self, run_id: UUID) -> list[ArtifactRecord]:
-        raise AssertionError("not used")
+def make_artifact_store(tmp_path: Path, *, fail: bool = False) -> FileArtifactStore:
+    root = tmp_path / f"artifacts-{uuid4()}"
+    if fail:
+        root.write_text("not a directory")
+    return FileArtifactStore(root)
 
 
 async def make_application(
     tmp_path: Path,
     workspace: FinalizationWorkspace,
-    artifact_store: RecordingArtifactStore,
+    artifact_store: FileArtifactStore,
     provider: ModelProvider | None = None,
 ) -> Application:
     run_store = SQLiteRunStore(tmp_path / f"{uuid4()}.sqlite3")
@@ -185,7 +166,7 @@ async def test_finalization_failure_preserves_success_and_workspace(
     application = await make_application(
         tmp_path,
         workspace,
-        RecordingArtifactStore(fail=artifact_error),
+        make_artifact_store(tmp_path, fail=artifact_error),
     )
 
     result = await application.run(CancellationToken())
@@ -202,7 +183,7 @@ async def test_destroy_failure_is_reported_without_losing_result(
     application = await make_application(
         tmp_path,
         workspace,
-        RecordingArtifactStore(),
+        make_artifact_store(tmp_path),
     )
 
     result = await application.run(CancellationToken())
@@ -219,7 +200,7 @@ async def test_task_cancellation_propagates_and_preserves_workspace(
     application = await make_application(
         tmp_path,
         workspace,
-        RecordingArtifactStore(),
+        make_artifact_store(tmp_path),
         CancellingProvider(),
     )
 

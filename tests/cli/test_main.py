@@ -227,6 +227,7 @@ def test_successful_run_prints_persisted_patch_location(
         patch_artifact=ArtifactRef(
             artifact_id=uuid4(),
             uri="file:///artifacts/changes.patch",
+            type="workspace_patch",
         ),
     )
 

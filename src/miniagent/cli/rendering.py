@@ -46,7 +46,7 @@ def print_run_result(
 
     typer.echo(f"Agent stopped: {result.reason}", err=True)
     if result.error is not None:
-        typer.echo(result.error.message, err=True)
+        typer.echo(result.error.message[:4096], err=True)
     print_patch_artifact(patch_artifact)
     raise typer.Exit(code=failure_exit_code)
 
@@ -62,7 +62,9 @@ def print_application_result(
     print_run_result(
         result.run_result,
         failure_exit_code=failure_exit_code,
-        patch_artifact=(result.artifacts[0] if result.artifacts else None),
+        patch_artifact=next(
+            (ref for ref in result.artifacts if ref.type == "workspace_patch"), None
+        ),
     )
     if run_succeeded and result.finalization_errors:
         _print_finalization_errors(result)
@@ -72,6 +74,8 @@ def print_application_result(
 def _print_finalization_errors(result: ApplicationResult) -> None:
     for error in result.finalization_errors:
         typer.echo(
-            f"Finalization failed ({error.stage}, {error.code}): {error.message}",
+            f"Finalization failed ({error.stage}, {error.code}): {error.message}"[
+                :4096
+            ],
             err=True,
         )
