@@ -1,4 +1,3 @@
-import json
 import os
 import subprocess
 import sys
@@ -8,60 +7,81 @@ import pytest
 
 
 @pytest.fixture
-def trigger_environment(tmp_path: Path) -> dict[str, str]:
-    executable = tmp_path / "miniagent"
-    executable.write_text(
-        f"#!{sys.executable}\n"
-        "import json, sys\n"
-        "print(json.dumps(sys.argv[1:]))\n"
-        "sys.exit(17)\n"
+def trigger_environment(
+    tmp_path: Path,
+    prepared_bundle: Path,
+    docker_cli: Path,
+    harness_executable: Path,
+) -> dict[str, str]:
+    limits = tmp_path / "limits.toml"
+    limits.write_text("models = []\n")
+    return {
+        **os.environ,
+        "OPENAI_API_KEY": "test",
+        "OPENAI_BASE_URL": "https://example.test",
+        "SWEBENCH_DATA_ROOT": str(prepared_bundle),
+        "SWEBENCH_WORK_ROOT": str(tmp_path / "runs"),
+        "SWEBENCH_EXECUTABLE": str(harness_executable),
+        "EVALUATION_DOCKER_EXECUTABLE": str(docker_cli),
+        "MODEL_LIMITS_FILE": str(limits),
+        "RUN_DATABASE_PATH": str(tmp_path / "journal.sqlite3"),
+    }
+
+
+def test_trigger_passes_task_context_to_real_bootstrap(
+    tmp_path: Path, prepared_bundle: Path
+) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "trigger",
+            "--instance-id",
+            "pydata__xarray-3677",
+            "--model",
+            "deepseek-v4-pro-0813",
+        ],
+        env={
+            **os.environ,
+            "OPENAI_API_KEY": "test",
+            "OPENAI_BASE_URL": "https://example.test",
+            "SWEBENCH_DATA_ROOT": str(prepared_bundle),
+            "RUN_DATABASE_PATH": str(tmp_path / "journal.sqlite3"),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
     )
-    executable.chmod(0o755)
-    return {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+
+    assert result.returncode == 1
+    assert "TASK_NOT_READY: pydata__xarray-3677" in result.stderr
+    assert not (tmp_path / "journal.sqlite3").exists()
 
 
 @pytest.mark.parametrize(
-    ("instance_id",),
+    ("instance_id", "error"),
     [
-        ("astropy__astropy-12907",),
-        ("django__django-11477",),
-        ("pytest-dev__pytest-7571",),
-        ("sympy__sympy-13647",),
-        ("pydata__xarray-3677",),
+        ("astropy__astropy-12907", "TASK_NOT_READY: astropy__astropy-12907"),
+        ("django__django-11477", "missing model limits: qwen/deepseek-v4-pro"),
+        ("pytest-dev__pytest-7571", "TASK_NOT_READY: pytest-dev__pytest-7571"),
+        ("sympy__sympy-13647", "TASK_NOT_READY: sympy__sympy-13647"),
+        ("pydata__xarray-3677", "TASK_NOT_READY: pydata__xarray-3677"),
     ],
 )
-def test_trigger_launches_selected_development_task(
-    instance_id: str, trigger_environment: dict[str, str]
+def test_trigger_prepares_selected_development_task(
+    instance_id: str, error: str, trigger_environment: dict[str, str]
 ) -> None:
-    manifest = json.loads(Path("docs/swebench-task-base.json").read_text())
-    task = next(
-        task for task in manifest["tasks"] if task["instance_id"] == instance_id
-    )
-
     result = subprocess.run(
         [sys.executable, "trigger", "--instance-id", instance_id],
         env=trigger_environment,
         capture_output=True,
         text=True,
         check=False,
+        timeout=10,
     )
 
-    assert result.returncode == 17, result.stderr
-    arguments = json.loads(result.stdout)
-    assert arguments == [
-        (
-            "Reproduce the problem, implement the minimal fix, and run the relevant tests."
-            f"\n\n{task['problem_statement']}"
-        ),
-        "--workspace",
-        "docker",
-        "--docker-image",
-        task["image"],
-        "--model",
-        "deepseek-v4-pro",
-    ]
-    if task["hints_text"]:
-        assert task["hints_text"] not in arguments[0]
+    assert result.returncode == 1
+    assert error in result.stderr
 
 
 def test_trigger_overrides_default_model(trigger_environment: dict[str, str]) -> None:
@@ -70,7 +90,7 @@ def test_trigger_overrides_default_model(trigger_environment: dict[str, str]) ->
             sys.executable,
             "trigger",
             "--instance-id",
-            "astropy__astropy-12907",
+            "django__django-11477",
             "--model",
             "another-model",
         ],
@@ -78,10 +98,11 @@ def test_trigger_overrides_default_model(trigger_environment: dict[str, str]) ->
         capture_output=True,
         text=True,
         check=False,
+        timeout=10,
     )
 
-    assert result.returncode == 17, result.stderr
-    assert json.loads(result.stdout)[-2:] == ["--model", "another-model"]
+    assert result.returncode == 1
+    assert "missing model limits: qwen/another-model" in result.stderr
 
 
 @pytest.mark.parametrize(

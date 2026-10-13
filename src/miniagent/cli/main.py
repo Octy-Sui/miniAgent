@@ -15,7 +15,10 @@ from miniagent.cli.bootstrap import BootstrapConfig, bootstrap
 from miniagent.cli.console_approval import ConsoleApprovalHandler
 from miniagent.cli.rendering import print_application_result
 from miniagent.environments import WorkspaceKind
-from miniagent.evaluation.swebench_data import EvaluationPreparationError
+from miniagent.evaluation.swebench_data import (
+    EvaluationPreparationError,
+    SWEbenchTaskContext,
+)
 from miniagent.models.config import ModelTarget
 from miniagent.runtime import CancellationToken
 
@@ -80,6 +83,8 @@ def parse_config(
     model: str | None,
     workspace: WorkspaceKind | None,
     docker_image: str | None,
+    *,
+    swebench_task: SWEbenchTaskContext | None = None,
 ) -> BootstrapConfig:
     agent = DEFAULT_AGENT
     if model is not None:
@@ -98,6 +103,7 @@ def parse_config(
         workspace_kind=workspace,
         docker_image=docker_image,
         approval_handler=ConsoleApprovalHandler(),
+        swebench_task=swebench_task,
     )
 
 
@@ -106,8 +112,12 @@ async def main(
     model: str | None = None,
     workspace: WorkspaceKind | None = None,
     docker_image: str | None = None,
+    *,
+    swebench_task: SWEbenchTaskContext | None = None,
 ) -> None:
-    config = parse_config(task, model, workspace, docker_image)
+    config = parse_config(
+        task, model, workspace, docker_image, swebench_task=swebench_task
+    )
 
     try:
         application = await bootstrap(config)

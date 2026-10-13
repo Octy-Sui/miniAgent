@@ -1,11 +1,16 @@
 #!/usr/bin/env -S uv run python
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Annotated, Literal
 
 import typer
 from pydantic import BaseModel, Field
+
+from miniagent.cli.main import main as run_agent
+from miniagent.environments import WorkspaceKind
+from miniagent.evaluation.swebench_data import SWEbenchTaskContext
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 app = typer.Typer()
@@ -54,25 +59,20 @@ def main(
 
     os.chdir(PROJECT_ROOT)
     try:
-        os.execvp(
-            "miniagent",
-            [
-                "miniagent",
-                (
+        asyncio.run(
+            run_agent(
+                task=(
                     "Reproduce the problem, implement the minimal fix, "
                     f"and run the relevant tests.\n\n{task.problem_statement}"
                 ),
-                "--workspace",
-                "docker",
-                "--docker-image",
-                task.image,
-                "--model",
-                model,
-            ],
+                workspace=WorkspaceKind.DOCKER,
+                docker_image=task.image,
+                model=model,
+                swebench_task=SWEbenchTaskContext(instance_id=task.instance_id),
+            )
         )
-    except OSError as exc:
-        typer.echo(f"Cannot launch miniagent: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
+    except KeyboardInterrupt:
+        raise typer.Exit(code=130) from None
 
 
 if __name__ == "__main__":
