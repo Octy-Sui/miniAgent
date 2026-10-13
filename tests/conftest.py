@@ -1,4 +1,8 @@
+import hashlib
+import json
 import sys
+from importlib.resources import files
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -53,3 +57,285 @@ elif "diff" in args:
         image_id="image",
         base_revision="actual-base",
     )
+
+
+@pytest.fixture
+def prepared_bundle(tmp_path: Path) -> Path:
+    support = json.loads(
+        files("miniagent.evaluation")
+        .joinpath("data/swebench-verified-25.json")
+        .read_bytes()
+    )
+    root = tmp_path / "prepared"
+    root.mkdir()
+    records = [
+        {
+            "instance_id": task["instance_id"],
+            "repo": task["repo"],
+            "version": task["version"],
+            "base_commit": task["base_commit"],
+            "image": task["image"],
+            "eval_script": "echo synthetic-tests\n",
+            "log_parser": "synthetic",
+            "eval_type": "pass_and_fail",
+            "FAIL_TO_PASS": ["f"],
+            "PASS_TO_PASS": ["p"],
+        }
+        for task in support["tasks"]
+    ]
+    content = json.dumps(records).encode()
+    (root / "tasks.json").write_bytes(content)
+    instance = "django__django-11477"
+    report = json.dumps(
+        {
+            instance: {
+                "patch_exists": True,
+                "patch_is_None": False,
+                "patch_successfully_applied": True,
+                "resolved": True,
+                "infra_failure": False,
+                "tests_status": {
+                    "FAIL_TO_PASS": {"success": ["f"], "failure": []},
+                    "PASS_TO_PASS": {"success": ["p"], "failure": []},
+                },
+            }
+        }
+    ).encode()
+    (root / "preflight.json").write_bytes(report)
+    manifest = {
+        "ready": False,
+        "harness_version": "5.0.2",
+        "task_base_sha256": support["task_base_sha256"],
+        "sources": support["sources"],
+        "validation": {
+            "task_count": 25,
+            "make_test_spec": "25/25 passed",
+            "source_digests": "verified",
+        },
+        "outputs": {
+            "tasks.json": {"sha256": hashlib.sha256(content).hexdigest(), "count": 25}
+        },
+        "tasks": [
+            {
+                "instance_id": task["instance_id"],
+                "selection": task["selection"],
+                "image": task["image"],
+                "gold_preflight": (
+                    {
+                        "status": "passed",
+                        "resolved": True,
+                        "report": "preflight.json",
+                        "report_sha256": hashlib.sha256(report).hexdigest(),
+                    }
+                    if task["instance_id"] == instance
+                    else {"status": "not_run", "report": None}
+                ),
+            }
+            for task in support["tasks"]
+        ],
+    }
+    (root / "manifest.json").write_text(json.dumps(manifest))
+    return root
+
+
+@pytest.fixture
+def docker_cli(tmp_path: Path) -> Path:
+    executable = tmp_path / "docker-test"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        + """import json, os, sys, time
+from pathlib import Path
+root = Path(__file__).parent
+scenario = json.loads((root / "docker-scenario.json").read_text())
+args = sys.argv[1:]
+with (root / "docker-calls.jsonl").open("a") as stream:
+    stream.write(json.dumps({"argv": args, "environment": {key: value for key, value in os.environ.items() if key.startswith("DOCKER_")}}) + "\\n")
+if scenario.get("hang"):
+    (root / "docker-started").write_text(str(os.getpid()))
+    time.sleep(30)
+if args[:2] == ["context", "show"]:
+    print(scenario.get("current", "a"))
+elif args[:2] == ["context", "inspect"]:
+    print(json.dumps([scenario["contexts"][args[2]]]))
+elif "info" in args:
+    print(scenario.get("daemon_id", "daemon-a"))
+elif "image" in args and "inspect" in args:
+    if scenario.get("image_missing"):
+        print("Error response from daemon: No such image: test", file=sys.stderr)
+        sys.exit(1)
+    print(scenario.get("image_id", "sha256:synthetic"))
+elif "container" in args and "ls" in args:
+    for item in scenario.get("containers", []):
+        print(json.dumps({"ID": item["Id"], "Names": item["Name"].lstrip("/")}))
+elif "container" in args and "inspect" in args:
+    identity = args[-1]
+    print(json.dumps([item for item in scenario.get("containers", []) if item["Id"] == identity]))
+elif "container" in args and "rm" in args:
+    if scenario.get("delete_fail"):
+        print("delete failed", file=sys.stderr)
+        sys.exit(1)
+    scenario["containers"] = [item for item in scenario.get("containers", []) if item["Id"] != args[-1]]
+    (root / "docker-scenario.json").write_text(json.dumps(scenario))
+else:
+    sys.exit(2)
+"""
+    )
+    executable.chmod(0o755)
+    (tmp_path / "docker-scenario.json").write_text(
+        json.dumps(
+            {
+                "contexts": {
+                    "a": {
+                        "Endpoints": {
+                            "docker": {
+                                "Host": "unix:///private/tmp/daemon-a.sock",
+                                "SkipTLSVerify": False,
+                            }
+                        },
+                        "TLSMaterial": {},
+                        "Storage": {"TLSPath": ""},
+                    }
+                }
+            }
+        )
+    )
+    return executable
+
+
+@pytest.fixture
+def harness_executable(tmp_path: Path) -> Path:
+    executable = tmp_path / "harness-test"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        + """import json, os, signal, subprocess, sys, time
+from pathlib import Path
+root = Path(__file__).parent
+scenario = json.loads((root / "harness-scenario.json").read_text())
+args = sys.argv[1:]
+if args == ["--version"]:
+    print("swebench 5.0.2")
+    sys.exit(0)
+cwd = Path.cwd()
+(root / "harness-call.json").write_text(json.dumps({"argv": args, "cwd": str(cwd), "host": os.environ.get("DOCKER_HOST")}))
+task = json.loads(Path(args[1]).read_bytes())[0]
+prediction = json.loads(Path(args[args.index("--predictions") + 1]).read_bytes())
+run = args[args.index("--run-id") + 1]
+instance = task["instance_id"]
+directory = cwd / "logs/run_evaluation" / run / prediction["model_name_or_path"] / instance
+directory.mkdir(parents=True)
+patch = prediction["model_patch"].encode()
+(directory / "patch.diff").write_bytes(patch if scenario.get("mode") != "wrong_patch" else b"wrong")
+(directory / "test_output.txt").write_text("synthetic tests")
+(directory / "run_instance.log").write_text("synthetic log")
+report = {instance: {"patch_exists": True, "patch_is_None": False, "patch_successfully_applied": True,
+    "resolved": True, "infra_failure": False, "tests_status": {
+        "FAIL_TO_PASS": {"success": task["FAIL_TO_PASS"], "failure": []},
+        "PASS_TO_PASS": {"success": task["PASS_TO_PASS"], "failure": []}}}}
+mode = scenario.get("mode", "pass")
+if mode == "unresolved":
+    report[instance]["resolved"] = False
+    report[instance]["tests_status"]["FAIL_TO_PASS"] = {"success": [], "failure": task["FAIL_TO_PASS"]}
+if mode == "wrong_task":
+    report = {"other": report[instance]}
+if mode == "string_bool":
+    report[instance]["resolved"] = "true"
+if mode == "missing_tests":
+    report[instance]["tests_status"]["FAIL_TO_PASS"]["success"] = []
+if mode not in ("missing_report", "test_timeout", "fake_timeout"):
+    (directory / "report.json").write_bytes(b"bad json" if mode == "bad_report" else json.dumps(report).encode())
+if mode == "test_timeout":
+    timeout = args[args.index("--timeout") + 1]
+    (directory / "test_output.txt").write_bytes(f"\\n\\nTimeout error: {timeout} seconds exceeded.".encode())
+if mode == "external_report":
+    outside = root / "outside-report.json"
+    outside.write_text(json.dumps(report))
+    (directory / "report.json").unlink()
+    (directory / "report.json").symlink_to(outside)
+if mode == "fake_timeout":
+    print("timeout occurred somewhere")
+if scenario.get("omit"):
+    (directory / scenario["omit"]).unlink(missing_ok=True)
+docker_path = root / "docker-scenario.json"
+docker = json.loads(docker_path.read_text())
+name = f"sweb.eval.{instance.lower()}.{run}"
+docker["containers"] = docker.get("containers", []) + [
+    {"Id": "attempt-exact", "Name": "/" + name, "Image": "sha256:actual"},
+    {"Id": "attempt-suffix", "Name": "/" + name + ".12345", "Image": "sha256:actual"},
+    {"Id": "neighbor", "Name": "/" + name + ".not-digits", "Image": "sha256:neighbor"}]
+if scenario.get("daemon_change"):
+    docker["daemon_id"] = "daemon-b"
+if scenario.get("delete_fail"):
+    docker["delete_fail"] = True
+docker_path.write_text(json.dumps(docker))
+print("harness stdout" + "x" * scenario.get("log_size", 0))
+print("harness stderr", file=sys.stderr)
+if scenario.get("block_store"):
+    path = Path(scenario["block_store"]) / "manifests" / prediction.get("unused", "blocked")
+    # The root becomes a file after inputs were read, so real publication fails.
+    content_root = Path(scenario["block_store"]) / "content"
+    content_root.rename(Path(scenario["block_store"]) / "saved-content")
+    content_root.write_text("blocked")
+if scenario.get("hang"):
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    (root / "harness-child").write_text(str(child.pid))
+    if scenario.get("ignore_term"):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    (root / "harness-started").write_text(str(os.getpid()))
+    time.sleep(30)
+sys.exit(scenario.get("exit_code", 0))
+"""
+    )
+    executable.chmod(0o755)
+    (tmp_path / "harness-scenario.json").write_text("{}")
+    return executable
+
+
+@pytest.fixture
+async def evaluation_case(tmp_path, prepared_bundle, docker_cli, harness_executable):
+    from miniagent.artifacts import ArtifactWrite
+    from miniagent.cli.settings import Settings
+    from miniagent.evaluation import CandidateOutput, EvaluationRequest
+    from miniagent.evaluation.swebench import SWEbenchEvaluator
+    from miniagent.evaluation.swebench_data import (
+        SWEbenchTaskContext,
+        load_prepared_task,
+    )
+    from miniagent.evaluation.swebench_docker import resolve_docker_connection
+
+    store = FileArtifactStore(tmp_path / "artifacts")
+    run_id = uuid4()
+    patch = await store.put(
+        ArtifactWrite(
+            run_id=run_id,
+            type="workspace_patch",
+            metadata={"submission_id": str(uuid4()), "base_revision": "agent-base"},
+        ),
+        b"diff --git a/file b/file\n",
+    )
+    prepared = load_prepared_task(
+        prepared_bundle, SWEbenchTaskContext(instance_id="django__django-11477")
+    )
+    settings = Settings(
+        _env_file=None,
+        openai_api_key="test",
+        openai_base_url="https://example.test",
+        swebench_work_root=tmp_path / "runs",
+        swebench_test_timeout_seconds=1,
+        swebench_process_timeout_seconds=5,
+        swebench_cleanup_timeout_seconds=5,
+    )
+    connection = await resolve_docker_connection(docker_cli, {})
+    evaluator = SWEbenchEvaluator(
+        artifact_store=store,
+        prepared=prepared,
+        settings=settings,
+        model_name="test-model",
+        executable=harness_executable,
+        docker_executable=docker_cli,
+        connection=connection,
+        environment={},
+    )
+    request = EvaluationRequest(
+        run_id=run_id, task="issue", candidate=CandidateOutput(text="done", patch=patch)
+    )
+    return evaluator, request, store

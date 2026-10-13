@@ -1,13 +1,27 @@
 import asyncio
 import hashlib
 import json
+import os
+import signal
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from miniagent.artifacts import ArtifactRef, ArtifactStore
-from miniagent.evaluation import EvaluationRequest
-from miniagent.evaluation.swebench_data import PreparedTask
+from miniagent.artifacts import ArtifactRef, ArtifactStore, ArtifactWrite
+from miniagent.cli.settings import Settings
+from miniagent.evaluation import EvaluationError, EvaluationRequest, EvaluationResult
+from miniagent.evaluation.swebench_data import EvaluationPreparationError, PreparedTask
+from miniagent.evaluation.swebench_docker import (
+    EvaluationDockerConnection,
+    check_daemon,
+    cleanup_containers,
+    harness_environment,
+    inspect_image,
+)
+from miniagent.evaluation.swebench_report import (
+    ReportValidationError,
+    parse_instance_report,
+)
 
 
 class EvaluationInputError(ValueError):
@@ -152,3 +166,415 @@ async def prepare_attempt(
             else "EVALUATION_ARTIFACT_FAILED"
         )
         raise EvaluationInputError(code, f"{type(exc).__name__}: {exc}") from exc
+
+
+async def _stop_harness(
+    process: asyncio.subprocess.Process | None, deadline: float
+) -> list[str]:
+    if process is None:
+        return []
+    loop = asyncio.get_running_loop()
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    waiter = asyncio.create_task(process.wait())
+    done, _ = await asyncio.wait(
+        [waiter], timeout=min(5.0, max(0.0, (deadline - loop.time()) / 2))
+    )
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    if not done:
+        done, _ = await asyncio.wait([waiter], timeout=max(0.0, deadline - loop.time()))
+    if not done:
+        waiter.cancel()
+        return [f"Harness PID/group {process.pid} not confirmed reaped"]
+    return []
+
+
+class SWEbenchEvaluator:
+    def __init__(
+        self,
+        *,
+        artifact_store: ArtifactStore,
+        prepared: PreparedTask,
+        settings: Settings,
+        model_name: str,
+        executable: Path,
+        docker_executable: Path,
+        connection: EvaluationDockerConnection,
+        environment: dict[str, str],
+    ) -> None:
+        self.artifact_store = artifact_store
+        self.prepared = prepared
+        self.settings = settings.model_copy(deep=True)
+        self.model_name = model_name
+        self.executable = executable
+        self.docker_executable = docker_executable
+        self.connection = connection
+        self.environment = harness_environment(environment.copy(), connection)
+
+    async def _judge(
+        self, attempt: EvaluationAttempt, exit_code: int
+    ) -> EvaluationError | None:
+        if exit_code:
+            return EvaluationError(
+                code="HARNESS_PROCESS_FAILED",
+                message=f"Harness exited with code {exit_code}",
+            )
+        try:
+            prefix = str(attempt.instance_directory.relative_to(attempt.directory))
+            report_path = _attempt_path(attempt, f"{prefix}/report.json")
+            if not report_path.is_file():
+                output = _attempt_path(attempt, f"{prefix}/test_output.txt")
+                marker = f"\n\nTimeout error: {self.settings.swebench_test_timeout_seconds} seconds exceeded.".encode()
+                if output.is_file() and (
+                    await asyncio.to_thread(output.read_bytes)
+                ).endswith(marker):
+                    return EvaluationError(
+                        code="EVALUATION_TEST_TIMEOUT",
+                        message="Harness test timeout marker observed",
+                    )
+                return EvaluationError(
+                    code="REPORT_MISSING", message="Instance report is missing"
+                )
+            patch_path = _attempt_path(attempt, f"{prefix}/patch.diff")
+            if (
+                not patch_path.is_file()
+                or await asyncio.to_thread(patch_path.read_bytes) != attempt.patch_bytes
+            ):
+                return EvaluationError(
+                    code="REPORT_MISMATCH",
+                    message="Harness patch differs from submission",
+                )
+            prediction = await asyncio.to_thread(
+                _attempt_path(attempt, "predictions.jsonl").read_bytes
+            )
+            if hashlib.sha256(prediction).hexdigest() != attempt.predictions_sha256:
+                return EvaluationError(
+                    code="REPORT_MISMATCH",
+                    message="Predictions changed during evaluation",
+                )
+            report = parse_instance_report(
+                await asyncio.to_thread(report_path.read_bytes),
+                instance_id=attempt.instance_id,
+                fail_to_pass=list(self.prepared.record.fail_to_pass),
+                pass_to_pass=list(self.prepared.record.pass_to_pass),
+            )
+            if not report.resolved:
+                return EvaluationError(
+                    code="TASK_UNRESOLVED", message="Candidate did not resolve the task"
+                )
+        except (EvaluationInputError, ReportValidationError) as exc:
+            return EvaluationError(code=exc.code, message=str(exc)[:4096])
+        except OSError as exc:
+            return EvaluationError(
+                code="REPORT_INVALID",
+                message=f"Cannot read report evidence: {exc}"[:4096],
+            )
+        return None
+
+    async def _cleanup(
+        self, attempt: EvaluationAttempt, process: asyncio.subprocess.Process | None
+    ) -> tuple[list[dict[str, str]], list[str]]:
+        deadline = (
+            asyncio.get_running_loop().time()
+            + self.settings.swebench_cleanup_timeout_seconds
+        )
+        diagnostics = await _stop_harness(process, deadline)
+        identities, container_diagnostics = await cleanup_containers(
+            self.docker_executable,
+            self.connection,
+            instance_id=attempt.instance_id,
+            harness_run_id=attempt.harness_run_id,
+            deadline=deadline,
+        )
+        return identities, [*diagnostics, *container_diagnostics]
+
+    async def _collect(
+        self,
+        request: EvaluationRequest,
+        attempt: EvaluationAttempt,
+        error: EvaluationError | None,
+        diagnostics: list[str],
+        cancelled: bool,
+        config: dict,
+    ) -> tuple[list[ArtifactRef], EvaluationError | None]:
+        refs = [attempt.patch_ref]
+        prefix = str(attempt.instance_directory.relative_to(attempt.directory))
+        paths = [
+            ("evaluation_predictions", "predictions.jsonl"),
+            ("evaluation_config", "evaluation-config.json"),
+            ("evaluation_stdout", "stdout.log"),
+            ("evaluation_stderr", "stderr.log"),
+            ("evaluation_report", f"{prefix}/report.json"),
+            ("evaluation_test_output", f"{prefix}/test_output.txt"),
+            ("evaluation_instance_log", f"{prefix}/run_instance.log"),
+        ]
+        deadline = (
+            asyncio.get_running_loop().time()
+            + self.settings.swebench_artifact_timeout_seconds
+        )
+        unregistered: list[str] = []
+
+        async def publish(kind: str, name: str, content: bytes) -> ArtifactRef:
+            return await self.artifact_store.put(
+                ArtifactWrite(
+                    run_id=request.run_id,
+                    type=kind,
+                    name=Path(name).name,
+                    media_type="application/json"
+                    if kind
+                    in {"evaluation_report", "evaluation_config", "evaluation_summary"}
+                    else "text/plain",
+                    metadata={
+                        "attempt_id": str(attempt.attempt_id),
+                        "instance_id": attempt.instance_id,
+                        "stage": "evaluation",
+                    },
+                ),
+                content,
+            )
+
+        def summary_bytes() -> bytes:
+            return json.dumps(
+                {
+                    "verdict": "cancelled"
+                    if cancelled
+                    else "failed"
+                    if error
+                    else "passed",
+                    "error": error.model_dump() if error else None,
+                    "message": error.message[:4096] if error else "",
+                    "run_id": str(request.run_id),
+                    "attempt_id": str(attempt.attempt_id),
+                    "instance_id": attempt.instance_id,
+                    "submission_id": attempt.submission_id,
+                    "patch_artifact_id": str(attempt.patch_ref.artifact_id),
+                    "patch_sha256": attempt.patch_ref.sha256,
+                    "diagnostics": diagnostics,
+                    "unregistered_files": unregistered,
+                    "containers": config.get("observed_containers", []),
+                }
+            ).encode()
+
+        try:
+            async with asyncio.timeout_at(deadline):
+                await asyncio.to_thread(
+                    _attempt_path(attempt, "evaluation-summary.json").write_bytes,
+                    summary_bytes(),
+                )
+                await asyncio.to_thread(
+                    _attempt_path(attempt, "evaluation-config.json").write_bytes,
+                    json.dumps(config).encode(),
+                )
+                for kind, name in paths:
+                    try:
+                        path = _attempt_path(attempt, name)
+                        if not path.is_file():
+                            if error is None and not cancelled:
+                                raise FileNotFoundError(
+                                    f"Necessary evidence missing: {name}"
+                                )
+                            continue
+                        content = await asyncio.to_thread(path.read_bytes)
+                        refs.append(await publish(kind, name, content))
+                        del content
+                    except Exception as exc:  # noqa: BLE001
+                        unregistered.append(name)
+                        diagnostics.append(
+                            f"Cannot register {name}: {type(exc).__name__}: {exc}"[
+                                :4096
+                            ]
+                        )
+                        if error is None and not cancelled:
+                            error = EvaluationError(
+                                code="EVALUATION_ARTIFACT_FAILED",
+                                message=f"Necessary evidence could not be registered: {name}",
+                            )
+                content = summary_bytes()
+                await asyncio.to_thread(
+                    _attempt_path(attempt, "evaluation-summary.json").write_bytes,
+                    content,
+                )
+                refs.append(
+                    await publish(
+                        "evaluation_summary", "evaluation-summary.json", content
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001
+            diagnostics.append(
+                f"Evidence collection incomplete at {attempt.directory}: {type(exc).__name__}: {exc}"[
+                    :4096
+                ]
+            )
+            if error is None and not cancelled:
+                error = EvaluationError(
+                    code="EVALUATION_ARTIFACT_FAILED", message=diagnostics[-1]
+                )
+        return refs, error
+
+    async def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+        try:
+            attempt = await prepare_attempt(
+                request,
+                prepared=self.prepared,
+                artifact_store=self.artifact_store,
+                work_root=self.settings.swebench_work_root,
+                model_name=self.model_name,
+                timeout_seconds=self.settings.swebench_artifact_timeout_seconds,
+            )
+        except EvaluationInputError as exc:
+            return EvaluationResult(
+                passed=False,
+                error=EvaluationError(code=exc.code, message=str(exc)[:4096]),
+            )
+        process: asyncio.subprocess.Process | None = None
+        cancelled: asyncio.CancelledError | None = None
+        error: EvaluationError | None = None
+        diagnostics: list[str] = []
+        config = json.loads(
+            await asyncio.to_thread(
+                _attempt_path(attempt, "evaluation-config.json").read_bytes
+            )
+        )
+        argv = [
+            str(self.executable),
+            "eval",
+            str(_attempt_path(attempt, "task.json")),
+            "--predictions",
+            str(_attempt_path(attempt, "predictions.jsonl")),
+            "--instance",
+            attempt.instance_id,
+            "--run-id",
+            attempt.harness_run_id,
+            "--workers",
+            "1",
+            "--timeout",
+            str(self.settings.swebench_test_timeout_seconds),
+            "--report-dir",
+            str(_attempt_path(attempt, "reports")),
+        ]
+        config.update(
+            {
+                "harness_executable": str(self.executable),
+                "argv": argv,
+                "daemon_id": self.connection.daemon_id,
+                "docker_connection": {
+                    "source_context": self.connection.source_context,
+                    "endpoint": self.connection.endpoint,
+                    "tls_verify": self.connection.tls_verify,
+                    "cert_path": str(self.connection.cert_path)
+                    if self.connection.cert_path
+                    else None,
+                },
+                "test_timeout_seconds": self.settings.swebench_test_timeout_seconds,
+                "process_timeout_seconds": self.settings.swebench_process_timeout_seconds,
+                "cleanup_timeout_seconds": self.settings.swebench_cleanup_timeout_seconds,
+                "artifact_timeout_seconds": self.settings.swebench_artifact_timeout_seconds,
+                "allow_image_pull": self.settings.swebench_allow_image_pull,
+            }
+        )
+        stage = "precheck"
+        deadline = (
+            asyncio.get_running_loop().time()
+            + self.settings.swebench_process_timeout_seconds
+        )
+        try:
+            async with asyncio.timeout_at(deadline):
+                await check_daemon(
+                    self.docker_executable,
+                    self.connection,
+                    timeout_seconds=min(
+                        10.0, max(0.001, deadline - asyncio.get_running_loop().time())
+                    ),
+                )
+                image_id = await inspect_image(
+                    self.docker_executable,
+                    self.connection,
+                    self.prepared.actual_image,
+                    timeout_seconds=min(
+                        10.0, max(0.001, deadline - asyncio.get_running_loop().time())
+                    ),
+                )
+                config["image_precheck_id"] = image_id
+                if image_id is None and not self.settings.swebench_allow_image_pull:
+                    raise EvaluationPreparationError(
+                        "EVALUATION_IMAGE_UNAVAILABLE", self.prepared.actual_image
+                    )
+                stage = "start"
+                with (
+                    _attempt_path(attempt, "stdout.log").open("wb") as stdout,
+                    _attempt_path(attempt, "stderr.log").open("wb") as stderr,
+                ):
+                    process = await asyncio.create_subprocess_exec(
+                        *argv,
+                        cwd=attempt.directory,
+                        env=self.environment,
+                        stdout=stdout,
+                        stderr=stderr,
+                        start_new_session=True,
+                    )
+                    stage = "process"
+                    await process.wait()
+            async with asyncio.timeout(self.settings.swebench_artifact_timeout_seconds):
+                assert process is not None and process.returncode is not None
+                error = await self._judge(attempt, process.returncode)
+        except asyncio.CancelledError as exc:
+            cancelled = exc
+        except EvaluationPreparationError as exc:
+            error = EvaluationError(code=exc.code, message=str(exc)[:4096])
+        except TimeoutError:
+            error = EvaluationError(
+                code="EVALUATION_PROCESS_TIMEOUT",
+                message="Independent evaluation exceeded its process budget",
+            )
+        except Exception as exc:  # noqa: BLE001
+            error = EvaluationError(
+                code="HARNESS_START_FAILED"
+                if stage == "start"
+                else "HARNESS_PROCESS_FAILED",
+                message=f"{type(exc).__name__}: {exc}"[:4096],
+            )
+        cleaning = asyncio.create_task(self._cleanup(attempt, process))
+        try:
+            identities, cleanup_diagnostics = await asyncio.shield(cleaning)
+        except asyncio.CancelledError as exc:
+            cancelled = cancelled or exc
+            identities, cleanup_diagnostics = await asyncio.shield(cleaning)
+        diagnostics.extend(cleanup_diagnostics)
+        config["observed_containers"] = identities
+        config["actual_image_id"] = identities[0]["image_id"] if identities else None
+        config["image_id_source"] = "container_inspect" if identities else "unobserved"
+        config["image_id_reason"] = (
+            None
+            if identities
+            else "Container was not observed; precheck ID is not actual-container proof"
+        )
+        if cleanup_diagnostics and error is None and cancelled is None:
+            error = EvaluationError(
+                code="EVALUATION_CLEANUP_FAILED", message=cleanup_diagnostics[0][:4096]
+            )
+        collecting = asyncio.create_task(
+            self._collect(
+                request, attempt, error, diagnostics, cancelled is not None, config
+            )
+        )
+        try:
+            refs, error = await asyncio.shield(collecting)
+        except asyncio.CancelledError as exc:
+            cancelled = cancelled or exc
+            refs, error = await asyncio.shield(collecting)
+        if cancelled is not None:
+            cancelled.add_note(f"Evaluation attempt retained at {attempt.directory}")
+            for diagnostic in diagnostics:
+                cancelled.add_note(diagnostic)
+            raise cancelled
+        return EvaluationResult(
+            passed=error is None,
+            output=request.candidate.text if error is None else None,
+            error=error,
+            artifacts=refs,
+        )
