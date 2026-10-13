@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sys
 from importlib.resources import files
 from pathlib import Path
 
@@ -83,3 +84,55 @@ def prepared_bundle(tmp_path: Path) -> Path:
     }
     (root / "manifest.json").write_text(json.dumps(manifest))
     return root
+
+
+@pytest.fixture
+def docker_cli(tmp_path: Path) -> Path:
+    executable = tmp_path / "docker-test"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        + """import json, os, sys, time
+from pathlib import Path
+root = Path(__file__).parent
+scenario = json.loads((root / "docker-scenario.json").read_text())
+args = sys.argv[1:]
+with (root / "docker-calls.jsonl").open("a") as stream:
+    stream.write(json.dumps({"argv": args, "environment": {key: value for key, value in os.environ.items() if key.startswith("DOCKER_")}}) + "\\n")
+if scenario.get("hang"):
+    (root / "docker-started").write_text(str(os.getpid()))
+    time.sleep(30)
+if args[:2] == ["context", "show"]:
+    print(scenario.get("current", "a"))
+elif args[:2] == ["context", "inspect"]:
+    print(json.dumps([scenario["contexts"][args[2]]]))
+elif "info" in args:
+    print(scenario.get("daemon_id", "daemon-a"))
+elif "image" in args and "inspect" in args:
+    if scenario.get("image_missing"):
+        print("Error response from daemon: No such image: test", file=sys.stderr)
+        sys.exit(1)
+    print(scenario.get("image_id", "sha256:synthetic"))
+else:
+    sys.exit(2)
+"""
+    )
+    executable.chmod(0o755)
+    (tmp_path / "docker-scenario.json").write_text(
+        json.dumps(
+            {
+                "contexts": {
+                    "a": {
+                        "Endpoints": {
+                            "docker": {
+                                "Host": "unix:///private/tmp/daemon-a.sock",
+                                "SkipTLSVerify": False,
+                            }
+                        },
+                        "TLSMaterial": {},
+                        "Storage": {"TLSPath": ""},
+                    }
+                }
+            }
+        )
+    )
+    return executable
