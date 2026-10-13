@@ -164,6 +164,20 @@ elif "image" in args and "inspect" in args:
         print("Error response from daemon: No such image: test", file=sys.stderr)
         sys.exit(1)
     print(scenario.get("image_id", "sha256:synthetic"))
+elif "container" in args and "create" in args:
+    scenario["containers"] = scenario.get("containers", []) + [{"Id": "agent-container", "Name": "/miniagent-agent", "Image": "sha256:agent"}]
+    (root / "docker-scenario.json").write_text(json.dumps(scenario))
+    print("agent-container")
+elif "container" in args and "start" in args:
+    pass
+elif "container" in args and "exec" in args:
+    if "rev-parse" in args:
+        print("a" * 40)
+    elif "diff" in args:
+        if "--name-only" in args:
+            sys.stdout.buffer.write(b"changed.txt\\0")
+        else:
+            print("diff --git a/changed.txt b/changed.txt")
 elif "container" in args and "ls" in args:
     for item in scenario.get("containers", []):
         print(json.dumps({"ID": item["Id"], "Names": item["Name"].lstrip("/")}))

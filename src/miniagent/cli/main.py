@@ -15,6 +15,7 @@ from miniagent.cli.bootstrap import BootstrapConfig, bootstrap
 from miniagent.cli.console_approval import ConsoleApprovalHandler
 from miniagent.cli.rendering import print_application_result
 from miniagent.environments import WorkspaceKind
+from miniagent.evaluation.swebench_data import EvaluationPreparationError
 from miniagent.models.config import ModelTarget
 from miniagent.runtime import CancellationToken
 
@@ -111,6 +112,9 @@ async def main(
     try:
         application = await bootstrap(config)
         result, received_signal = await run_with_signals(application)
+    except EvaluationPreparationError as exc:
+        typer.echo(str(exc)[:4096], err=True)
+        raise typer.Exit(code=1) from None
     except _ForcedSignalCancellation as exc:
         raise typer.Exit(code=_signal_exit_code(exc.received_signal)) from None
     except asyncio.CancelledError:

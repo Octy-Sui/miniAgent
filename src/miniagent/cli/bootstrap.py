@@ -2,6 +2,9 @@
 # Created: 2026-09-16 17:44:43
 # Author : octy Sui
 
+import asyncio
+import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -13,6 +16,10 @@ from miniagent.artifacts import (
 from miniagent.cli.application import (
     Application,
     ApplicationDependencies,
+)
+from miniagent.cli.candidate_submission import (
+    CandidateSubmission,
+    WorkspaceCandidateEvaluator,
 )
 from miniagent.cli.model_limits import load_model_limits
 from miniagent.cli.settings import Settings
@@ -27,6 +34,18 @@ from miniagent.environments import (
     WorkspaceKind,
 )
 from miniagent.environments.persistence import persist_workspace_spec
+from miniagent.evaluation import PassThroughEvaluator
+from miniagent.evaluation.swebench import SWEbenchEvaluator
+from miniagent.evaluation.swebench_data import (
+    EvaluationPreparationError,
+    SWEbenchTaskContext,
+    load_prepared_task,
+)
+from miniagent.evaluation.swebench_docker import (
+    inspect_image,
+    resolve_docker_connection,
+    verify_harness_version,
+)
 from miniagent.metering.pricing import load_price_config
 from miniagent.models.protocol import ModelProvider
 from miniagent.policy import (
@@ -107,10 +126,63 @@ class BootstrapConfig:
     workspace_kind: WorkspaceKind | None = None
     docker_image: str | None = None
     approval_handler: ApprovalHandler | None = None
+    swebench_task: SWEbenchTaskContext | None = None
 
 
 async def bootstrap(config: BootstrapConfig) -> Application:
     settings = Settings()
+    kind = config.workspace_kind or WorkspaceKind(settings.workspace_backend)
+    prepared = None
+    connection = None
+    executable = None
+    docker_executable = None
+    environment = {}
+    if kind is WorkspaceKind.DOCKER:
+        if config.swebench_task is None:
+            raise EvaluationPreparationError(
+                "TASK_CONTEXT_REQUIRED",
+                "Docker evaluation requires internal swebench_task context",
+            )
+        prepared = await asyncio.to_thread(
+            load_prepared_task, settings.swebench_data_root, config.swebench_task
+        )
+        environment = dict(os.environ)
+        harness_path = shutil.which(
+            settings.swebench_executable, path=environment.get("PATH")
+        )
+        if harness_path is None:
+            raise EvaluationPreparationError(
+                "HARNESS_VERSION_MISMATCH", "SWE-bench executable is unavailable"
+            )
+        executable = Path(harness_path).resolve()
+        await verify_harness_version(executable)
+        docker_path = shutil.which(
+            settings.evaluation_docker_executable, path=environment.get("PATH")
+        )
+        if docker_path is None:
+            raise EvaluationPreparationError(
+                "DOCKER_CONNECTION_INVALID", "Docker executable is unavailable"
+            )
+        docker_executable = Path(docker_path).resolve()
+        connection = await resolve_docker_connection(docker_executable, environment)
+        if (
+            await inspect_image(docker_executable, connection, prepared.actual_image)
+            is None
+            and not settings.swebench_allow_image_pull
+        ):
+            raise EvaluationPreparationError(
+                "EVALUATION_IMAGE_UNAVAILABLE", prepared.actual_image
+            )
+        try:
+            await asyncio.to_thread(
+                settings.swebench_work_root.expanduser().mkdir,
+                parents=True,
+                exist_ok=True,
+            )
+        except OSError as exc:
+            raise EvaluationPreparationError(
+                "EVALUATION_DATA_INVALID", f"Evaluation work root is unavailable: {exc}"
+            ) from exc
     limits = load_model_limits(
         settings.model_limits_file,
         config.agent.model.provider,
@@ -127,7 +199,7 @@ async def bootstrap(config: BootstrapConfig) -> Application:
     )
     run_id = uuid4()
     workspace_config = WorkspaceConfig(
-        kind=config.workspace_kind or WorkspaceKind(settings.workspace_backend),
+        kind=kind,
         run_id=run_id,
         source_dir=config.source_dir,
         settings=settings,
@@ -137,6 +209,33 @@ async def bootstrap(config: BootstrapConfig) -> Application:
     instance = await create_workspace(workspace_spec, settings)
     try:
         artifact_store = FileArtifactStore(settings.artifact_root)
+        submission = CandidateSubmission(
+            instance,
+            artifact_store,
+            timeout_seconds=settings.candidate_submission_timeout_seconds,
+            cleanup_timeout_seconds=settings.patch_export_cleanup_timeout_seconds,
+        )
+        evaluator = PassThroughEvaluator()
+        if kind is WorkspaceKind.DOCKER:
+            assert (
+                prepared is not None
+                and connection is not None
+                and executable is not None
+                and docker_executable is not None
+            )
+            evaluator = WorkspaceCandidateEvaluator(
+                submission,
+                SWEbenchEvaluator(
+                    artifact_store=artifact_store,
+                    prepared=prepared,
+                    settings=settings,
+                    model_name=agent.model.model,
+                    executable=executable,
+                    docker_executable=docker_executable,
+                    connection=connection,
+                    environment=environment,
+                ),
+            )
         run_store = SQLiteRunStore(settings.run_database_path)
         await run_store.initialize()
         return Application(
@@ -148,6 +247,9 @@ async def bootstrap(config: BootstrapConfig) -> Application:
                 provider=build_provider(agent, settings),
                 tools=build_tools(instance),
                 workspace=instance,
+                evaluator=evaluator,
+                candidate_submission=submission,
+                artifact_collection_timeout_seconds=settings.artifact_collection_timeout_seconds,
                 artifact_store=artifact_store,
                 pricing=load_price_config(settings.model_pricing_file),
                 policy_context=PolicyContext(
