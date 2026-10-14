@@ -1,5 +1,5 @@
 <!-- repo-map:start -->
-<!-- repo-map: verified-against 710ac2b | mapped 2026-09-30 -->
+<!-- repo-map: verified-against 391fa2a | mapped 2026-10-14 -->
 # Repository Orientation
 
 miniAgent 是 Python 3.13 的最小 Agent Runtime：模型在有界 Step loop 中调用工具，
@@ -13,7 +13,10 @@ Workspace 生命周期。
 (`src/miniagent/runtime/loop.py`, `src/miniagent/runtime/execution.py`) → provider + `ToolRegistry`/tools → evaluator →
 SQLite journal → `ApplicationResult` and optional patch artifact manifest. Default composition wires `QwenProvider`,
 strict tool argument validation, bounded structured tool results, `read_file`, `shell`,
-Local/Docker Workspace, and `PassThroughEvaluator`.
+Local/Docker Workspace. Local uses `PassThroughEvaluator`; Docker uses candidate patch
+submission + `SWEbenchEvaluator` (`src/miniagent/cli/candidate_submission.py`, `src/miniagent/evaluation/swebench.py`). Docker requires internal `SWEbenchTaskContext`;
+use `trigger` for development tasks, with `--model deepseek-v4-pro-0813` to match current
+limits/pricing. Plain CLI Docker selection lacks task context (`src/miniagent/cli/bootstrap.py`).
 
 SQLite Run/Event/Snapshot/Approval storage and Event Span scopes are wired into
 `AgentRuntime`. Context compaction runs at completed-Step boundaries with source
@@ -27,10 +30,10 @@ Treat `docs/blueprint.md` as roadmap, not proof of current behavior.
 ## Start here
 
 - CLI/config/composition/finalization: `src/miniagent/cli/`
+- Independent evaluation/data/harness: `src/miniagent/evaluation/`, `tests/evaluation/`
 - Run lifecycle/termination/cancellation: `src/miniagent/runtime/`
 - Model protocol/provider/pricing: `src/miniagent/models/`, `src/miniagent/providers/`, `src/miniagent/metering/`
-- Workspace isolation/tools/artifacts: `src/miniagent/environments/`,
-  `src/miniagent/tools/`, `src/miniagent/artifacts/`
+- Workspace isolation/tools/artifacts: `src/miniagent/environments/`, `src/miniagent/tools/`, `src/miniagent/artifacts/`
 - Behavioral coverage: matching domain directory under `tests/`
 - Detailed task routes and implementation status: `docs/repository-map.md`
 
@@ -42,7 +45,7 @@ terms; keep implementation details out of it. Use `docs/repository-map.md` for n
 - Tests (not rerun for this docs-only refresh): `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest -q`
 - Verified type check: `ty check`
 - After modifying Python files, run `uv run ruff check --fix <changed-files>` and `uv run ruff format <changed-files>`. Avoid project-wide lint/format unless necessary.
-- Verified CLI surface: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run miniagent --help`
+- Verified CLI surfaces: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run miniagent --help` and `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run python trigger --help`
 
 <!-- repo-map:end -->
 

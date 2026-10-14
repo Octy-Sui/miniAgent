@@ -1,25 +1,22 @@
 # miniAgent Repository Map
 
-<!-- repo-map: verified-against 710ac2b | mapped 2026-09-30 -->
+<!-- repo-map: verified-against 391fa2a | mapped 2026-10-14 -->
 
-本文件是按需读取的 implementation map。状态含义：
-
-- `wired`：已从当前 composition root 或 Run execution path 接入。
-- `contract-only`：已有类型、协议或独立实现，但当前执行链未使用。
-- `roadmap`：只在设计文档中描述。
+本文件是按需读取的 implementation map：`wired` 已接入当前执行链；
+`contract-only` 有类型/协议/独立实现但未接入；`roadmap` 仅为设计。
 
 ## What this repository is
 
 miniAgent 是 Python 3.13 的最小 Agent Runtime。当前产品路径接受一个 CLI task，
 创建隔离 Workspace，让模型在 bounded Step loop 中调用工具，输出结构化 `RunResult`，
-并把 Run/Event/Snapshot/Approval 原子持久化；Docker在评测前冻结候选patch并独立校验，Local结束时登记诊断patch，
+并把 Run/Event/Snapshot/Approval 原子持久化；Docker 在评测前提交候选 patch 并独立校验，Local 结束时登记诊断 patch，
 仅当 Run 成功且 finalization 无错误时销毁 Workspace
 （`src/miniagent/cli/application.py`, `src/miniagent/runtime/recording.py`）。
 
 ## Execution and data flow
 
 ```text
-miniagent CLI
+miniagent CLI (Local) / trigger (Docker development task + SWEbenchTaskContext)
   → BootstrapConfig / Settings → model limits → ApplicationDependencies
   → Application
     → AgentRuntime + SQLiteRunStore
@@ -53,7 +50,7 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；应用生命周期位
 | wired | Local/Docker Workspace create、execute、patch export、destroy | `src/miniagent/environments/`, `tests/environments/` |
 | wired | `read_file` and unrestricted shell fallback inside the selected Workspace | `src/miniagent/tools/`, `src/miniagent/cli/bootstrap.py` |
 | wired | Content-addressed artifacts、atomic manifest、Run query 与应用层 patch persistence | `src/miniagent/artifacts/`, `src/miniagent/cli/application.py`, `tests/artifacts/` |
-| wired | Evaluator interface with default pass-through implementation | `src/miniagent/evaluation/`, `src/miniagent/runtime/loop.py` |
+| wired | Evaluator interface；Local pass-through，Docker 独立 SWE-bench 评测 | `src/miniagent/cli/bootstrap.py`, `src/miniagent/evaluation/`, `src/miniagent/runtime/loop.py` |
 | contract-only | Workspace checkpoint/restore implementations, not orchestrated by the Run loop | `src/miniagent/environments/local.py`, `src/miniagent/environments/docker.py` |
 | wired | SQLite Run/Event/Snapshot/Approval 存储、原子提交、单 Run 连续事件序列和 recovery context 持久化 | `src/miniagent/runtime/recording.py`, `src/miniagent/storage/`, `tests/storage/test_sqlite.py` |
 | wired | Run 内 Span scope 生成与 Event scope 持久化；尚无 Trace 聚合、导出或查询界面 | `src/miniagent/runtime/trace_context.py`, `src/miniagent/runtime/events.py`, `src/miniagent/storage/sqlite.py` |
@@ -61,7 +58,7 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；应用生命周期位
 | wired | 必填模型容量/输出配置、安全 Step 边界压缩、结构化摘要来源校验、原子压缩 Event/Snapshot | `src/miniagent/cli/model_limits.py`, `src/miniagent/runtime/context.py`, `src/miniagent/runtime/journal.py`, `tests/runtime/test_compaction.py` |
 | contract-only | 压缩历史重载校验函数；产品未接入跨进程重载入口 | `src/miniagent/runtime/context.py`, `tests/runtime/test_compaction.py` |
 | wired | 测试专用压缩验收 freeze/live/report 工具；真实 Qwen 验收仍 PENDING，摘要语义质量 DEFER | `tests/acceptance/context_compaction/`, `docs/superpowers/acceptance/context-compaction-protocol.md` |
-| wired | Docker逐任务预检、唯一候选提交、独立SWE-bench 5.0.2、有界取消/清理、评测证据交付 | `src/miniagent/evaluation/swebench*.py`, `src/miniagent/cli/candidate_submission.py`, `tests/evaluation/`, `tests/integration/test_swebench_evaluation.py` |
+| wired | Docker 任务就绪校验、单次候选提交、独立 SWE-bench 5.0.2、有界取消/清理、评测证据交付 | `src/miniagent/evaluation/swebench.py`, `src/miniagent/evaluation/swebench_data.py`, `src/miniagent/evaluation/swebench_docker.py`, `src/miniagent/cli/candidate_submission.py`, `tests/evaluation/`, `tests/integration/test_swebench_evaluation.py` |
 | roadmap | 跨进程审批恢复、dashboard、批量 SWE-bench orchestration | `docs/blueprint.md`, `docs/policy-engine-design.md` |
 
 ## Task routes
@@ -73,7 +70,8 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；应用生命周期位
 | Provider request/response and error mapping | `src/miniagent/providers/qwen.py` | `src/miniagent/models/messages.py`, `src/miniagent/models/protocol.py` | `tests/providers/test_qwen.py`, `tests/models/test_protocol.py` |
 | Run state or lifecycle | `src/miniagent/runtime/state.py` | `src/miniagent/runtime/transitions.py`, `src/miniagent/runtime/execution.py`, `src/miniagent/runtime/loop.py` | `tests/runtime/test_runtime.py` |
 | Cancellation | `src/miniagent/runtime/cancellation.py` | `src/miniagent/runtime/loop.py`, `src/miniagent/cli/main.py` | `tests/runtime/test_runtime.py`, `tests/cli/test_main.py` |
-| Evaluation | `src/miniagent/evaluation/` | `src/miniagent/runtime/loop.py` | `tests/runtime/test_runtime.py`, `tests/models/test_protocol.py` |
+| Candidate submission, evaluation, delivery | `src/miniagent/cli/candidate_submission.py`, `src/miniagent/evaluation/swebench.py` | `src/miniagent/cli/application.py`, `src/miniagent/runtime/execution.py` | `tests/cli/test_candidate_submission.py`, `tests/cli/test_evaluation_delivery.py`, `tests/evaluation/` |
+| SWE-bench task entry, frozen data and preflight evidence | `trigger`, `src/miniagent/cli/bootstrap.py` | `src/miniagent/evaluation/swebench_data.py`, `src/miniagent/evaluation/swebench_docker.py`, `docs/swebench-task-base.json` | `tests/scripts/test_trigger.py`, `tests/cli/test_swebench_bootstrap.py`, `tests/integration/test_swebench_evaluation.py` |
 | Model capacity/output limits | `src/miniagent/cli/model_limits.py` | `config/model_limits.toml`, `src/miniagent/cli/bootstrap.py`, `src/miniagent/runtime/config.py` | `tests/cli/test_model_limits.py` |
 | Context compaction and evidence | `src/miniagent/runtime/context.py` | `src/miniagent/runtime/loop.py`, `src/miniagent/runtime/journal.py`, `src/miniagent/runtime/templates/compaction_v1.j2` | `tests/runtime/test_context.py`, `tests/runtime/test_compaction.py` |
 | Compaction acceptance tooling | `tests/acceptance/context_compaction/protocol.py` | `tests/acceptance/context_compaction/live.py`, `docs/superpowers/acceptance/context-compaction-protocol.md` | `tests/acceptance/context_compaction/test_protocol.py` |
@@ -99,9 +97,10 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；应用生命周期位
   bounded structured results back to the model
   (`src/miniagent/runtime/loop.py`, `src/miniagent/tools/registry.py`,
   `src/miniagent/tools/rendering.py`).
-- A model final answer becomes `SUCCEEDED/TASK_VERIFIED` only after evaluator success,
-  but the default evaluator passes the candidate through without independent checks
-  (`src/miniagent/evaluation/passthrough.py`).
+- A model final answer becomes `SUCCEEDED/TASK_VERIFIED` only after evaluator success.
+  Local passes through; Docker requires a nonempty submitted patch and matching resolved report/test evidence (`src/miniagent/cli/bootstrap.py`, `src/miniagent/evaluation/swebench_report.py`).
+- Docker bootstrap requires internal task context, prepared data/gold preflight evidence, harness 5.0.2 and Docker connectivity; image pull defaults off. Plain CLI Docker lacks task context. `trigger` selects development tasks, but its default `deepseek-v4-pro` has no current limits/pricing entry: use `--model deepseek-v4-pro-0813` (`trigger`, `src/miniagent/cli/bootstrap.py`, `config/model_limits.toml`, `config/model_pricing.toml`).
+- Candidate submission is reused by finalization; no second patch export after an attempt. Evaluation refs are on `EvaluationCompleted`; manifests feed `ApplicationResult`, and evaluation summaries are evidence checkpoints, not terminal Run verdicts (`src/miniagent/cli/candidate_submission.py`, `src/miniagent/cli/application.py`, `src/miniagent/runtime/execution.py`, `src/miniagent/evaluation/swebench.py`).
 - `--model` replaces only the model name; provider selection still comes from
   `AgentSpec.model.provider` (`src/miniagent/cli/main.py`,
   `src/miniagent/cli/bootstrap.py`).
@@ -130,11 +129,11 @@ Composition root 位于 `src/miniagent/cli/bootstrap.py`；应用生命周期位
 
 ## Build, test, and run
 
-本次 REFRESH 在 `710ac2b` 验证通过：
-
+本次 REFRESH 在 `391fa2a` 验证通过：
 ```shell
 ty check
 UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run miniagent --help
+UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run python trigger --help
 git diff --check
 ```
 
@@ -144,15 +143,10 @@ git diff --check
 压缩可聚焦 `tests/runtime/test_context.py tests/runtime/test_compaction.py tests/cli/test_model_limits.py`。
 真实模型验收须显式按 `docs/superpowers/acceptance/context-compaction-protocol.md` 执行；
 Docker 实测依赖 `MINIAGENT_DOCKER_IMAGE`（`tests/environments/test_docker.py`）。
-本次未执行真实模型、Docker 或 SWE-bench 评测；CLI help 不验证 bootstrap 或任务成功。
+真实 SWE-bench 测试须显式设置 `MINIAGENT_REAL_SWEBENCH=1`，并提供 instance/reference patch，及就绪数据、缓存镜像（`tests/integration/test_swebench_evaluation.py`）；本次未执行真实模型、Docker 或 SWE-bench 评测，也未验证外部 25-task 准备数据；help 不验证 bootstrap 或任务成功。
 
 ## Sources of truth
 
-1. Current code and behavioral tests.
-2. This map for navigation; revalidate claims before relying on them for a change.
-3. `docs/CONTEXT.md` for canonical domain language only.
-4. `README.md` for user-facing overview.
-5. `docs/blueprint.md` for intended future design, not current wiring.
-
-Use `$repo-map refresh` after entry points, dependency direction, commands, module
-ownership, or implementation status changes.
+Code and behavioral tests define current behavior; this map provides navigation.
+`docs/CONTEXT.md` defines domain language; `README.md` is the user overview;
+`docs/blueprint.md` is roadmap. Refresh after entry point, command, ownership or wiring changes.
