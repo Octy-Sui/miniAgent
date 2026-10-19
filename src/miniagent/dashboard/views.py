@@ -127,3 +127,25 @@ class EvaluationAttemptView:
     fields: tuple[FieldView, ...]
     artifact_ids: tuple[UUID, ...]
     issues: tuple[ReadIssue, ...]
+
+
+@dataclass(frozen=True)
+class DiffFileView:
+    old_path: str | None
+    new_path: str | None
+    kind: str
+    text: str
+
+
+@dataclass(frozen=True)
+class DiffView:
+    files: tuple[DiffFileView, ...]
+    complete: bool
+    issues: tuple[ReadIssue, ...]
+
+
+@dataclass(frozen=True)
+class PatchChoice:
+    artifact_id: UUID | None
+    reason: str
+    issues: tuple[ReadIssue, ...]
