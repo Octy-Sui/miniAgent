@@ -136,6 +136,7 @@ class RunExecution:
     journal: RunJournal
     trace: RunTraceContext
     _active_mark: float = field(default_factory=monotonic)
+    _tool_results: dict[int, ToolResult] = field(default_factory=dict)
     pending_approval_resolution: _PendingApprovalResolution | None = None
     pending_evaluation_result: _PendingEvaluationResult | None = None
 
@@ -630,10 +631,28 @@ class RunExecution:
         self.state = next_state
         self.trace = next_trace
 
-    async def complete_tool_step(
-        self,
-        results: list[ToolResult],
-    ) -> RunTermination | None:
+    async def complete_tool_step(self) -> RunTermination | None:
+        batch = self.state.execution.tool_batch
+        if batch is None or batch.next_index != len(batch.calls):
+            raise ValueError("Tool step cannot finish before every call completes")
+        store = self.journal.recorder.store
+        if store is not None:
+            facts = await store.list_tool_results(
+                self.state.identity.run_id,
+                step_number=self.state.execution.steps_started,
+            )
+            results = [fact.result for fact in facts]
+        else:
+            if sorted(self._tool_results) != list(range(len(batch.calls))):
+                raise ValueError(
+                    "In-process tool results do not cover the complete batch"
+                )
+            results = [self._tool_results[index] for index in range(len(batch.calls))]
+        if len(results) != len(batch.calls) or any(
+            result.tool_call_id != call.id
+            for result, call in zip(results, batch.calls, strict=True)
+        ):
+            raise ValueError("Tool results do not match the complete batch")
         failed = tool_step_failed(results)
         next_state = advance_tool_step(self.state, failed=failed)
         next_trace = deepcopy(self.trace)
@@ -650,6 +669,7 @@ class RunExecution:
             next_state,
             [event],
         )
+        self._tool_results.clear()
         self.state = next_state
         self.trace = next_trace
         if (
@@ -821,6 +841,8 @@ class RunExecution:
             next_state,
             events,
         )
+        if self.journal.recorder.store is None:
+            self._tool_results[correlation.call_index] = result.model_copy(deep=True)
         self.state = next_state
         self.trace = next_trace
 

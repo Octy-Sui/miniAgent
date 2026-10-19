@@ -32,10 +32,12 @@ from tests.storage.test_sqlite import make_decision, make_state
 
 async def waiting_case(
     path: Path,
+    *,
+    state: RunState | None = None,
 ) -> tuple[SQLiteRunStore, RunExecution, ApprovalRequest]:
     store = SQLiteRunStore(path)
     await store.initialize()
-    state = make_state()
+    state = state or make_state()
     execution = await RunExecution.start(
         state,
         RunJournal(

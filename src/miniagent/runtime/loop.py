@@ -175,7 +175,6 @@ class AgentRuntime:
             approval=approval,
             cancellation_token=self.cancellation_token,
         )
-        results = None
         try:
             while True:
                 execution.account_active_time()
@@ -199,26 +198,13 @@ class AgentRuntime:
                     tool_outcome = await tools.execute(
                         execution, agent, execution.state.execution.tool_batch
                     )
-                    results = tool_outcome.results
                     outcome = (
                         TerminateRun(tool_outcome.termination)
                         if tool_outcome.termination
                         else ContinueRun()
                     )
                 elif phase is ExecutionPhase.COMPLETE_STEP:
-                    if results is None:
-                        store = execution.journal.recorder.store
-                        if store is None:
-                            raise ValueError(
-                                "Completed batch recovery requires persisted tool results"
-                            )
-                        facts = await store.list_tool_results(
-                            execution.state.identity.run_id,
-                            step_number=execution.state.execution.steps_started,
-                        )
-                        results = [fact.result for fact in facts]
-                    termination = await execution.complete_tool_step(results)
-                    results = None
+                    termination = await execution.complete_tool_step()
                     outcome = (
                         TerminateRun(termination) if termination else ContinueRun()
                     )

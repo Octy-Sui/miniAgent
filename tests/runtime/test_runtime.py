@@ -325,7 +325,7 @@ class TestRunExecution:
         trace_snapshot = deepcopy(previous_trace)
 
         with pytest.raises(RuntimeError, match="commit failed"):
-            await execution.complete_tool_step([])
+            await execution.complete_tool_step()
 
         assert execution.state is previous_state
         assert execution.state == state_snapshot
