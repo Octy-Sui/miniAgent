@@ -60,10 +60,11 @@ async def test_started_or_completed_uncertain_error_exits_without_more_work(
 
 
 async def test_missing_key_after_started_keeps_recovering_and_records_failure(
-    resume_case, monkeypatch
+    resume_case, monkeypatch, tmp_path
 ):
     application, _execution, provider = resume_case
     deps = application.dependencies
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("OPENAI_API_KEY")
     with pytest.raises(ResumeRejected):
         await resume_application(
@@ -151,7 +152,7 @@ async def test_killed_after_started_reenters_original_business_source(resume_cas
     ("action",), [("applied_then_error",), ("not_dispatched_then_error",)]
 )
 async def test_resume_failed_commit_uncertainty_stops_without_diagnostics(
-    resume_case, monkeypatch, action
+    resume_case, monkeypatch, action, tmp_path
 ):
     from miniagent.cli import resume as module
 
@@ -167,6 +168,7 @@ async def test_resume_failed_commit_uncertainty_stops_without_diagnostics(
             SQLiteRunStore(path, **kwargs) if kwargs.get("read_only") else boundary
         ),
     )
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("OPENAI_API_KEY")
     with pytest.raises(RunPersistenceError):
         await resume_application(
