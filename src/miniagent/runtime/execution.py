@@ -1,18 +1,20 @@
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from time import monotonic
-from typing import Literal
+from typing import Literal, Protocol
 from uuid import UUID, uuid4
 
-from miniagent.artifacts import ArtifactRef
 from miniagent.environments.managed_execution import (
     ExecutionEvidence,
     ExecutionIdentity,
     ExecutionObserver,
     ManagedExecutionError,
 )
-from miniagent.evaluation import CandidateOutput
+from miniagent.evaluation import CandidateOutput, EvaluationResult
 from miniagent.metering.usage import RequestCost, add_request_usage
 from miniagent.models.messages import ToolMessage
 from miniagent.models.protocol import ModelResponse
@@ -32,7 +34,9 @@ from miniagent.runtime.events import (
     CompactionFailed,
     CompactionRequested,
     EvaluationCompleted,
+    EvaluationResultRecorded,
     EvaluationStart,
+    EventPayload,
     ModelRequested,
     ModelResponded,
     OperationExecutionEnded,
@@ -50,7 +54,9 @@ from miniagent.runtime.events import (
 )
 from miniagent.runtime.journal import RunJournal
 from miniagent.runtime.progress import (
+    ComponentEnvelope,
     CurrentStep,
+    EvaluationProgress,
     ExecutionPhase,
     OperationRef,
     RequestProgress,
@@ -93,6 +99,35 @@ from miniagent.tools.contracts import ToolResult
 from miniagent.tools.rendering import render_tool_result
 
 
+class EvaluationObserver(Protocol):
+    @property
+    def progress(self) -> EvaluationProgress: ...
+
+    async def record(
+        self, payload: EventPayload, *, component: ComponentEnvelope | None = None
+    ) -> None: ...
+
+    def execution_observer(self, attempt_id: UUID) -> ExecutionObserver: ...
+
+
+_EVALUATION_OBSERVER: ContextVar[EvaluationObserver | None] = ContextVar(
+    "miniagent_evaluation_observer", default=None
+)
+
+
+@contextmanager
+def evaluation_scope(observer: EvaluationObserver) -> Iterator[None]:
+    token = _EVALUATION_OBSERVER.set(observer)
+    try:
+        yield
+    finally:
+        _EVALUATION_OBSERVER.reset(token)
+
+
+def current_evaluation_observer() -> EvaluationObserver | None:
+    return _EVALUATION_OBSERVER.get()
+
+
 @dataclass(frozen=True, slots=True)
 class RunTermination:
     status: RunStatus
@@ -124,21 +159,14 @@ class _PendingApprovalResolution:
 
 
 @dataclass(slots=True)
-class _PendingEvaluationResult:
-    passed: bool
-    final_output: str | None
-    artifacts: tuple[ArtifactRef, ...] = ()
-
-
-@dataclass(slots=True)
 class RunExecution:
     state: RunState
     journal: RunJournal
     trace: RunTraceContext
     _active_mark: float = field(default_factory=monotonic)
     _tool_results: dict[int, ToolResult] = field(default_factory=dict)
+    _ended_executions: dict[UUID, ExecutionEvidence] = field(default_factory=dict)
     pending_approval_resolution: _PendingApprovalResolution | None = None
-    pending_evaluation_result: _PendingEvaluationResult | None = None
 
     @classmethod
     async def start(
@@ -162,6 +190,8 @@ class RunExecution:
             operation = state.execution.active_operation
             if operation is not None and operation.kind == "model":
                 trace.begin_model()
+        if state.lifecycle.status is RunStatus.EVALUATING:
+            trace.begin_evaluation()
         return cls(state=state, journal=journal, trace=trace)
 
     def account_active_time(self) -> None:
@@ -683,33 +713,184 @@ class RunExecution:
         )
 
     async def begin_evaluation(self, candidate_output: str) -> None:
-        next_state = transition_to_evaluation(self.state, candidate_output)
+        next_state = self.state
         next_trace = deepcopy(self.trace)
-        event = next_trace.step_event(
-            StepCompleted(failed=False, candidate_output=True)
+        events = []
+        if self.state.execution.current_step is not None:
+            next_state = transition_to_evaluation(self.state, candidate_output)
+            events.append(
+                next_trace.step_event(
+                    StepCompleted(failed=False, candidate_output=True)
+                )
+            )
+            next_trace.end_step()
+        if not next_trace.has_evaluation:
+            next_trace.begin_evaluation()
+        attempt_id = uuid4()
+        event = next_trace.evaluation_event(EvaluationStart(attempt_id=attempt_id))
+        events.append(event)
+        record = self.journal.recorder.record
+        operation = OperationRef(
+            kind="evaluation",
+            attempt_id=attempt_id,
+            started_event_id=event.event_id,
+            started_sequence=(record.last_event_sequence if record else 0)
+            + len(events),
         )
-        next_trace.end_step()
-        next_trace.begin_evaluation()
-        evaluation_start = next_trace.evaluation_event(EvaluationStart())
-        await self.journal.complete_step(
-            next_state,
-            [event, evaluation_start],
+        next_state = next_state.model_copy(
+            update={
+                "execution": next_state.execution.model_copy(
+                    update={"active_operation": operation}
+                )
+            }
         )
-        self.state = next_state
-        self.trace = next_trace
+        if len(events) > 1:
+            await self.journal.complete_step(next_state, events)
+        else:
+            await self.journal.record_activity(next_state, events)
+        self.state, self.trace = next_state, next_trace
 
-    def stage_evaluation_result(
-        self,
-        *,
-        passed: bool,
-        final_output: str | None = None,
-        artifacts: list[ArtifactRef] | None = None,
+    def evaluation_observer(self) -> EvaluationObserver:
+        return _EvaluationObserver(self)
+
+    async def _require_operation_ended(self) -> None:
+        operation = self.state.execution.active_operation
+        if operation is None or not operation.executions:
+            return
+        store = self.journal.recorder.store
+        evidence = dict(self._ended_executions)
+        if store is not None:
+            evidence = {}
+            for event in await store.list_events(
+                self.state.identity.run_id, after_sequence=operation.started_sequence
+            ):
+                payload = event.payload
+                if (
+                    isinstance(payload, OperationExecutionIdentified)
+                    and payload.attempt_id == operation.attempt_id
+                ):
+                    evidence.pop(payload.identity.execution_id, None)
+                elif (
+                    isinstance(payload, OperationExecutionEnded)
+                    and payload.attempt_id == operation.attempt_id
+                ):
+                    evidence[payload.evidence.execution_id] = payload.evidence
+        for identity in operation.executions:
+            item = evidence.get(identity.execution_id)
+            if (
+                item is None
+                or item.identity != identity
+                or item.outcome != "ended"
+                or not item.group_ended
+                or not item.issuer_ended
+            ):
+                raise ManagedExecutionError(
+                    "Operation execution chain end is unconfirmed"
+                )
+
+    async def record_component_fact(
+        self, payload: EventPayload, *, component: ComponentEnvelope | None = None
     ) -> None:
-        self.pending_evaluation_result = _PendingEvaluationResult(
-            passed=passed,
-            final_output=final_output,
-            artifacts=tuple(artifacts or ()),
+        await self._require_operation_ended()
+        kind = payload.type.value
+        progress = self.state.execution.evaluation
+        operation = self.state.execution.active_operation
+        if kind.startswith("candidate_submission_"):
+            operation_kind = "patch_export"
+            if component is not None:
+                if component.kind != "candidate_submission":
+                    raise ValueError("Candidate component envelope kind differs")
+                progress = progress.model_copy(update={"submission": component})
+        elif kind.startswith("evaluation_attempt_"):
+            operation_kind = "evaluation"
+            if component is not None:
+                if component.kind != "swebench_attempt":
+                    raise ValueError("Evaluation component envelope kind differs")
+                progress = progress.model_copy(update={"attempt": component})
+        else:
+            raise ValueError("Unsupported evaluation component fact")
+        event = self.trace.evaluation_event(payload)
+        if kind.endswith("_started"):
+            record = self.journal.recorder.record
+            attempt_id = getattr(payload, "attempt_id", None)
+            if not isinstance(attempt_id, UUID):
+                raise ValueError("Component started fact requires attempt_id")
+            operation = OperationRef(
+                kind=operation_kind,
+                attempt_id=attempt_id,
+                started_event_id=event.event_id,
+                started_sequence=record.last_event_sequence + 1 if record else 1,
+                component=component,
+            )
+        elif kind.endswith(("_committed", "_failed", "_interrupted")):
+            operation = None
+        state = self.state.model_copy(
+            update={
+                "execution": self.state.execution.model_copy(
+                    update={"evaluation": progress, "active_operation": operation}
+                )
+            }
         )
+        await self.journal.record_activity(state, [event])
+        self.state = state
+
+    async def record_evaluation_result(self, result: EvaluationResult) -> None:
+        await self._require_operation_ended()
+        if self.state.execution.evaluation.result is not None:
+            raise ValueError("Evaluation result is already committed")
+        operation = self.state.execution.active_operation
+        if operation is None or operation.kind != "evaluation":
+            raise ValueError("Evaluation result requires current evaluation attempt")
+        output = (
+            (
+                result.output
+                if result.output is not None
+                else self.state.lifecycle.candidate_output
+            )
+            if result.passed
+            else None
+        )
+        decision = TerminationDecision(
+            status="succeeded" if result.passed else "failed",
+            reason=TerminationReason.TASK_VERIFIED
+            if result.passed
+            else TerminationReason.EVALUATION_FAILED,
+            error=RunError(
+                code=result.error.code,
+                message=result.error.message,
+                retryable=result.error.retryable,
+            )
+            if result.error
+            else None,
+            final_output=output,
+        )
+        state = self.state.model_copy(
+            update={
+                "execution": self.state.execution.model_copy(
+                    update={
+                        "evaluation": self.state.execution.evaluation.model_copy(
+                            update={"result": result.model_copy(deep=True)}
+                        ),
+                        "active_operation": None,
+                        "phase": ExecutionPhase.TERMINATE,
+                        "response_disposition": TerminateDisposition(decision=decision),
+                    }
+                )
+            }
+        )
+        state = RunState.model_validate(state.model_dump(mode="python"))
+        await self.journal.record_activity(
+            state,
+            [
+                self.trace.evaluation_event(
+                    EvaluationResultRecorded(
+                        attempt_id=operation.attempt_id, result=result
+                    ),
+                    artifacts=result.artifacts,
+                )
+            ],
+        )
+        self.state = state
 
     async def begin_tool(
         self,
@@ -791,6 +972,7 @@ class RunExecution:
         return operation.attempt_id
 
     async def complete_tool(self, result: ToolResult) -> None:
+        await self._require_operation_ended()
         message = ToolMessage(
             tool_call_id=result.tool_call_id,
             content=render_tool_result(
@@ -947,14 +1129,20 @@ class RunExecution:
             )
             pending = _PendingApprovalResolution(resolution=resolution)
 
-        evaluation = self.pending_evaluation_result
+        persisted_result = self.state.execution.evaluation.result
+        disposition = self.state.execution.response_disposition
+        final_output = (
+            disposition.decision.final_output
+            if isinstance(disposition, TerminateDisposition)
+            else None
+        )
         next_state = finish_state(
             self.state,
             termination.status,
             termination.reason,
             error=termination.error,
             approval_resolution=(pending.resolution if pending is not None else None),
-            final_output=(evaluation.final_output if evaluation is not None else None),
+            final_output=final_output,
         )
         next_trace = deepcopy(self.trace)
         events = []
@@ -972,11 +1160,13 @@ class RunExecution:
                 )
             )
             next_trace.end_approval()
-        if evaluation is not None:
+        if persisted_result is not None:
             events.append(
                 next_trace.evaluation_event(
-                    EvaluationCompleted(passed=evaluation.passed),
-                    artifacts=list(evaluation.artifacts),
+                    EvaluationCompleted(
+                        passed=persisted_result.passed, result=persisted_result
+                    ),
+                    artifacts=persisted_result.artifacts,
                 )
             )
         if next_trace.has_evaluation:
@@ -1036,7 +1226,6 @@ class RunExecution:
         self.state = next_state
         self.trace = next_trace
         self.pending_approval_resolution = None
-        self.pending_evaluation_result = None
         return RunResult.from_state(next_state)
 
 
@@ -1092,6 +1281,7 @@ class _OperationObserver:
             ],
         )
         self.execution.state = state
+        self.execution._ended_executions.pop(identity.execution_id, None)
 
     async def ended(self, evidence: ExecutionEvidence) -> None:
         operation = self._operation()
@@ -1118,3 +1308,21 @@ class _OperationObserver:
             or not evidence.issuer_ended
         ):
             raise ManagedExecutionError("Execution chain end is not confirmed")
+        self.execution._ended_executions[evidence.execution_id] = evidence
+
+
+@dataclass(frozen=True, slots=True)
+class _EvaluationObserver:
+    execution: RunExecution
+
+    @property
+    def progress(self) -> EvaluationProgress:
+        return self.execution.state.execution.evaluation
+
+    async def record(
+        self, payload: EventPayload, *, component: ComponentEnvelope | None = None
+    ) -> None:
+        await self.execution.record_component_fact(payload, component=component)
+
+    def execution_observer(self, attempt_id: UUID) -> ExecutionObserver:
+        return self.execution.execution_observer(attempt_id)

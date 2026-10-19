@@ -8,9 +8,15 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from miniagent.agents import AgentSpec
+from miniagent.environments.managed_execution import (
+    ManagedExecutionError,
+    execution_scope,
+)
 from miniagent.evaluation import (
     CandidateOutput,
+    EvaluationError,
     EvaluationRequest,
+    EvaluationResult,
     Evaluator,
     PassThroughEvaluator,
 )
@@ -54,6 +60,7 @@ from miniagent.runtime.execution import (
     RunOutcome,
     RunTermination,
     TerminateRun,
+    evaluation_scope,
 )
 from miniagent.runtime.journal import RunJournal
 from miniagent.runtime.progress import (
@@ -63,7 +70,7 @@ from miniagent.runtime.progress import (
     TerminationDecision,
     ToolsDisposition,
 )
-from miniagent.runtime.recording import RunRecorder
+from miniagent.runtime.recording import RunPersistenceError, RunRecorder
 from miniagent.runtime.recovery import RunRecoveryContext
 from miniagent.runtime.result import RunError, RunResult, TerminationReason
 from miniagent.runtime.state import (
@@ -225,14 +232,6 @@ class AgentRuntime:
                             "Terminate phase requires a persisted decision"
                         )
                     decision = disposition.decision
-                    if (
-                        decision.final_output is not None
-                        and execution.pending_evaluation_result is None
-                    ):
-                        execution.stage_evaluation_result(
-                            passed=decision.status == "succeeded",
-                            final_output=decision.final_output,
-                        )
                     return await execution.finish(
                         RunTermination(
                             status=RunStatus(decision.status),
@@ -243,7 +242,6 @@ class AgentRuntime:
                 else:
                     raise ValueError(f"Unsupported execution phase: {phase}")
                 if isinstance(outcome, TerminateRun):
-                    evaluation = execution.pending_evaluation_result
                     await execution.record_termination(
                         TerminationDecision(
                             status="succeeded"
@@ -253,9 +251,6 @@ class AgentRuntime:
                             else "failed",
                             reason=outcome.termination.reason,
                             error=outcome.termination.error,
-                            final_output=evaluation.final_output
-                            if evaluation
-                            else None,
                         )
                     )
         except CancellationRequested:
@@ -628,66 +623,38 @@ class AgentRuntime:
         return ContinueRun()
 
     async def _evaluate(
-        self,
-        execution: RunExecution,
-        outcome: EvaluateCandidate,
-    ) -> TerminateRun:
+        self, execution: RunExecution, outcome: EvaluateCandidate
+    ) -> ContinueRun:
         candidate = outcome.candidate_output
         await execution.begin_evaluation(candidate.text)
+        operation = execution.state.execution.active_operation
+        assert operation is not None
         try:
-            evaluation = await await_with_cancellation(
-                self.evaluator.evaluate(
-                    EvaluationRequest(
-                        run_id=execution.state.identity.run_id,
-                        task=execution.state.identity.task,
-                        candidate=candidate,
-                    )
-                ),
-                self.cancellation_token,
-            )
-        except CancellationRequested:
+            with (
+                evaluation_scope(execution.evaluation_observer()),
+                execution_scope(execution.execution_observer(operation.attempt_id)),
+            ):
+                evaluation = await await_with_cancellation(
+                    self.evaluator.evaluate(
+                        EvaluationRequest(
+                            run_id=execution.state.identity.run_id,
+                            task=execution.state.identity.task,
+                            candidate=candidate,
+                        )
+                    ),
+                    self.cancellation_token,
+                )
+        except (CancellationRequested, RunPersistenceError, ManagedExecutionError):
             raise
         except Exception as exc:  # noqa: BLE001
-            return TerminateRun(
-                RunTermination(
-                    status=RunStatus.FAILED,
-                    reason=TerminationReason.EVALUATION_FAILED,
-                    error=RunError(
-                        code="EVALUATOR_EXCEPTION",
-                        message=f"{type(exc).__name__}: {exc}",
-                    ),
-                )
-            )
-
-        if evaluation.passed:
-            final_output = (
-                evaluation.output if evaluation.output is not None else candidate.text
-            )
-            termination = RunTermination(
-                status=RunStatus.SUCCEEDED,
-                reason=TerminationReason.TASK_VERIFIED,
-            )
-        else:
-            termination = RunTermination(
-                status=RunStatus.FAILED,
-                reason=TerminationReason.EVALUATION_FAILED,
-                error=(
-                    RunError(
-                        code=evaluation.error.code,
-                        message=evaluation.error.message,
-                        retryable=evaluation.error.retryable,
-                    )
-                    if evaluation.error is not None
-                    else None
+            evaluation = EvaluationResult(
+                passed=False,
+                error=EvaluationError(
+                    code="EVALUATOR_EXCEPTION", message=f"{type(exc).__name__}: {exc}"
                 ),
             )
-            final_output = None
-        execution.stage_evaluation_result(
-            passed=evaluation.passed,
-            final_output=final_output,
-            artifacts=evaluation.artifacts,
-        )
-        return TerminateRun(termination)
+        await execution.record_evaluation_result(evaluation)
+        return ContinueRun()
 
     def _validate_agent_tools(self, agent: AgentSpec) -> None:
         try:

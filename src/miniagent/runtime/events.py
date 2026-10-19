@@ -10,6 +10,7 @@ from miniagent.environments.managed_execution import (
     ExecutionEvidence,
     ExecutionIdentity,
 )
+from miniagent.evaluation.contracts import EvaluationResult
 from miniagent.metering.usage import RequestCost
 from miniagent.models.protocol import ModelUsage
 from miniagent.policy import PolicyDecision
@@ -55,6 +56,7 @@ class RunEventType(StrEnum):
     APPROVAL_RESOLVED = "approval_resolved"
     APPROVAL_INVALIDATED = "approval_invalidated"
     EVALUATION_START = "evaluation_start"
+    EVALUATION_RESULT_RECORDED = "evaluation_result_recorded"
     EVALUATION_COMPLETED = "evaluation_completed"
     RUN_FINISHED = "run_finished"
     TERMINATION_DECIDED = "termination_decided"
@@ -215,10 +217,20 @@ class ApprovalInvalidated(_Payload):
 
 
 class EvaluationStart(_Payload):
+    attempt_id: UUID | None = None
     type: Literal[RunEventType.EVALUATION_START] = RunEventType.EVALUATION_START
 
 
+class EvaluationResultRecorded(_Payload):
+    type: Literal[RunEventType.EVALUATION_RESULT_RECORDED] = (
+        RunEventType.EVALUATION_RESULT_RECORDED
+    )
+    attempt_id: UUID
+    result: EvaluationResult
+
+
 class EvaluationCompleted(_Payload):
+    result: EvaluationResult | None = None
     type: Literal[RunEventType.EVALUATION_COMPLETED] = RunEventType.EVALUATION_COMPLETED
     passed: bool
 
@@ -316,6 +328,7 @@ type EventPayload = Annotated[
     | ApprovalResolved
     | ApprovalInvalidated
     | EvaluationStart
+    | EvaluationResultRecorded
     | EvaluationCompleted
     | RunFinished,
     Field(discriminator="type"),
