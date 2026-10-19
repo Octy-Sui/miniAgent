@@ -70,7 +70,9 @@ from miniagent.runtime.state import ContextProgress, ConversationState, StepRang
 from miniagent.runtime.store_contracts import RunRecord
 
 
-def memory_example() -> tuple[StoredRun, PageBoundary, CompactionRead]:
+def memory_example(
+    *, display_text: str | None = None
+) -> tuple[StoredRun, PageBoundary, CompactionRead]:
     run_id = UUID(int=1)
     now = datetime(2026, 10, 19, tzinfo=UTC)
     base = create_run_state(
@@ -91,7 +93,9 @@ def memory_example() -> tuple[StoredRun, PageBoundary, CompactionRead]:
     )
     summaries = [
         CompactionSummary(
-            current_goal=f"goal {n}",
+            current_goal=display_text
+            if n == 2 and display_text is not None
+            else f"goal {n}",
             user_constraints=["visible constraint"],
             verified_evidence=[],
             workspace_changes=["change"],
@@ -533,3 +537,62 @@ def change_evaluation_content(
     return replace(
         example, contents=contents, manifests=manifests, events=tuple(events)
     )
+
+
+async def persist_memory(database: Path, *, display_text: str | None = None) -> None:
+    import sqlite3
+    from contextlib import closing
+
+    from miniagent.storage.codecs import encode_datetime
+
+    run, boundary, facts = memory_example(display_text=display_text)
+    assert run.record is not None
+    await SQLiteRunStore(database).create(run.record.state)
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute(
+            "UPDATE runs SET last_event_sequence=?,latest_snapshot_version=? WHERE run_id=?",
+            (
+                boundary.as_of_sequence,
+                boundary.latest_snapshot_version,
+                str(boundary.run_id),
+            ),
+        )
+        for item in facts.events:
+            event = item.event
+            assert event is not None
+            connection.execute(
+                "INSERT INTO run_events(run_id,sequence,event_id,schema_version,type,occurred_at,payload_json,artifacts_json,step_number,span_id,parent_span_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    str(event.run_id),
+                    event.sequence,
+                    str(event.event_id),
+                    event.schema_version,
+                    str(event.type),
+                    encode_datetime(event.occurred_at),
+                    event.payload.model_dump_json(),
+                    json.dumps(
+                        [ref.model_dump(mode="json") for ref in event.artifacts]
+                    ),
+                    event.step_number,
+                    event.span_id,
+                    event.parent_span_id,
+                ),
+            )
+        for item in facts.snapshots.values():
+            snapshot = item.snapshot
+            assert snapshot is not None
+            connection.execute(
+                "INSERT INTO run_snapshots(run_id,version,snapshot_id,event_sequence,schema_version,snapshot_json,created_at) VALUES(?,?,?,?,?,?,?)",
+                (
+                    str(snapshot.run_id),
+                    snapshot.version,
+                    str(snapshot.snapshot_id),
+                    snapshot.event_sequence,
+                    snapshot.schema_version,
+                    snapshot.model_dump_json(
+                        exclude={"snapshot_id", "version", "created_at"}
+                    ),
+                    encode_datetime(snapshot.created_at),
+                ),
+            )
+        connection.commit()

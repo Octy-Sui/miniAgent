@@ -155,3 +155,15 @@ def test_local_file_uris_are_not_displayed_in_plain_logs() -> None:
         redact_text("visible file:///private/host-secret tail")
         == "visible [已脱敏] tail"
     )
+
+
+@pytest.mark.parametrize(
+    "key", ["endpoint", "base_url", "openai_base_url", "connection-string", "dsn"]
+)
+def test_connection_values_are_hidden_in_json_and_text(key: str) -> None:
+    assert "connection-sentinel" not in str(
+        redact_json({key: "https://connection-sentinel.invalid/api"})
+    )
+    assert "connection-sentinel" not in redact_text(
+        f"{key}=https://connection-sentinel.invalid/api"
+    )

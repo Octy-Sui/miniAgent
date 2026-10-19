@@ -6,7 +6,19 @@ from pydantic import JsonValue
 REDACTION_VERSION = 1
 _REDACTED = "[已脱敏]"
 _LOCAL_URI = re.compile(r"\bfile:/+[^\s\"'<>]+", re.IGNORECASE)
-_LOCATION_KEYS = frozenset(("uri", "source_dir", "workspace_path", "environment_refs"))
+_LOCATION_KEYS = frozenset(
+    (
+        "uri",
+        "source_dir",
+        "workspace_path",
+        "environment_refs",
+        "endpoint",
+        "base_url",
+        "openai_base_url",
+        "connection_string",
+        "dsn",
+    )
+)
 _USAGE_COUNTS = frozenset(
     {
         "input_tokens",
@@ -35,7 +47,7 @@ _CREDENTIAL = re.compile(
 _AUTHORIZATION = re.compile(r"\bauthorization\s*:\s*[^\r\n]+", re.IGNORECASE)
 _BEARER = re.compile(r"\bBearer\s+[^\s\"'<>]+", re.IGNORECASE)
 _ASSIGNMENT = re.compile(
-    r"\b(?:[\w-]*[_-])?(?:authorization|api[_-]?key|tokens?|secret|password)"
+    r"\b(?:[\w-]*[_-])?(?:authorization|api[_-]?key|tokens?|secret|password|endpoint|base[_-]?url|connection[_-]?string|dsn)"
     r"(?:[_-][\w-]+)?\s*[:=]\s*(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s,;]+)",
     re.IGNORECASE,
 )
