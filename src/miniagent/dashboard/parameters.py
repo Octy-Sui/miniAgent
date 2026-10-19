@@ -90,6 +90,7 @@ class EventParams(Parameters):
 
 
 class SnapshotParams(Parameters):
+    tool_name: str | None = None
     boundary: str
     start: int = Field(default=0, ge=0)
     end: int | None = Field(default=None, ge=0)

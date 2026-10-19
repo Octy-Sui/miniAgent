@@ -202,3 +202,49 @@ async def test_snapshot_projection_keeps_absent_message_fields_absent(
     assert json.loads(projected[0].value).get(missing) is None
     assert missing not in json.loads(projected[0].value)
     assert "assistant" in projected[0].value
+
+
+async def test_source_tokens_do_not_store_raw_search_terms(
+    database: Path, tmp_path: Path
+) -> None:
+    import base64
+    from urllib.parse import parse_qs, urlsplit
+
+    run_id, _, _ = await populated(database)
+    secret = "sk-search-secret-1234567890123456"
+    app = create_app(DashboardSettings(database=database, artifacts=tmp_path))
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8080"
+        ) as client,
+    ):
+        page = await client.get(
+            f"/runs/{run_id}", params={"tool_name": secret, "grouped": "true"}
+        )
+        assert page.status_code == 200
+        token = re.search(r'data-boundary="([^"]+)"', page.text)
+        assert token is not None
+        payload = token[1].split(".")[0]
+        decoded = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)).decode()
+        assert secret not in decoded
+        # This fixture has no compaction source link; verify the public presenter explicitly.
+        from miniagent.dashboard.cursors import SourceCursor
+        from miniagent.dashboard.parameters import EventFilters
+        from miniagent.dashboard.presentation import source_href
+        from miniagent.dashboard.views import SourceTarget
+
+        cursor = app.state.signer.decode(html.unescape(token[1]), purpose="source")
+        assert isinstance(cursor, SourceCursor)
+        href = source_href(
+            SourceTarget(run_id, snapshot_version=2, start=0, end=1),
+            cursor.boundary,
+            app.state.signer,
+            filters=EventFilters(tool_name=secret),
+            grouped=True,
+        )
+        response = await client.get(href)
+        assert response.status_code == 200
+        back = re.search(r'href="([^\"]+)"[^>]*>返回 Run 详情和原筛选', response.text)
+        assert back is not None
+        assert parse_qs(urlsplit(html.unescape(back[1])).query)["tool_name"] == [secret]

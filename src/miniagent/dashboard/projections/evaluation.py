@@ -529,13 +529,14 @@ def _attempt(
         "recorded_failure": "已记录评测未通过",
     }
     fields.insert(0, _field("title", "评测证据", titles[outcome], "持久化事实投影"))
-    fields.append(
+    fields.insert(
+        1,
         _field(
             "coverage",
             "目标覆盖说明",
             "目标测试清单未持久化，无法复核完整覆盖",
             "当前生产者契约",
-        )
+        ),
     )
     for kind, identifier in chosen.items():
         fields.append(

@@ -74,6 +74,7 @@ def test_old_response_cannot_replace_new_filter(page: Page, site: BrowserSite) -
     page.locator("input[name=task]").fill("second")
     page.locator("button[type=submit]").click()
     expect(page.locator("#run-list")).to_contain_text("second task")
+    expect(page.locator("#run-list")).to_contain_text("共 1 个 Run")
     new_content = page.locator("#run-list").inner_html()
     held[0][0].fulfill(response=held[0][1])
     page.wait_for_timeout(100)

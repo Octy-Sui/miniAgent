@@ -157,7 +157,7 @@ Object.assign(htmx.config, {
     for (const [key, value] of new FormData(form)) if (value !== "") query.append(key, value);
     const url = form.getAttribute("action") + "?" + query;
     history.replaceState(null, "", url);
-    send(url, "#" + region().id, {kind: "filter", source: form});
+    send(url, "#" + region().id, {kind: "filter"});
   });
   document.addEventListener("click", event => {
     const copy = event.target.closest("[data-copy]");

@@ -73,6 +73,12 @@ class SourceCursor(CursorTimes):
     return_filters: EventFilters = EventFilters()
     return_grouped: bool = False
 
+    @model_validator(mode="after")
+    def no_raw_search(self) -> Self:
+        if self.return_filters.tool_name is not None:
+            raise ValueError("source_search_in_cursor")
+        return self
+
 
 class ManifestCursor(CursorTimes):
     purpose: Literal["manifests"] = "manifests"

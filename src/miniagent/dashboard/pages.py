@@ -212,7 +212,7 @@ def _source_token(
     return deps.signer.encode(
         SourceCursor(
             boundary=boundary,
-            return_filters=params.filters,
+            return_filters=params.filters.model_copy(update={"tool_name": None}),
             return_grouped=params.grouped,
             issued_at=now,
             expires_at=now + timedelta(seconds=LIMITS.cursor_seconds),
@@ -534,7 +534,10 @@ def render_events(
     if params.boundary is not None:
         source = _decode_source(deps, run_id, params.boundary)
         back_params = EventParams(
-            filters=source.return_filters, grouped=source.return_grouped
+            filters=source.return_filters.model_copy(
+                update={"tool_name": params.filters.tool_name}
+            ),
+            grouped=source.return_grouped,
         )
     context: dict[str, object] = {
         "title": "Event 来源 / 时间线",
@@ -571,7 +574,10 @@ def render_snapshot(
         connect=deps.connect,
     )
     event_params = EventParams(
-        filters=source.return_filters, grouped=source.return_grouped
+        filters=source.return_filters.model_copy(
+            update={"tool_name": params.tool_name}
+        ),
+        grouped=source.return_grouped,
     )
     memory = None
     stored = read.snapshot

@@ -14,6 +14,7 @@ import pytest
 from miniagent.dashboard.app import create_app
 from miniagent.dashboard.config import DashboardSettings
 from miniagent.dashboard.json_content import parse_json
+from miniagent.dashboard.presentation import render_page
 from miniagent.dashboard.previews import project_preview
 from miniagent.dashboard.projections.compaction import project_memory
 from miniagent.dashboard.projections.evaluation import project_evaluations
@@ -430,10 +431,48 @@ def busy_probe(database: str, channel) -> None:
         assert event.wait(1)
         thread.join(1)
         overheads.append(time.monotonic() - start)
-    epsilon = max(0.1, 2 * max(overheads))
+    calibration = str(Path(database).with_suffix(".calibration.sqlite3"))
+    with closing(sqlite3.connect(calibration)) as writer:
+        writer.execute("CREATE TABLE fixture(value INTEGER)")
+        writer.commit()
+        writer.execute("BEGIN EXCLUSIVE")
+        with closing(sqlite3.connect(calibration, timeout=1.0)) as reader:
+            started = time.monotonic()
+            try:
+                reader.execute("SELECT * FROM fixture")
+            except sqlite3.OperationalError as exc:
+                assert exc.sqlite_errorcode == sqlite3.SQLITE_BUSY
+                calibration_wait = time.monotonic() - started
+            else:
+                raise AssertionError("independent lock calibration did not block")
+        writer.rollback()
+    epsilon = max(0.05, 2 * max(overheads), 2 * max(0, calibration_wait - 1))
+    timeouts_ms = []
+
+    sql_waits = []
+
+    class BusyConnection(RecordingConnection):
+        def execute(self, sql: str, parameters=()):
+            started = time.monotonic()
+            try:
+                return super().execute(sql, parameters)
+            except sqlite3.OperationalError as exc:
+                if getattr(exc, "sqlite_errorcode", 0) & 0xFF in {
+                    sqlite3.SQLITE_BUSY,
+                    sqlite3.SQLITE_LOCKED,
+                }:
+                    sql_waits.append(time.monotonic() - started)
+                raise
+
+    def connect(*args, **kwargs):
+        connection = sqlite3.connect(*args, factory=BusyConnection, **kwargs)
+        timeouts_ms.append(connection.execute("PRAGMA busy_timeout").fetchone()[0])
+        return connection
+
+    recorder = StageRecorder({"render": render_page})
 
     async def run():
-        app = create_app(DashboardSettings(database=Path(database)))
+        app = create_app(DashboardSettings(database=Path(database)), connect=connect)
         async with (
             app.router.lifespan_context(app),
             httpx.AsyncClient(
@@ -449,9 +488,16 @@ def busy_probe(database: str, channel) -> None:
                 started = time.monotonic()
                 blocked = await client.get("/runs")
                 elapsed = time.monotonic() - started
+                error_render_seconds = (
+                    sum(end - start for _, _, start, end, _ in recorder.records) / 1e9
+                )
                 writer.rollback()
             after = await client.get("/runs")
         return {
+            "sql_waits": sql_waits,
+            "timeouts_ms": timeouts_ms,
+            "calibration_wait": calibration_wait,
+            "render_seconds": error_render_seconds,
             "epsilon": epsilon,
             "handshake_max": max(overheads),
             "blocked": blocked.status_code,
@@ -459,7 +505,12 @@ def busy_probe(database: str, channel) -> None:
             "after": after.status_code,
         }
 
-    channel.send(asyncio.run(run()))
+    threading.setprofile_all_threads(recorder)
+    try:
+        result = asyncio.run(run())
+    finally:
+        threading.setprofile_all_threads(None)
+    channel.send(result)
     channel.close()
 
 
@@ -468,7 +519,11 @@ async def test_real_busy_lock_times_out_and_recovers(database: Path) -> None:
     process, channel = supervised(busy_probe, str(database))
     result = finish(process, channel)
     assert result["blocked"] == 503
-    assert 1 - result["epsilon"] <= result["elapsed"] <= 1 + result["epsilon"]
+    assert result["timeouts_ms"] and set(result["timeouts_ms"]) == {1000}
+    assert len(result["sql_waits"]) == 1
+    wait = result["sql_waits"][0]
+    assert 1 - result["epsilon"] <= wait <= 1 + result["epsilon"]
+    assert result["elapsed"] <= wait + result["render_seconds"] + result["epsilon"]
     print("busy-evidence", json.dumps(result, sort_keys=True))
     assert result["after"] == 200
 

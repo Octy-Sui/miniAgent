@@ -30,11 +30,12 @@ def source_href(
 ) -> str:
     if target.run_id != boundary.run_id:
         raise ReadFailure(422, "source_run_mismatch")
+    selected_filters = filters or EventFilters()
     now = signer.now()
     token = signer.encode(
         SourceCursor(
             boundary=boundary,
-            return_filters=filters or EventFilters(),
+            return_filters=selected_filters.model_copy(update={"tool_name": None}),
             return_grouped=grouped,
             issued_at=now,
             expires_at=now + timedelta(seconds=LIMITS.cursor_seconds),
@@ -42,6 +43,8 @@ def source_href(
     )
     base = f"/runs/{target.run_id}"
     query: dict[str, str | int] = {"boundary": token}
+    if selected_filters.tool_name is not None:
+        query["tool_name"] = selected_filters.tool_name
     if target.event_id is not None:
         query["event_id"] = str(target.event_id)
         return base + "/events?" + urlencode(query) + f"#event-{target.event_id}"
