@@ -34,7 +34,9 @@ def choose_patch(
     candidates = {
         item.artifact_id
         for item in discovery.items
-        if item.record is not None and item.record.type == "patch" and not item.issues
+        if item.record is not None
+        and item.record.type == "workspace_patch"
+        and not item.issues
     }
     linked = set(associated_patch_ids)
     if linked:
