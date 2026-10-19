@@ -5,6 +5,8 @@ from pydantic import JsonValue
 
 REDACTION_VERSION = 1
 _REDACTED = "[已脱敏]"
+_LOCAL_URI = re.compile(r"\bfile:/+[^\s\"'<>]+", re.IGNORECASE)
+_LOCATION_KEYS = frozenset(("uri", "source_dir", "workspace_path", "environment_refs"))
 _USAGE_COUNTS = frozenset(
     {
         "input_tokens",
@@ -40,7 +42,14 @@ _ASSIGNMENT = re.compile(
 
 
 def redact_text(text: str) -> str:
-    for pattern in (_PRIVATE_KEY, _AUTHORIZATION, _BEARER, _ASSIGNMENT, _CREDENTIAL):
+    for pattern in (
+        _PRIVATE_KEY,
+        _AUTHORIZATION,
+        _BEARER,
+        _ASSIGNMENT,
+        _CREDENTIAL,
+        _LOCAL_URI,
+    ):
         text = pattern.sub(_REDACTED, text)
     return text
 
@@ -77,7 +86,10 @@ def redact_json(
                     and type(child) is int
                     and child >= 0
                 )
-                sensitive = bool(_SENSITIVE_KEY.search(key))
+                sensitive = (
+                    bool(_SENSITIVE_KEY.search(key))
+                    or key.casefold().replace("-", "_") in _LOCATION_KEYS
+                )
                 result[redact_text(key)] = (
                     _REDACTED
                     if sensitive and not allowed

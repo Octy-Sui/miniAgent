@@ -148,3 +148,10 @@ def test_text_credentials_are_redacted_before_any_pagination(secret):
     assert "visible-tail" in rendered
     assert secret not in rendered
     assert "[已脱敏]" in rendered
+
+
+def test_local_file_uris_are_not_displayed_in_plain_logs() -> None:
+    assert (
+        redact_text("visible file:///private/host-secret tail")
+        == "visible [已脱敏] tail"
+    )

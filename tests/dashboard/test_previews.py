@@ -200,3 +200,17 @@ def test_invalid_or_control_text_is_metadata_only(content: bytes) -> None:
     )
     assert preview.text is None
     assert "preview_binary" in {issue.code for issue in preview.issues}
+
+
+def test_json_artifact_reference_uri_is_hidden() -> None:
+    preview = project_preview(
+        verified(
+            '{"patch_ref":{"uri":"file:///private/host-secret"},"visible":"ok"}',
+            media_type="application/json",
+            kind="evaluation_config",
+        ),
+        budget=ReadBudget(5, monotonic=lambda: 0),
+    )
+    assert preview.text is not None
+    assert "host-secret" not in preview.text
+    assert json.loads(preview.text)["visible"] == "ok"
