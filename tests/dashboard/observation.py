@@ -90,3 +90,77 @@ class RecordingConnection(sqlite3.Connection):
             hook = self.after_first_run_fetch
             self.after_first_run_fetch = None
             hook()
+
+
+import os
+import sys
+from types import FrameType
+
+
+class RecordingOpen:
+    def __init__(self, root: Path) -> None:
+        self.root = root.resolve()
+        self.nodes: dict[int, tuple[str, ...]] = {}
+        self.opened: list[tuple[int, tuple[str, ...], int, int]] = []
+
+    def __call__(
+        self, path, flags: int, mode: int = 0o777, *, dir_fd: int | None = None
+    ) -> int:
+        descriptor = os.open(path, flags, mode, dir_fd=dir_fd)
+        relative = (
+            () if Path(path) == self.root else (*self.nodes.get(dir_fd, ()), str(path))
+        )
+        self.nodes[descriptor] = relative
+        info = os.fstat(descriptor)
+        self.opened.append((descriptor, relative, info.st_dev, info.st_ino))
+        return descriptor
+
+    def content_fd(self, descriptor: object) -> bool:
+        path = self.nodes.get(descriptor, ()) if isinstance(descriptor, int) else ()
+        return len(path) == 3 and path[0] == "content" and len(path[2]) == 64
+
+
+def probe_content(root: str, run_id: str, artifact_id: str, channel) -> None:
+    from uuid import UUID
+
+    from miniagent.dashboard.artifacts import ArtifactReader
+    from miniagent.dashboard.reads import ReadBudget, ReadFailure
+
+    opening = RecordingOpen(Path(root))
+    reads = []
+    hashes = []
+
+    def profile(frame: FrameType, event: str, arg: object):
+        descriptor = frame.f_locals.get("descriptor")
+        if event == "c_call" and opening.content_fd(descriptor):
+            if arg is os.read:
+                reads.append((descriptor, frame.f_locals.get("read_size")))
+            elif getattr(arg, "__name__", None) == "update":
+                hashes.append(descriptor)
+
+    previous = sys.getprofile()
+    sys.setprofile(profile)
+    try:
+        result = ArtifactReader(Path(root), open_fd=opening).read_content(
+            UUID(run_id),
+            UUID(artifact_id),
+            budget=ReadBudget(__import__("time").monotonic() + 5),
+        )
+        data = {
+            "content": result.content,
+            "issues": [issue.code for issue in result.issues],
+        }
+    except ReadFailure as exc:
+        data = {"error": exc.code, "status": exc.status_code}
+    finally:
+        sys.setprofile(previous)
+    leaked = []
+    for descriptor, _, device, inode in opening.opened:
+        try:
+            info = os.fstat(descriptor)
+        except OSError:
+            continue
+        if (info.st_dev, info.st_ino) == (device, inode):
+            leaked.append(descriptor)
+    channel.send({**data, "reads": reads, "hashes": hashes, "leaked": leaked})
+    channel.close()

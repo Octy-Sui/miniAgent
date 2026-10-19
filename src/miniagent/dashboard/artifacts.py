@@ -1,15 +1,18 @@
 import errno
+import hashlib
 import heapq
 import os
+import re
 import stat
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import unquote_to_bytes, urlsplit
 from uuid import UUID
 
 from pydantic import ValidationError
 
-from miniagent.artifacts.contracts import ArtifactRecord
+from miniagent.artifacts.contracts import ArtifactRecord, ArtifactRef
 from miniagent.dashboard.config import LIMITS
 from miniagent.dashboard.cursors import utc_now
 from miniagent.dashboard.json_content import ContentError, parse_json
@@ -20,6 +23,7 @@ from miniagent.dashboard.reads import (
     ReadBudget,
     ReadFailure,
     ReadIssue,
+    VerifiedContent,
 )
 
 OpenFd = Callable[..., int]
@@ -293,3 +297,98 @@ class ArtifactReader:
             complete,
             tuple(issues),
         )
+
+    def read_content(
+        self,
+        run_id: UUID,
+        artifact_id: UUID,
+        *,
+        expected: ArtifactRef | None = None,
+        budget: ReadBudget,
+    ) -> VerifiedContent:
+        item = self.read_manifest(run_id, artifact_id, budget=budget)
+        if item.record is None:
+            raise ReadFailure(409, "manifest_unsupported")
+        record = item.record
+        if expected is not None and any(
+            value is not None and getattr(record, key) != value
+            for key, value in expected.model_dump().items()
+        ):
+            raise ReadFailure(409, "artifact_reference_mismatch")
+        try:
+            parsed = urlsplit(record.uri)
+            if (
+                "?" in record.uri
+                or "#" in record.uri
+                or parsed.scheme != "file"
+                or parsed.netloc
+                or parsed.query
+                or parsed.fragment
+                or re.search(r"%(?![0-9A-Fa-f]{2})", parsed.path)
+                or any(ord(char) < 32 or ord(char) == 127 for char in record.uri)
+            ):
+                raise ReadFailure(409, "artifact_uri_invalid")
+            path = unquote_to_bytes(parsed.path).decode("utf-8")
+        except (ValueError, UnicodeError) as exc:
+            raise ReadFailure(409, "artifact_uri_invalid") from exc
+        target = self.root / "content" / record.sha256[:2] / record.sha256
+        if "\x00" in path or path != str(target):
+            raise ReadFailure(409, "artifact_uri_invalid")
+        try:
+            with (
+                self._directory(("content", record.sha256[:2])) as directory,
+                self._regular(directory, record.sha256) as (descriptor, info),
+            ):
+                if max(info.st_size, record.size_bytes) > LIMITS.artifact_bytes:
+                    return VerifiedContent(
+                        record,
+                        None,
+                        utc_now(),
+                        (
+                            ReadIssue(
+                                "read_limit_exceeded",
+                                "超出首版读取上限，内容未校验",
+                                subject_id=artifact_id,
+                            ),
+                        ),
+                    )
+                if info.st_size != record.size_bytes:
+                    raise ReadFailure(409, "artifact_size_mismatch")
+                if record.media_type == "application/json" and not budget.reserve(
+                    info.st_size
+                ):
+                    return VerifiedContent(
+                        record,
+                        None,
+                        utc_now(),
+                        (
+                            ReadIssue(
+                                "read_limit_exceeded",
+                                "结构化正文合计超出读取上限",
+                                subject_id=artifact_id,
+                            ),
+                        ),
+                    )
+                digest = hashlib.sha256()
+                content = bytearray()
+                while len(content) < info.st_size:
+                    budget.check()
+                    read_size = min(LIMITS.block_bytes, info.st_size - len(content))
+                    chunk = os.read(descriptor, read_size)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    content.extend(chunk)
+                if (
+                    len(content) != record.size_bytes
+                    or os.fstat(descriptor).st_size != info.st_size
+                ):
+                    raise ReadFailure(409, "artifact_size_mismatch")
+                if digest.hexdigest() != record.sha256:
+                    raise ReadFailure(409, "artifact_hash_mismatch")
+                budget.check()
+                return VerifiedContent(record, bytes(content), utc_now(), ())
+        except ReadFailure as exc:
+            if exc.status_code == 404:
+                raise ReadFailure(409, "artifact_content_missing") from exc
+            raise

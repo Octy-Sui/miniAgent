@@ -238,3 +238,11 @@ class PatchDiscovery:
     items: tuple[ManifestItem, ...]
     complete: bool
     issues: tuple[ReadIssue, ...]
+
+
+@dataclass(frozen=True)
+class VerifiedContent:
+    record: ArtifactRecord
+    content: bytes | None
+    read_at: datetime
+    issues: tuple[ReadIssue, ...]
