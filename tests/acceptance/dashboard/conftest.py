@@ -5,6 +5,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
@@ -60,6 +61,12 @@ def site(tmp_path: Path):
             sentinel.encode(),
         )
     )
+    with serve_site(database, artifacts, records) as running:
+        yield running
+
+
+@contextmanager
+def serve_site(database: Path, artifacts: Path, records: dict):
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -101,17 +108,24 @@ def site(tmp_path: Path):
 
 
 @pytest.fixture
-def page(site: BrowserSite):
+def browser():
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
-        context = browser.new_context(viewport={"width": 1280, "height": 900})
-        page = context.new_page()
-        page.set_default_timeout(5000)
         try:
-            yield page
+            yield browser
         finally:
-            context.close()
             browser.close()
+
+
+@pytest.fixture
+def page(site: BrowserSite, browser):
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    page.set_default_timeout(5000)
+    try:
+        yield page
+    finally:
+        context.close()
 
 
 @pytest.fixture
