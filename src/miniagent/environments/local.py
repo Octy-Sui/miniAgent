@@ -24,10 +24,18 @@ from miniagent.environments.contracts import (
     PatchExportCleanupError,
     WorkspaceCheckpoint,
 )
+from miniagent.environments.managed_execution import (
+    ManagedExecutionError,
+    current_execution_observer,
+)
 from miniagent.environments.process import (
     decode_output,
+    identify_host_process,
+    inspect_host_execution,
+    process_group_absent,
     read_stream,
     reap_process,
+    register_host_process,
     write_stdin,
 )
 
@@ -331,13 +339,44 @@ class LocalWorkspaceBackend:
                 max(0.0, remaining - min(0.1, remaining / 4)),
             )
 
+        observer = current_execution_observer()
+        identity = None
         try:
+            try:
+                identity = identify_host_process(
+                    process.pid,
+                    attempt_id=observer.attempt_id if observer is not None else uuid4(),
+                    execution_id=uuid4(),
+                    role="local_command",
+                )
+            except ManagedExecutionError:
+                if observer is not None or not process_group_absent(process.pid):
+                    raise
+            if identity is not None:
+                register_host_process(process, identity)
+                if observer is not None:
+                    await observer.identified(identity)
             await asyncio.wait_for(asyncio.gather(*tasks), timeout=timeout_seconds)
+            if identity is not None:
+                evidence = inspect_host_execution(identity)
+                if evidence.outcome != "ended":
+                    raise ManagedExecutionError(
+                        "Local command whole group end is unconfirmed"
+                    )
+                if observer is not None:
+                    await observer.ended(evidence)
+            elif not process_group_absent(process.pid):
+                raise ManagedExecutionError("Local command group end is unconfirmed")
         except BaseException as exc:
-            for diagnostic in await reap_process(
+            diagnostics = await reap_process(
                 process, tasks, deadline=cleanup_deadline or monotonic() + 5.0
-            ):
+            )
+            for diagnostic in diagnostics:
                 exc.add_note(diagnostic)
+            if diagnostics:
+                raise ManagedExecutionError(
+                    "Local command cleanup is unconfirmed"
+                ) from exc
             raise
 
         if process.returncode is None:
