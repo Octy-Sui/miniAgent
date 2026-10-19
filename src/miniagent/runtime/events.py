@@ -60,6 +60,8 @@ class RunEventType(StrEnum):
     CANDIDATE_SUBMISSION_COMMITTED = "candidate_submission_committed"
     CANDIDATE_SUBMISSION_FAILED = "candidate_submission_failed"
     EVALUATION_START = "evaluation_start"
+    EVALUATION_ATTEMPT_STARTED = "evaluation_attempt_started"
+    EVALUATION_ATTEMPT_INTERRUPTED = "evaluation_attempt_interrupted"
     EVALUATION_RESULT_RECORDED = "evaluation_result_recorded"
     EVALUATION_COMPLETED = "evaluation_completed"
     RUN_FINISHED = "run_finished"
@@ -267,6 +269,27 @@ class EvaluationStart(_Payload):
     type: Literal[RunEventType.EVALUATION_START] = RunEventType.EVALUATION_START
 
 
+class EvaluationAttemptStarted(_Payload):
+    type: Literal[RunEventType.EVALUATION_ATTEMPT_STARTED] = (
+        RunEventType.EVALUATION_ATTEMPT_STARTED
+    )
+    attempt_id: UUID
+    harness_run_id: str
+    instance_id: str
+    task_digest: str
+    patch_ref: ArtifactRef
+    patch_sha256: str
+    directory: str
+
+
+class EvaluationAttemptInterrupted(_Payload):
+    type: Literal[RunEventType.EVALUATION_ATTEMPT_INTERRUPTED] = (
+        RunEventType.EVALUATION_ATTEMPT_INTERRUPTED
+    )
+    attempt_id: UUID
+    reason: str = "resume"
+
+
 class EvaluationResultRecorded(_Payload):
     type: Literal[RunEventType.EVALUATION_RESULT_RECORDED] = (
         RunEventType.EVALUATION_RESULT_RECORDED
@@ -379,6 +402,8 @@ type EventPayload = Annotated[
     | CandidateSubmissionCommitted
     | CandidateSubmissionFailed
     | EvaluationResultRecorded
+    | EvaluationAttemptStarted
+    | EvaluationAttemptInterrupted
     | EvaluationCompleted
     | RunFinished,
     Field(discriminator="type"),

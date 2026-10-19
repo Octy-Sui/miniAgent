@@ -286,8 +286,8 @@ docker_path = root / "docker-scenario.json"
 docker = json.loads(docker_path.read_text())
 name = f"sweb.eval.{instance.lower()}.{run}"
 docker["containers"] = docker.get("containers", []) + [
-    {"Id": "attempt-exact", "Name": "/" + name, "Image": "sha256:actual"},
-    {"Id": "attempt-suffix", "Name": "/" + name + ".12345", "Image": "sha256:actual"},
+    {"Id": "a" * 64, "Name": "/" + name, "Image": "sha256:actual"},
+    {"Id": "b" * 64, "Name": "/" + name + ".12345", "Image": "sha256:actual"},
     {"Id": "neighbor", "Name": "/" + name + ".not-digits", "Image": "sha256:neighbor"}]
 if scenario.get("daemon_change"):
     docker["daemon_id"] = "daemon-b"

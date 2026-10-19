@@ -1,18 +1,33 @@
 import asyncio
 import hashlib
 import json
-import os
-import signal
+from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID, uuid4
 
 from miniagent.artifacts import ArtifactRef, ArtifactStore, ArtifactWrite
 from miniagent.cli.settings import Settings
+from miniagent.environments.managed_execution import (
+    HostProcessIdentity,
+    ManagedExecutionError,
+    current_cleanup_deadline,
+    current_execution_observer,
+    execution_scope,
+)
+from miniagent.environments.process import (
+    identify_host_process,
+    inspect_host_execution,
+    reap_process,
+    register_host_process,
+)
 from miniagent.evaluation import EvaluationError, EvaluationRequest, EvaluationResult
 from miniagent.evaluation.swebench_data import EvaluationPreparationError, PreparedTask
 from miniagent.evaluation.swebench_docker import (
+    EvaluationAttemptBusy,
     EvaluationDockerConnection,
+    SWEbenchAttemptState,
     check_daemon,
     cleanup_containers,
     harness_environment,
@@ -22,6 +37,14 @@ from miniagent.evaluation.swebench_report import (
     ReportValidationError,
     parse_instance_report,
 )
+from miniagent.runtime.events import (
+    EvaluationAttemptInterrupted,
+    EvaluationAttemptStarted,
+)
+from miniagent.runtime.execution import EvaluationObserver, current_evaluation_observer
+from miniagent.runtime.interruption import InterruptionRequested
+from miniagent.runtime.progress import ComponentEnvelope
+from miniagent.runtime.recording import RunPersistenceError
 
 
 class EvaluationInputError(ValueError):
@@ -70,6 +93,8 @@ async def prepare_attempt(
     work_root: Path,
     model_name: str,
     timeout_seconds: float = 30.0,
+    attempt_id: UUID | None = None,
+    observer: EvaluationObserver | None = None,
 ) -> EvaluationAttempt:
     stage = "patch"
     try:
@@ -96,11 +121,10 @@ async def prepare_attempt(
                 raise EvaluationInputError("EMPTY_PATCH", "Empty submitted patch")
             patch = patch_bytes.decode("utf-8")
             stage = "inputs"
-            attempt_id = uuid4()
+            attempt_id = attempt_id or uuid4()
             directory = (
                 work_root.expanduser().resolve() / request.run_id.hex / attempt_id.hex
             )
-            await asyncio.to_thread(directory.mkdir, parents=True, exist_ok=False)
             model_key = (
                 "model-" + hashlib.sha256(model_name.encode("utf-8")).hexdigest()[:16]
             )
@@ -148,6 +172,35 @@ async def prepare_attempt(
                 "image_preflight_verified": prepared.image_preflight_verified,
                 "base_revision": record.metadata.get("base_revision"),
             }
+            if observer is not None:
+                state = SWEbenchAttemptState(
+                    attempt_id=attempt_id,
+                    harness_run_id=attempt.harness_run_id,
+                    instance_id=attempt.instance_id,
+                    task_digest=prepared.record_sha256,
+                    patch_ref=ref,
+                    patch_sha256=record.sha256,
+                    directory=directory,
+                    resource_instance_id=attempt.instance_id,
+                    resource_harness_run_id=attempt.harness_run_id,
+                )
+                await observer.record(
+                    EvaluationAttemptStarted(
+                        attempt_id=attempt_id,
+                        harness_run_id=attempt.harness_run_id,
+                        instance_id=attempt.instance_id,
+                        task_digest=prepared.record_sha256,
+                        patch_ref=ref,
+                        patch_sha256=record.sha256,
+                        directory=str(directory),
+                    ),
+                    component=ComponentEnvelope(
+                        kind="swebench_attempt",
+                        schema_version=1,
+                        payload=state.model_dump(mode="json"),
+                    ),
+                )
+            await asyncio.to_thread(directory.mkdir, parents=True, exist_ok=False)
             for name, content in (
                 ("task.json", json.dumps([task]).encode()),
                 ("predictions.jsonl", prediction),
@@ -157,7 +210,12 @@ async def prepare_attempt(
                     _attempt_path(attempt, name).write_bytes, content
                 )
             return attempt
-    except EvaluationInputError:
+    except (
+        EvaluationInputError,
+        ManagedExecutionError,
+        RunPersistenceError,
+        InterruptionRequested,
+    ):
         raise
     except Exception as exc:
         code = (
@@ -173,25 +231,8 @@ async def _stop_harness(
 ) -> list[str]:
     if process is None:
         return []
-    loop = asyncio.get_running_loop()
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    waiter = asyncio.create_task(process.wait())
-    done, _ = await asyncio.wait(
-        [waiter], timeout=min(5.0, max(0.0, (deadline - loop.time()) / 2))
-    )
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    if not done:
-        done, _ = await asyncio.wait([waiter], timeout=max(0.0, deadline - loop.time()))
-    if not done:
-        waiter.cancel()
-        return [f"Harness PID/group {process.pid} not confirmed reaped"]
-    return []
+    diagnostics = list(await reap_process(process, [], deadline=deadline))
+    return diagnostics
 
 
 class SWEbenchEvaluator:
@@ -206,7 +247,11 @@ class SWEbenchEvaluator:
         docker_executable: Path,
         connection: EvaluationDockerConnection,
         environment: dict[str, str],
+        observer_getter: Callable[
+            [], EvaluationObserver | None
+        ] = current_evaluation_observer,
     ) -> None:
+        self.observer_getter = observer_getter
         self.artifact_store = artifact_store
         self.prepared = prepared
         self.settings = settings.model_copy(deep=True)
@@ -277,13 +322,22 @@ class SWEbenchEvaluator:
         return None
 
     async def _cleanup(
-        self, attempt: EvaluationAttempt, process: asyncio.subprocess.Process | None
+        self,
+        attempt: EvaluationAttempt,
+        process: asyncio.subprocess.Process | None,
+        identity: HostProcessIdentity | None = None,
     ) -> tuple[list[dict[str, str]], list[str]]:
         deadline = (
             asyncio.get_running_loop().time()
             + self.settings.swebench_cleanup_timeout_seconds
         )
+        deadline = min(deadline, current_cleanup_deadline() or float("inf"))
         diagnostics = await _stop_harness(process, deadline)
+        if diagnostics:
+            return [], diagnostics
+        observer = current_execution_observer()
+        if observer is not None and identity is not None:
+            await observer.ended(inspect_host_execution(identity))
         identities, container_diagnostics = await cleanup_containers(
             self.docker_executable,
             self.connection,
@@ -317,6 +371,7 @@ class SWEbenchEvaluator:
             asyncio.get_running_loop().time()
             + self.settings.swebench_artifact_timeout_seconds
         )
+        deadline = min(deadline, current_cleanup_deadline() or float("inf"))
         unregistered: list[str] = []
 
         async def publish(kind: str, name: str, content: bytes) -> ArtifactRef:
@@ -386,6 +441,12 @@ class SWEbenchEvaluator:
                         content = await asyncio.to_thread(path.read_bytes)
                         refs.append(await publish(kind, name, content))
                         del content
+                    except (
+                        ManagedExecutionError,
+                        RunPersistenceError,
+                        InterruptionRequested,
+                    ):
+                        raise
                     except Exception as exc:  # noqa: BLE001
                         unregistered.append(name)
                         diagnostics.append(
@@ -408,6 +469,8 @@ class SWEbenchEvaluator:
                         "evaluation_summary", "evaluation-summary.json", content
                     )
                 )
+        except (ManagedExecutionError, RunPersistenceError, InterruptionRequested):
+            raise
         except Exception as exc:  # noqa: BLE001
             diagnostics.append(
                 f"Evidence collection incomplete at {attempt.directory}: {type(exc).__name__}: {exc}"[
@@ -421,6 +484,26 @@ class SWEbenchEvaluator:
         return refs, error
 
     async def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
+        observer = self.observer_getter()
+        if observer is not None and observer.progress.result is not None:
+            return observer.progress.result
+        if observer is not None and observer.progress.attempt is not None:
+            envelope = observer.progress.attempt
+            if envelope.kind != "swebench_attempt" or envelope.schema_version != 1:
+                raise EvaluationAttemptBusy("Unsupported saved evaluation attempt")
+            old = SWEbenchAttemptState.model_validate(envelope.payload)
+            if (
+                old.patch_ref != request.candidate.patch
+                or old.task_digest != self.prepared.record_sha256
+                or old.instance_id != self.prepared.record.instance_id
+            ):
+                raise EvaluationAttemptBusy(
+                    "Saved evaluation attempt belongs to another patch or task"
+                )
+            await observer.record(
+                EvaluationAttemptInterrupted(attempt_id=old.attempt_id),
+                component=envelope,
+            )
         try:
             attempt = await prepare_attempt(
                 request,
@@ -429,13 +512,26 @@ class SWEbenchEvaluator:
                 work_root=self.settings.swebench_work_root,
                 model_name=self.model_name,
                 timeout_seconds=self.settings.swebench_artifact_timeout_seconds,
+                observer=observer,
             )
         except EvaluationInputError as exc:
             return EvaluationResult(
                 passed=False,
                 error=EvaluationError(code=exc.code, message=str(exc)[:4096]),
             )
+        scope = (
+            execution_scope(observer.execution_observer(attempt.attempt_id))
+            if observer
+            else nullcontext()
+        )
+        with scope:
+            return await self._evaluate_attempt(request, attempt)
+
+    async def _evaluate_attempt(
+        self, request: EvaluationRequest, attempt: EvaluationAttempt
+    ) -> EvaluationResult:
         process: asyncio.subprocess.Process | None = None
+        identity: HostProcessIdentity | None = None
         cancelled: asyncio.CancelledError | None = None
         error: EvaluationError | None = None
         diagnostics: list[str] = []
@@ -504,7 +600,7 @@ class SWEbenchEvaluator:
                     ),
                 )
                 config["image_precheck_id"] = image_id
-                if image_id is None and not self.settings.swebench_allow_image_pull:
+                if image_id is None:
                     raise EvaluationPreparationError(
                         "EVALUATION_IMAGE_UNAVAILABLE", self.prepared.actual_image
                     )
@@ -521,11 +617,28 @@ class SWEbenchEvaluator:
                         stderr=stderr,
                         start_new_session=True,
                     )
+                    observer = current_execution_observer()
+                    identity = identify_host_process(
+                        process.pid,
+                        attempt_id=observer.attempt_id
+                        if observer
+                        else attempt.attempt_id,
+                        execution_id=uuid4(),
+                        role="harness",
+                    )
+                    register_host_process(process, identity)
+                    if observer:
+                        await observer.identified(identity)
                     stage = "process"
                     await process.wait()
             async with asyncio.timeout(self.settings.swebench_artifact_timeout_seconds):
                 assert process is not None and process.returncode is not None
                 error = await self._judge(attempt, process.returncode)
+        except (ManagedExecutionError, RunPersistenceError, InterruptionRequested):
+            await _stop_harness(
+                process, min(deadline, current_cleanup_deadline() or float("inf"))
+            )
+            raise
         except asyncio.CancelledError as exc:
             cancelled = exc
         except EvaluationPreparationError as exc:
@@ -542,7 +655,7 @@ class SWEbenchEvaluator:
                 else "HARNESS_PROCESS_FAILED",
                 message=f"{type(exc).__name__}: {exc}"[:4096],
             )
-        cleaning = asyncio.create_task(self._cleanup(attempt, process))
+        cleaning = asyncio.create_task(self._cleanup(attempt, process, identity))
         try:
             identities, cleanup_diagnostics = await asyncio.shield(cleaning)
         except asyncio.CancelledError as exc:

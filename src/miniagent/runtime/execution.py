@@ -871,7 +871,23 @@ class RunExecution:
                 component=component,
             )
         elif kind.endswith(("_committed", "_failed", "_interrupted")):
-            operation = None
+            attempt_id = getattr(payload, "attempt_id", None)
+            if operation is not None and operation.attempt_id == attempt_id:
+                operation = None
+            elif kind == "evaluation_attempt_interrupted":
+                store = self.journal.recorder.store
+                if store is None or not any(
+                    isinstance(event.payload, OperationInterrupted)
+                    and event.payload.attempt_id == attempt_id
+                    for event in await store.list_events(self.state.identity.run_id)
+                ):
+                    raise ManagedExecutionError(
+                        "Previous evaluation attempt has no confirmed interruption"
+                    )
+            else:
+                raise ManagedExecutionError(
+                    "Component completion belongs to another active operation"
+                )
         state = self.state.model_copy(
             update={
                 "execution": self.state.execution.model_copy(

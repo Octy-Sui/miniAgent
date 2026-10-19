@@ -1,14 +1,26 @@
 import asyncio
 import json
-import os
-import signal
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from miniagent.environments.managed_execution import (
+    ManagedExecutionError,
+    current_cleanup_deadline,
+    current_execution_observer,
+)
+from miniagent.environments.process import (
+    identify_host_process,
+    inspect_host_execution,
+    process_group_absent,
+    reap_process,
+    register_host_process,
+)
 
 
 class DockerConnectionError(ValueError):
@@ -40,10 +52,16 @@ async def _run_command(
     argv: list[str], *, environment: dict[str, str], timeout_seconds: float
 ) -> tuple[int, bytes, bytes]:
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_seconds
-    reserve = min(1.0, timeout_seconds / 4)
-    process: asyncio.subprocess.Process | None = None
-    readers: list[asyncio.Task[bytes]] = []
+    deadline = min(
+        loop.time() + timeout_seconds, current_cleanup_deadline() or float("inf")
+    )
+    if deadline <= loop.time():
+        raise TimeoutError("Docker command deadline exhausted before launch")
+    reserve = min(1.0, max(0.0, deadline - loop.time()) / 4)
+    process = None
+    readers = []
+    identity = None
+    observer = current_execution_observer()
     try:
         async with asyncio.timeout_at(deadline - reserve):
             process = await asyncio.create_subprocess_exec(
@@ -58,25 +76,45 @@ async def _run_command(
                 asyncio.create_task(_read_output(process.stdout)),
                 asyncio.create_task(_read_output(process.stderr)),
             ]
+            try:
+                identity = identify_host_process(
+                    process.pid,
+                    attempt_id=observer.attempt_id if observer else uuid4(),
+                    execution_id=uuid4(),
+                    role="docker_helper",
+                )
+            except ManagedExecutionError:
+                if observer is not None or not process_group_absent(process.pid):
+                    raise
+            if identity is not None:
+                register_host_process(process, identity)
+                if observer:
+                    await observer.identified(identity)
             stdout, stderr = await asyncio.gather(*readers)
-            return await process.wait(), stdout, stderr
-    finally:
-        if process is not None and process.returncode is None:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            try:
-                async with asyncio.timeout_at(deadline):
-                    await asyncio.shield(process.wait())
-            except TimeoutError as exc:
-                exc.add_note(f"CLI PID {process.pid} was not confirmed reaped")
-                raise
-        for reader in readers:
-            if not reader.done():
-                reader.cancel()
-        if readers:
-            await asyncio.wait(readers, timeout=max(0.0, deadline - loop.time()))
+            code = await process.wait()
+            if identity is not None:
+                evidence = inspect_host_execution(identity)
+                if evidence.outcome != "ended":
+                    raise ManagedExecutionError(
+                        "Docker CLI whole group end is unconfirmed"
+                    )
+                if observer:
+                    await observer.ended(evidence)
+            return code, stdout, stderr
+    except BaseException as exc:
+        if process is not None:
+            diagnostics = await reap_process(process, list(readers), deadline=deadline)
+            if diagnostics:
+                raise ManagedExecutionError(
+                    "Docker CLI cleanup is unconfirmed"
+                ) from exc
+            if (
+                isinstance(exc, (TimeoutError, asyncio.CancelledError))
+                and identity is not None
+                and observer is not None
+            ):
+                await observer.ended(inspect_host_execution(identity))
+        raise
 
 
 def harness_environment(
