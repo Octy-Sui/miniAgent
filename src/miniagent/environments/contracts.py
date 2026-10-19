@@ -5,6 +5,7 @@ from uuid import UUID
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from miniagent.artifacts.contracts import ArtifactRef
+from miniagent.environments.attachment import AttachmentFacts, WorkspaceAttachment
 
 
 class WorkspaceDelta(BaseModel):
@@ -85,6 +86,8 @@ class Workspace(Protocol):
     @property
     def run_id(self) -> UUID: ...
 
+    def describe_attachment(self) -> WorkspaceAttachment: ...
+
     async def execute(self, command: Command) -> ExecutionResult: ...
 
     async def checkpoint(self) -> WorkspaceCheckpoint: ...
@@ -98,7 +101,11 @@ class Workspace(Protocol):
     async def destroy(self) -> None: ...
 
 
-class WorkspaceBackend[SpecT](Protocol):
+class WorkspaceBackend[SpecT, AttachmentT = WorkspaceAttachment](Protocol):
+    async def inspect_attachment(self, attachment: AttachmentT) -> AttachmentFacts: ...
+
+    async def attach(self, spec: SpecT, attachment: AttachmentT) -> Workspace: ...
+
     async def create(self, spec: SpecT) -> Workspace: ...
 
     async def recover(

@@ -63,6 +63,9 @@ class TextTool(Tool[TextArguments]):
 
 
 class EvidenceWorkspace:
+    def describe_attachment(self):
+        raise AssertionError("Attachment metadata is not used by this test")
+
     run_id = UUID("00000000-0000-0000-0000-000000000001")
     workspace_id = "workspace"
 

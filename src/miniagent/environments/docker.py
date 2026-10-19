@@ -7,6 +7,7 @@ import hashlib
 import math
 import os
 import posixpath
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -14,7 +15,15 @@ from pathlib import Path, PurePosixPath
 from time import monotonic
 from uuid import UUID, uuid4
 
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
+
 from miniagent.artifacts import ArtifactStore, ArtifactWrite
+from miniagent.environments.attachment import (
+    AttachmentFacts,
+    AttachmentProblem,
+    DockerAttachment,
+    WorkspaceAttachmentError,
+)
 from miniagent.environments.config import ContainerUserPolicy, DockerWorkspaceSpec
 from miniagent.environments.contracts import (
     Command,
@@ -26,6 +35,8 @@ from miniagent.environments.contracts import (
 )
 from miniagent.environments.docker_connection import (
     DockerConnection,
+    FrozenDockerConnection,
+    bind_docker_connection,
     docker_argv,
     harness_environment,
     resolve_docker_connection,
@@ -45,6 +56,26 @@ from miniagent.environments.process import (
     register_host_process,
     write_stdin,
 )
+
+
+class _ContainerConfig(BaseModel):
+    model_config = ConfigDict(strict=True)
+    workdir: str = Field(alias="WorkingDir")
+    labels: dict[str, str] = Field(alias="Labels")
+
+
+class _ContainerState(BaseModel):
+    model_config = ConfigDict(strict=True)
+    status: str = Field(alias="Status")
+
+
+class _ContainerInspection(BaseModel):
+    model_config = ConfigDict(strict=True)
+    container_id: str = Field(alias="Id")
+    image_id: str = Field(alias="Image")
+    config: _ContainerConfig = Field(alias="Config")
+    host: dict[str, JsonValue] = Field(alias="HostConfig")
+    state: _ContainerState = Field(alias="State")
 
 
 class DockerWorkspaceError(RuntimeError):
@@ -86,6 +117,186 @@ class DockerWorkspaceBackend:
         self.docker_executable = docker_executable
         self.max_output_bytes = max_output_bytes
         self.connection = connection
+
+    async def inspect_attachment(self, attachment: DockerAttachment) -> AttachmentFacts:
+        checked: list[str] = []
+        exists = False
+        status = None
+        try:
+            connection = bind_docker_connection(attachment.connection, dict(os.environ))
+            if self.connection is not None and (
+                self.connection.endpoint != connection.endpoint
+                or self.connection.daemon_id != connection.daemon_id
+                or self.connection.cert_path != connection.cert_path
+                or self.connection.tls_verify != connection.tls_verify
+            ):
+                raise ValueError("Backend differs from frozen Docker connection")
+            self.connection = connection
+            daemon = await self._require_success(
+                ["info", "--format", "{{.ID}}"], action="inspect original daemon"
+            )
+            if daemon.stdout.decode().strip() != connection.daemon_id:
+                raise ValueError("Original Docker daemon identity differs")
+            checked.append("daemon")
+            result = await self._run(["container", "inspect", attachment.container_id])
+            if result.exit_code:
+                raise FileNotFoundError("Original Docker container is unavailable")
+            documents = TypeAdapter(list[_ContainerInspection]).validate_json(
+                result.stdout
+            )
+            if not isinstance(documents, list) or len(documents) != 1:
+                raise ValueError("Invalid Docker container inspection")
+            document = documents[0]
+            exists = True
+            config, host = document.config, document.host
+            required_labels = {
+                "miniagent.managed": "true",
+                "miniagent.run_id": str(attachment.run_id),
+                "miniagent.workspace_id": attachment.workspace_id,
+            }
+            if (
+                document.container_id != attachment.container_id
+                or document.image_id != attachment.image_id
+                or config.workdir != attachment.workdir
+                or any(
+                    attachment.labels.get(key) != value
+                    or config.labels.get(key) != value
+                    for key, value in required_labels.items()
+                )
+                or any(
+                    config.labels.get(key) != value
+                    for key, value in attachment.labels.items()
+                )
+                or tuple(
+                    sorted(
+                        TypeAdapter(list[str]).validate_python(
+                            host.get("SecurityOpt") or [], strict=True
+                        )
+                    )
+                )
+                != tuple(sorted(attachment.security_options))
+                or any(
+                    host.get(key) != value
+                    for key, value in attachment.resource_limits.items()
+                )
+            ):
+                raise ValueError(
+                    "Original Docker container identity or configuration differs"
+                )
+            checked.append("container_identity")
+            status = document.state.status
+            if status not in ("running", "exited"):
+                raise ValueError(
+                    f"Original Docker container state is unsupported: {status}"
+                )
+            checked.append("container_status")
+        except (
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
+            DockerWorkspaceError,
+            ManagedExecutionError,
+        ) as exc:
+            return AttachmentFacts(
+                run_id=attachment.run_id,
+                workspace_id=attachment.workspace_id,
+                exists=exists,
+                identity_matches=False,
+                container_status=status,
+                checked=tuple(checked),
+                errors=(
+                    AttachmentProblem(
+                        code="WORKSPACE_UNAVAILABLE"
+                        if not exists
+                        else "WORKSPACE_IDENTITY_MISMATCH",
+                        message=str(exc),
+                    ),
+                ),
+            )
+        return AttachmentFacts(
+            run_id=attachment.run_id,
+            workspace_id=attachment.workspace_id,
+            exists=True,
+            identity_matches=True,
+            container_status=status,
+            checked=tuple(checked),
+            live_checks=("workdir", "git_baseline", "guest_execution_groups"),
+        )
+
+    async def attach(
+        self, spec: DockerWorkspaceSpec, attachment: DockerAttachment
+    ) -> "DockerWorkspace":
+        facts = await self.inspect_attachment(attachment)
+        if (
+            spec.run_id != attachment.run_id
+            or spec.options.workdir != attachment.workdir
+        ):
+            facts = facts.model_copy(
+                update={
+                    "identity_matches": False,
+                    "errors": (
+                        AttachmentProblem(
+                            code="WORKSPACE_IDENTITY_MISMATCH",
+                            message="Requested workspace differs from retained identity",
+                        ),
+                    ),
+                }
+            )
+        if facts.errors:
+            raise WorkspaceAttachmentError(facts)
+        if facts.container_status == "exited":
+            await self._start_container(attachment.container_id)
+        try:
+            await self._validate_workdir(attachment.container_id, spec)
+            if (
+                re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", attachment.base_revision)
+                is None
+            ):
+                raise ValueError("Invalid original Git baseline")
+            prefix = [
+                "git",
+                "--no-optional-locks",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "core.fsmonitor=false",
+            ]
+            top = await self._require_exec_success(
+                attachment.container_id,
+                [*prefix, "rev-parse", "--show-toplevel"],
+                cwd=attachment.workdir,
+                action="inspect original Git root",
+            )
+            if top.stdout.decode().strip() != attachment.workdir:
+                raise ValueError("Original Git root differs")
+            await self._require_exec_success(
+                attachment.container_id,
+                [*prefix, "cat-file", "-e", attachment.base_revision + "^{commit}"],
+                cwd=attachment.workdir,
+                action="inspect original Git baseline",
+            )
+        except (ValueError, DockerWorkspaceError, ManagedExecutionError) as exc:
+            raise WorkspaceAttachmentError(
+                facts.model_copy(
+                    update={
+                        "identity_matches": False,
+                        "errors": (
+                            AttachmentProblem(
+                                code="WORKSPACE_LIVE_CHECK_FAILED", message=str(exc)
+                            ),
+                        ),
+                    }
+                )
+            ) from exc
+        return DockerWorkspace(
+            backend=self,
+            spec=spec,
+            _workspace_id=attachment.workspace_id,
+            container_id=attachment.container_id,
+            image_id=attachment.image_id,
+            base_revision=attachment.base_revision,
+        )
 
     async def create(self, spec: DockerWorkspaceSpec) -> "DockerWorkspace":
         image_id = await self._resolve_image_id(spec.options.image)
@@ -554,6 +765,46 @@ class DockerWorkspace:
     @property
     def run_id(self) -> UUID:
         return self.spec.run_id
+
+    def describe_attachment(self) -> DockerAttachment:
+        connection = self.backend.connection
+        if connection is None:
+            raise DockerWorkspaceError(
+                "Retained Docker workspace requires an explicit connection"
+            )
+        limits = self.spec.options.limits
+        return DockerAttachment(
+            run_id=self.run_id,
+            workspace_id=self.workspace_id,
+            base_revision=self.base_revision,
+            container_id=self.container_id,
+            image_id=self.image_id,
+            workdir=self.spec.options.workdir,
+            labels={
+                "miniagent.managed": "true",
+                "miniagent.run_id": str(self.run_id),
+                "miniagent.workspace_id": self.workspace_id,
+            },
+            security_options=("no-new-privileges:true",),
+            resource_limits={
+                "NanoCpus": int(limits.cpu_count * 1000000000),
+                "Memory": limits.memory_mb * 1024 * 1024,
+                "MemorySwap": limits.memory_mb * 1024 * 1024,
+                "PidsLimit": limits.pids,
+                "CapDrop": ["ALL"],
+                "NetworkMode": "bridge"
+                if self.spec.options.network_enabled
+                else "none",
+                "Init": True,
+            },
+            connection=FrozenDockerConnection(
+                source_context=connection.source_context,
+                endpoint=connection.endpoint,
+                cert_path=connection.cert_path,
+                tls_verify=connection.tls_verify,
+                daemon_id=connection.daemon_id,
+            ),
+        )
 
     async def execute(self, command: Command) -> ExecutionResult:
         async with self._operation_lock:

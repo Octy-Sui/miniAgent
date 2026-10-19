@@ -47,6 +47,9 @@ class CancellingProvider(ModelProvider):
 
 
 class FinalizationWorkspace:
+    def describe_attachment(self):
+        raise AssertionError("Attachment metadata is not used by this test")
+
     def __init__(
         self,
         run_id: UUID,
