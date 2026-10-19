@@ -1,10 +1,14 @@
 import hashlib
 import sqlite3
+import threading
+import time
 from collections.abc import Callable, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
+
+from miniagent.dashboard.workers import HeavyWorkPool
 
 
 @dataclass(frozen=True)
@@ -69,6 +73,12 @@ class RecordingCursor(sqlite3.Cursor):
 
 
 class RecordingConnection(sqlite3.Connection):
+    was_closed = False
+
+    def close(self) -> None:
+        super().close()
+        self.was_closed = True
+
     after_first_run_fetch: Callable[[], None] | None = None
     fetched_bytes = 0
     structured_bytes = 0
@@ -95,7 +105,7 @@ class RecordingConnection(sqlite3.Connection):
 import os
 import sys
 from multiprocessing.connection import Connection
-from types import FrameType
+from types import FrameType, FunctionType
 
 
 class RecordingOpen:
@@ -135,6 +145,17 @@ class RecordingOpen:
                 os.close(descriptor)
                 raise ValueError("invalid FD observation handshake")
         return descriptor
+
+    def live_descriptors(self) -> list[int]:
+        live = []
+        for descriptor, _, device, inode in self.opened:
+            try:
+                info = os.fstat(descriptor)
+            except OSError:
+                continue
+            if (info.st_dev, info.st_ino) == (device, inode):
+                live.append(descriptor)
+        return live
 
     def content_fd(self, descriptor: object) -> bool:
         path = self.nodes.get(descriptor, ()) if isinstance(descriptor, int) else ()
@@ -199,3 +220,68 @@ def probe_content(
         }
     )
     channel.close()
+
+
+class RecordingPool(HeavyWorkPool):
+    def __init__(self, limit: int = 2) -> None:
+        super().__init__(limit)
+        self.intervals: list[tuple[int, int, int]] = []
+        self.active = 0
+        self.peak = 0
+        self.lock = threading.Lock()
+
+    async def run[T](self, operation: Callable[[], T]) -> T:
+        def tracked() -> T:
+            thread = threading.get_ident()
+            start = time.perf_counter_ns()
+            with self.lock:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            try:
+                return operation()
+            finally:
+                end = time.perf_counter_ns()
+                with self.lock:
+                    self.intervals.append((thread, start, end))
+                    self.active -= 1
+
+        return await super().run(tracked)
+
+
+class StageRecorder:
+    def __init__(self, functions: dict[str, FunctionType]) -> None:
+        self.codes = {function.__code__: name for name, function in functions.items()}
+        self.pending: dict[tuple[int, int], tuple[str, int, str]] = {}
+        self.hashes: dict[int, list[int]] = {}
+        self.records: list[tuple[str, int, int, int, str]] = []
+
+    def __call__(self, frame: FrameType, event: str, arg: object) -> None:
+        thread = threading.get_ident()
+        key = (thread, id(frame))
+        if event == "call" and frame.f_code in self.codes:
+            self.pending[key] = (
+                self.codes[frame.f_code],
+                time.perf_counter_ns(),
+                frame.f_back.f_code.co_name if frame.f_back else "",
+            )
+        elif event == "return" and key in self.pending:
+            name, start, parent = self.pending.pop(key)
+            self.records.append((name, thread, start, time.perf_counter_ns(), parent))
+        elif (
+            event in {"c_call", "c_return"}
+            and getattr(arg, "__name__", None) == "update"
+            and type(getattr(arg, "__self__", None)).__module__ == "_hashlib"
+        ):
+            stack = self.hashes.setdefault(thread, [])
+            if event == "c_call":
+                stack.append(time.perf_counter_ns())
+            elif stack:
+                self.records.append(
+                    (
+                        "hash.update",
+                        thread,
+                        stack.pop(),
+                        time.perf_counter_ns(),
+                        frame.f_code.co_name,
+                    )
+                )
