@@ -8,7 +8,9 @@ from test_context import summary_plan, summary_response
 from miniagent.models.messages import AssistantMessage
 from miniagent.runtime.context import validate_compaction_record, validate_summary
 from miniagent.runtime.events import NewRunEvent
+from miniagent.runtime.execution import ContinueRun
 from miniagent.runtime.journal import RunJournal
+from miniagent.runtime.progress import CandidateDisposition
 from miniagent.runtime.recording import RunPersistenceError, RunRecorder
 from miniagent.runtime.snapshots import NewRunSnapshot
 from miniagent.runtime.state import ContextProgress
@@ -89,7 +91,7 @@ async def test_compaction_transaction_failure_is_atomic(tmp_path) -> None:
     ("change",), [("current",), ("previous",), ("snapshot_id",), ("range",), ("hash",)]
 )
 async def test_corrupt_compaction_record_rejected(tmp_path, change) -> None:
-    store, journal, plan, state, event = await journal_candidate(tmp_path)
+    store, journal, _plan, state, event = await journal_candidate(tmp_path)
     await journal.compact(state, event)
     import json
 
@@ -128,7 +130,7 @@ async def test_normal_append_preserves_context_progress(tmp_path) -> None:
     from miniagent.models.protocol import FinishReason, ModelResponse
     from miniagent.runtime.transitions import accept_model_response
 
-    store, journal, plan, state, event = await journal_candidate(tmp_path)
+    _store, journal, _plan, state, event = await journal_candidate(tmp_path)
     await journal.compact(state, event)
     advanced = accept_model_response(
         state,
@@ -136,6 +138,7 @@ async def test_normal_append_preserves_context_progress(tmp_path) -> None:
             message=AssistantMessage(content="next"), finish_reason=FinishReason.STOP
         ),
         None,
+        disposition=CandidateDisposition(text="next"),
     )
     assert advanced.context == ContextProgress(current_version=1)
     assert advanced.conversation.messages[:-1] == state.conversation.messages
@@ -425,7 +428,7 @@ async def test_summary_retries_are_bounded_without_new_steps(tmp_path, kind) -> 
 
 
 async def test_nonrecoverable_summary_error_is_not_retried(tmp_path) -> None:
-    runtime, execution, provider, store = await pipeline(tmp_path, old=7000)
+    runtime, execution, provider, _store = await pipeline(tmp_path, old=7000)
     provider.responses = [ValueError("not recoverable")]
     outcome = await runtime._prepare_request(execution)
     assert outcome.messages == execution.state.conversation.messages
@@ -462,10 +465,7 @@ async def test_context_limit_retries_same_step_once(tmp_path, second_rejects) ->
         ModelContextLimitError,
         ModelResponse,
     )
-    from miniagent.runtime.approval import ApprovalCoordinator
-    from miniagent.runtime.execution import EvaluateCandidate, TerminateRun
-    from miniagent.runtime.tool_runner import ToolCallRunner
-    from miniagent.tools.registry import ToolRegistry
+    from miniagent.runtime.execution import ContinueRun, TerminateRun
 
     runtime, execution, provider, store = await pipeline(tmp_path, old=1000)
     provider.responses = [
@@ -477,22 +477,10 @@ async def test_context_limit_retries_same_step_once(tmp_path, second_rejects) ->
             message=AssistantMessage(content="done"), finish_reason=FinishReason.STOP
         ),
     ]
-    runner = ToolCallRunner(
-        tools=ToolRegistry([]),
-        policy_engine=runtime.policy_engine,
-        policy_context=runtime.policy_context,
-        approval=ApprovalCoordinator(
-            config=execution.state.definition.config,
-            handler=None,
-            policy_engine=runtime.policy_engine,
-            cancellation_token=runtime.cancellation_token,
-        ),
-        cancellation_token=runtime.cancellation_token,
+    outcome = await runtime._request_model(
+        execution, execution.state.definition.agent_spec
     )
-    outcome = await runtime._run_step(
-        execution, execution.state.definition.agent_spec, runner
-    )
-    assert isinstance(outcome, TerminateRun if second_rejects else EvaluateCandidate)
+    assert isinstance(outcome, TerminateRun if second_rejects else ContinueRun)
     assert len(provider.requests) == 3
     assert execution.state.execution.steps_started == 7
     assert execution.state.usage.model_requests == 3
@@ -509,7 +497,7 @@ async def test_context_limit_retries_same_step_once(tmp_path, second_rejects) ->
 async def test_reload_rejects_rewritten_committed_history(tmp_path, mutation) -> None:
     import json
 
-    store, journal, plan, state, event = await journal_candidate(tmp_path)
+    store, journal, _plan, state, event = await journal_candidate(tmp_path)
     await journal.compact(state, event)
     with sqlite3.connect(store.path) as connection:
         data = json.loads(
@@ -530,12 +518,9 @@ async def test_cancel_returned_summary_before_publish_or_business_step(
     tmp_path,
 ) -> None:
     from miniagent.models.protocol import ModelUsage
-    from miniagent.runtime.approval import ApprovalCoordinator
     from miniagent.runtime.cancellation import CancellationRequested
-    from miniagent.runtime.tool_runner import ToolCallRunner
-    from miniagent.tools.registry import ToolRegistry
 
-    runtime, execution, provider, store = await pipeline(tmp_path)
+    runtime, execution, _provider, store = await pipeline(tmp_path)
 
     class ReturningCancellationProvider:
         def __init__(self):
@@ -554,22 +539,8 @@ async def test_cancel_returned_summary_before_publish_or_business_step(
 
     cancelling = ReturningCancellationProvider()
     runtime.provider = cancelling
-    runner = ToolCallRunner(
-        tools=ToolRegistry([]),
-        policy_engine=runtime.policy_engine,
-        policy_context=runtime.policy_context,
-        approval=ApprovalCoordinator(
-            config=execution.state.definition.config,
-            handler=None,
-            policy_engine=runtime.policy_engine,
-            cancellation_token=runtime.cancellation_token,
-        ),
-        cancellation_token=runtime.cancellation_token,
-    )
     with pytest.raises(CancellationRequested):
-        await runtime._run_step(
-            execution, execution.state.definition.agent_spec, runner
-        )
+        await runtime._request_model(execution, execution.state.definition.agent_spec)
     assert execution.state.execution.steps_started == 6
     assert execution.state.usage.model_requests == 1
     assert execution.state.usage.total_tokens == 12
@@ -592,19 +563,16 @@ async def test_real_summary_capacity_precheck_preserves_safe_business_only(
     from test_runtime import QueueProvider, SuccessfulTool, final_response
 
     from miniagent.runtime import AgentRuntime
-    from miniagent.runtime.approval import ApprovalCoordinator
     from miniagent.runtime.context import (
         QwenPromptTokenEstimator,
         build_summary_request,
         select_compaction_prefix,
     )
     from miniagent.runtime.execution import (
-        EvaluateCandidate,
         RunExecution,
         TerminateRun,
     )
     from miniagent.runtime.state import RunDefinition, RunLifecycle
-    from miniagent.runtime.tool_runner import ToolCallRunner
     from miniagent.tools.registry import ToolRegistry
 
     class DescribedTool(SuccessfulTool):
@@ -689,20 +657,8 @@ async def test_real_summary_capacity_precheck_preserves_safe_business_only(
     runtime = AgentRuntime(
         provider=provider, tools=registry, estimator=estimator, run_store=store
     )
-    runner = ToolCallRunner(
-        tools=registry,
-        policy_engine=runtime.policy_engine,
-        policy_context=runtime.policy_context,
-        approval=ApprovalCoordinator(
-            config=definition.config,
-            handler=None,
-            policy_engine=runtime.policy_engine,
-            cancellation_token=runtime.cancellation_token,
-        ),
-        cancellation_token=runtime.cancellation_token,
-    )
-    outcome = await runtime._run_step(execution, agent, runner)
-    assert isinstance(outcome, TerminateRun if unsafe else EvaluateCandidate)
+    outcome = await runtime._request_model(execution, agent)
+    assert isinstance(outcome, TerminateRun if unsafe else ContinueRun)
     if unsafe:
         assert isinstance(outcome, TerminateRun)
         assert outcome.termination.error is not None

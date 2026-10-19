@@ -14,17 +14,12 @@ from miniagent.models.messages import SystemMessage, UserMessage
 from miniagent.models.protocol import ModelRequest, ModelResponse, ModelUsage
 from miniagent.providers.qwen import QwenProvider
 from miniagent.runtime import AgentRuntime
-from miniagent.runtime.approval import ApprovalCoordinator
 from miniagent.runtime.execution import (
-    ContinueRun,
-    EvaluateCandidate,
     RunExecution,
-    TerminateRun,
 )
 from miniagent.runtime.journal import RunJournal
 from miniagent.runtime.recording import RunRecorder
 from miniagent.runtime.state import ConversationState, create_run_state
-from miniagent.runtime.tool_runner import ToolCallRunner
 
 from .protocol import (
     RunEvidence,
@@ -226,35 +221,11 @@ async def execute(directory: Path, run_id: str) -> None:
             )
         ),
     )
-    approval = ApprovalCoordinator(
-        config=config,
-        handler=dependencies.approval_handler,
-        policy_engine=runtime.policy_engine,
-        cancellation_token=runtime.cancellation_token,
-    )
-    tools = ToolCallRunner(
-        tools=dependencies.tools,
-        policy_engine=runtime.policy_engine,
-        policy_context=runtime.policy_context,
-        approval=approval,
-        cancellation_token=runtime.cancellation_token,
-    )
     failure = None
     result = None
     try:
-        while True:
-            termination = execution.before_next_step()
-            if termination:
-                outcome = TerminateRun(termination)
-            else:
-                outcome = await runtime._run_step(execution, agent, tools)
-            if isinstance(outcome, ContinueRun):
-                continue
-            if isinstance(outcome, EvaluateCandidate):
-                outcome = await runtime._evaluate(execution, outcome)
-            result = await execution.finish(outcome.termination)
-            break
-    except (Exception, asyncio.CancelledError) as exc:
+        result = await runtime._drive(execution)
+    except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001 -- capture acceptance evidence before surfacing failure.
         failure = f"{type(exc).__name__}: {exc}"
     events = await dependencies.run_store.list_events(dependencies.run_id)
     record = await dependencies.run_store.get(dependencies.run_id)

@@ -8,6 +8,7 @@ from miniagent.models.protocol import ModelUsage
 
 class RunUsage(BaseModel):
     model_requests: int = Field(default=0, ge=0)
+    unconfirmed_model_requests: int = Field(default=0, ge=0)
     tool_calls: int = Field(default=0, ge=0)
     input_tokens: int = Field(default=0, ge=0)
     cached_input_tokens: int = Field(default=0, ge=0)
@@ -75,6 +76,7 @@ def add_request_usage(
 ) -> RunUsage:
     return RunUsage(
         model_requests=current.model_requests,
+        unconfirmed_model_requests=current.unconfirmed_model_requests,
         tool_calls=current.tool_calls,
         input_tokens=current.input_tokens + usage.input_tokens,
         cached_input_tokens=current.cached_input_tokens + usage.cached_input_tokens,

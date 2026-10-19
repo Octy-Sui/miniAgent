@@ -8,7 +8,12 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from miniagent.agents import AgentSpec
-from miniagent.evaluation import EvaluationRequest, Evaluator, PassThroughEvaluator
+from miniagent.evaluation import (
+    CandidateOutput,
+    EvaluationRequest,
+    Evaluator,
+    PassThroughEvaluator,
+)
 from miniagent.metering.pricing import PriceConfig
 from miniagent.metering.usage import calculate_request_cost
 from miniagent.models.messages import SystemMessage, UserMessage
@@ -51,6 +56,13 @@ from miniagent.runtime.execution import (
     TerminateRun,
 )
 from miniagent.runtime.journal import RunJournal
+from miniagent.runtime.progress import (
+    CandidateDisposition,
+    ExecutionPhase,
+    TerminateDisposition,
+    TerminationDecision,
+    ToolsDisposition,
+)
 from miniagent.runtime.recording import RunRecorder
 from miniagent.runtime.recovery import RunRecoveryContext
 from miniagent.runtime.result import RunError, RunResult, TerminationReason
@@ -146,8 +158,12 @@ class AgentRuntime:
                 )
             ),
         )
+        return await self._drive(execution)
+
+    async def _drive(self, execution: RunExecution) -> RunResult:
+        agent = execution.state.definition.agent_spec
         approval = ApprovalCoordinator(
-            config=self.config,
+            config=execution.state.definition.config,
             handler=self.approval_handler,
             policy_engine=self.policy_engine,
             cancellation_token=self.cancellation_token,
@@ -159,30 +175,113 @@ class AgentRuntime:
             approval=approval,
             cancellation_token=self.cancellation_token,
         )
+        results = None
         try:
             while True:
+                execution.account_active_time()
                 if self.cancellation_token.is_cancelled:
                     raise CancellationRequested
-                termination = execution.before_next_step()
-                if termination is not None:
-                    outcome: RunOutcome = TerminateRun(termination)
-                    break
-                outcome = await self._run_step(execution, agent, tools)
-                if isinstance(outcome, ContinueRun):
-                    continue
-                if isinstance(outcome, EvaluateCandidate):
-                    outcome = await self._evaluate(execution, outcome)
-                break
+                phase = execution.state.execution.phase
+                if phase in (ExecutionPhase.PREPARE, ExecutionPhase.REQUEST_MODEL):
+                    if execution.state.execution.current_step is None:
+                        termination = execution.before_next_step()
+                        if termination is not None:
+                            await execution.record_termination(
+                                TerminationDecision(
+                                    status="failed",
+                                    reason=termination.reason,
+                                    error=termination.error,
+                                )
+                            )
+                            continue
+                    outcome = await self._request_model(execution, agent)
+                elif phase is ExecutionPhase.EXECUTE_TOOLS:
+                    tool_outcome = await tools.execute(
+                        execution, agent, execution.state.execution.tool_batch
+                    )
+                    results = tool_outcome.results
+                    outcome = (
+                        TerminateRun(tool_outcome.termination)
+                        if tool_outcome.termination
+                        else ContinueRun()
+                    )
+                elif phase is ExecutionPhase.COMPLETE_STEP:
+                    if results is None:
+                        store = execution.journal.recorder.store
+                        if store is None:
+                            raise ValueError(
+                                "Completed batch recovery requires persisted tool results"
+                            )
+                        facts = await store.list_tool_results(
+                            execution.state.identity.run_id,
+                            step_number=execution.state.execution.steps_started,
+                        )
+                        results = [fact.result for fact in facts]
+                    termination = await execution.complete_tool_step(results)
+                    results = None
+                    outcome = (
+                        TerminateRun(termination) if termination else ContinueRun()
+                    )
+                elif phase is ExecutionPhase.EVALUATE_CANDIDATE:
+                    disposition = execution.state.execution.response_disposition
+                    if not isinstance(disposition, CandidateDisposition):
+                        raise ValueError(
+                            "Candidate phase requires candidate disposition"
+                        )
+                    outcome = await self._evaluate(
+                        execution,
+                        EvaluateCandidate(CandidateOutput(text=disposition.text)),
+                    )
+                elif phase is ExecutionPhase.TERMINATE:
+                    disposition = execution.state.execution.response_disposition
+                    if not isinstance(disposition, TerminateDisposition):
+                        raise ValueError(
+                            "Terminate phase requires a persisted decision"
+                        )
+                    decision = disposition.decision
+                    if (
+                        decision.final_output is not None
+                        and execution.pending_evaluation_result is None
+                    ):
+                        execution.stage_evaluation_result(
+                            passed=decision.status == "succeeded",
+                            final_output=decision.final_output,
+                        )
+                    return await execution.finish(
+                        RunTermination(
+                            status=RunStatus(decision.status),
+                            reason=decision.reason,
+                            error=decision.error,
+                        )
+                    )
+                else:
+                    raise ValueError(f"Unsupported execution phase: {phase}")
+                if isinstance(outcome, TerminateRun):
+                    evaluation = execution.pending_evaluation_result
+                    await execution.record_termination(
+                        TerminationDecision(
+                            status="succeeded"
+                            if outcome.termination.status is RunStatus.SUCCEEDED
+                            else "cancelled"
+                            if outcome.termination.status is RunStatus.CANCELLED
+                            else "failed",
+                            reason=outcome.termination.reason,
+                            error=outcome.termination.error,
+                            final_output=evaluation.final_output
+                            if evaluation
+                            else None,
+                        )
+                    )
         except CancellationRequested:
-            outcome = TerminateRun(
+            operation = execution.state.execution.active_operation
+            if operation is not None and operation.kind in ("model", "summary"):
+                await execution.interrupt_operation(unconfirmed=True)
+            return await execution.finish(
                 RunTermination(
                     status=RunStatus.CANCELLED,
                     reason=TerminationReason.CANCEL_REQUESTED,
                 )
             )
-        if not isinstance(outcome, TerminateRun):
-            raise TypeError("Run loop ended without a termination outcome")
-        return await execution.finish(outcome.termination)
 
     @staticmethod
     def _context_failure(code: str, reason: str) -> RunTermination:
@@ -353,23 +452,29 @@ class AgentRuntime:
         )
         return self._build_request(execution.state)
 
-    async def _run_step(
+    async def _request_model(
         self,
         execution: RunExecution,
         agent: AgentSpec,
-        tools: ToolCallRunner,
     ) -> RunOutcome:
         if self.cancellation_token.is_cancelled:
             raise CancellationRequested
-        request = await self._prepare_request(execution)
-        if self.cancellation_token.is_cancelled:
-            raise CancellationRequested
-        if isinstance(request, RunTermination):
-            return TerminateRun(request)
-        await execution.begin_step(
-            provider=agent.model.provider,
-            model=agent.model.model,
-        )
+        if execution.state.execution.current_step is None:
+            request = await self._prepare_request(execution)
+            if isinstance(request, RunTermination):
+                return TerminateRun(request)
+            if self.cancellation_token.is_cancelled:
+                raise CancellationRequested
+            await execution.begin_step(
+                provider=agent.model.provider, model=agent.model.model
+            )
+        else:
+            if execution.state.execution.active_operation is not None:
+                raise ValueError(
+                    "Prior model attempt must be interrupted before continuation"
+                )
+            request = self._build_request(execution.state)
+            await execution.begin_model_retry()
         for business_attempt in range(2):
             try:
                 response = await await_with_cancellation(
@@ -400,6 +505,7 @@ class AgentRuntime:
                 await execution.begin_model_retry()
                 continue
             except Exception as exc:  # noqa: BLE001
+                await execution.interrupt_operation(unconfirmed=True)
                 return TerminateRun(
                     RunTermination(
                         status=RunStatus.FAILED,
@@ -420,6 +526,7 @@ class AgentRuntime:
         request_cost = None
         if self.pricing is not None:
             if response.usage is None:
+                await execution.interrupt_operation(unconfirmed=True)
                 return TerminateRun(
                     RunTermination(
                         status=RunStatus.FAILED,
@@ -437,38 +544,23 @@ class AgentRuntime:
                 pricing=self.pricing,
             )
         decision = evaluate_model_response(response)
-        await execution.record_model_response(
-            response,
-            request_cost,
-            tool_calls=(response.message.tool_calls if decision is None else None),
-        )
-        if decision is not None:
-            if decision.target is RunStatus.FAILED:
-                if decision.reason is None:
-                    raise ValueError("Failed model decision requires a reason")
-                return TerminateRun(
-                    RunTermination(
-                        status=RunStatus.FAILED,
-                        reason=decision.reason,
-                        error=decision.error,
-                    )
-                )
-            if decision.target is not RunStatus.EVALUATING:
-                raise ValueError(f"Unsupported model decision: {decision.target}")
+        if decision is None:
+            disposition = ToolsDisposition()
+        elif decision.target is RunStatus.EVALUATING:
             if decision.candidate_output is None:
                 raise ValueError("Evaluation decision requires candidate output")
-            return EvaluateCandidate(decision.candidate_output)
-
-        tool_outcome = await tools.execute(
-            execution,
-            agent,
-            execution.state.execution.tool_batch,
+            disposition = CandidateDisposition(text=decision.candidate_output.text)
+        else:
+            if decision.reason is None:
+                raise ValueError("Termination decision requires reason")
+            disposition = TerminateDisposition(
+                decision=TerminationDecision(
+                    status="failed", reason=decision.reason, error=decision.error
+                )
+            )
+        await execution.record_model_response(
+            response, request_cost, disposition=disposition
         )
-        if tool_outcome.termination is not None:
-            return TerminateRun(tool_outcome.termination)
-        termination = await execution.complete_tool_step(tool_outcome.results)
-        if termination is not None:
-            return TerminateRun(termination)
         return ContinueRun()
 
     async def _evaluate(

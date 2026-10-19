@@ -13,7 +13,12 @@ from miniagent.environments.managed_execution import (
 from miniagent.metering.usage import RequestCost
 from miniagent.models.protocol import ModelUsage
 from miniagent.policy import PolicyDecision
-from miniagent.runtime.progress import BusinessStatus, ExecutionPhase, InterruptionInfo
+from miniagent.runtime.progress import (
+    BusinessStatus,
+    ExecutionPhase,
+    InterruptionInfo,
+    TerminationDecision,
+)
 from miniagent.runtime.tracing import SpanId
 from miniagent.tools.contracts import ToolResult
 
@@ -52,6 +57,7 @@ class RunEventType(StrEnum):
     EVALUATION_START = "evaluation_start"
     EVALUATION_COMPLETED = "evaluation_completed"
     RUN_FINISHED = "run_finished"
+    TERMINATION_DECIDED = "termination_decided"
 
 
 class _Payload(BaseModel):
@@ -101,7 +107,13 @@ class StepCompleted(_Payload):
     candidate_output: bool = False
 
 
+class TerminationDecided(_Payload):
+    type: Literal[RunEventType.TERMINATION_DECIDED] = RunEventType.TERMINATION_DECIDED
+    decision: TerminationDecision
+
+
 class ModelRequested(_Payload):
+    attempt_id: UUID | None = None
     type: Literal[RunEventType.MODEL_REQUESTED] = RunEventType.MODEL_REQUESTED
     provider: str
     model: str
@@ -109,6 +121,7 @@ class ModelRequested(_Payload):
 
 
 class ModelResponded(_Payload):
+    attempt_id: UUID | None = None
     type: Literal[RunEventType.MODEL_RESPONDED] = RunEventType.MODEL_RESPONDED
     finish_reason: str
     tool_call_count: int = Field(ge=0)
@@ -288,6 +301,7 @@ type EventPayload = Annotated[
     | ResumeFailed
     | StepStarted
     | StepCompleted
+    | TerminationDecided
     | ModelRequested
     | ModelResponded
     | ToolStarted

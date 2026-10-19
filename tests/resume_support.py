@@ -12,6 +12,7 @@ from miniagent.policy import ApprovalRequest
 from miniagent.runtime.events import RunEvent, RunEventType
 from miniagent.runtime.execution import RunExecution
 from miniagent.runtime.journal import RunJournal
+from miniagent.runtime.progress import ToolsDisposition
 from miniagent.runtime.recording import RunPersistenceError, RunRecorder
 from miniagent.runtime.recovery import RunRecoveryContext
 from miniagent.runtime.snapshots import RunSnapshot
@@ -51,7 +52,7 @@ async def waiting_case(
             finish_reason=FinishReason.TOOL_CALL,
         ),
         None,
-        tool_calls=(call,),
+        disposition=ToolsDisposition(),
     )
     await execution.begin_tool(call_index=0, tool_call_id=call.id, tool_name="shell")
     decision = make_decision(execution.state)

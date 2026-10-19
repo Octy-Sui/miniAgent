@@ -44,6 +44,7 @@ from miniagent.runtime import (
 from miniagent.runtime.events import ToolEnded
 from miniagent.runtime.execution import RunExecution
 from miniagent.runtime.journal import RunJournal
+from miniagent.runtime.progress import ToolsDisposition
 from miniagent.runtime.recording import RunRecorder
 from miniagent.runtime.transitions import (
     begin_evaluation,
@@ -303,7 +304,7 @@ class TestRunExecution:
         await execution.record_model_response(
             response,
             None,
-            tool_calls=response.message.tool_calls,
+            disposition=ToolsDisposition(),
         )
         call = response.message.tool_calls[0]
         await execution.begin_tool(

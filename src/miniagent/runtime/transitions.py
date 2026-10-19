@@ -11,7 +11,9 @@ from miniagent.runtime.progress import (
     InterruptionInfo,
     RecoverySession,
     RequestProgress,
+    ResponseDisposition,
     SuspensionMetadata,
+    TerminateDisposition,
     ToolsDisposition,
 )
 from miniagent.runtime.result import RunError, TerminationReason
@@ -30,7 +32,6 @@ from miniagent.runtime.state import (
     StepRange,
     ToolBatch,
 )
-from miniagent.tools.contracts import ToolCall
 
 _ALLOWED_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     RunStatus.CREATED: frozenset(
@@ -127,7 +128,7 @@ def accept_model_response(
     response: ModelResponse,
     request_cost: RequestCost | None,
     *,
-    tool_calls: tuple[ToolCall, ...] | None = None,
+    disposition: ResponseDisposition,
 ) -> RunState:
     usage = state.usage
     if response.usage is not None:
@@ -135,19 +136,27 @@ def accept_model_response(
     conversation = state.conversation.model_copy(
         update={"messages": (*state.conversation.messages, response.message)}
     )
-    execution = state.execution
-    if tool_calls is not None:
-        execution = execution.model_copy(
-            update={
-                "tool_batch": ToolBatch(calls=tool_calls),
-                "cursor": RunCursor.EXECUTE_TOOL_CALLS,
-                "phase": ExecutionPhase.EXECUTE_TOOLS,
-                "response_disposition": ToolsDisposition(),
-            }
+    changes: dict[str, object] = {
+        "response_disposition": disposition,
+        "active_operation": None,
+    }
+    lifecycle = state.lifecycle
+    if isinstance(disposition, ToolsDisposition):
+        changes.update(
+            tool_batch=ToolBatch(calls=response.message.tool_calls),
+            cursor=RunCursor.EXECUTE_TOOL_CALLS,
+            phase=ExecutionPhase.EXECUTE_TOOLS,
         )
+    elif isinstance(disposition, CandidateDisposition):
+        changes.update(phase=ExecutionPhase.EVALUATE_CANDIDATE)
+        lifecycle = lifecycle.model_copy(update={"candidate_output": disposition.text})
+    elif isinstance(disposition, TerminateDisposition):
+        changes.update(phase=ExecutionPhase.TERMINATE)
+    execution = state.execution.model_copy(update=changes)
     return _replace(
         state,
         conversation=conversation,
+        lifecycle=lifecycle,
         execution=execution,
         usage=usage,
     )

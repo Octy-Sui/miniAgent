@@ -1,7 +1,7 @@
-from collections.abc import Sequence
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from time import monotonic
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -42,15 +42,23 @@ from miniagent.runtime.events import (
     RunStarted,
     StepCompleted,
     StepStarted,
+    TerminationDecided,
     ToolEnded,
     ToolExecutionEnded,
     ToolExecutionStarted,
     ToolStarted,
 )
 from miniagent.runtime.journal import RunJournal
-from miniagent.runtime.progress import CurrentStep, OperationRef
+from miniagent.runtime.progress import (
+    CurrentStep,
+    ExecutionPhase,
+    OperationRef,
+    ResponseDisposition,
+    TerminateDisposition,
+    TerminationDecision,
+)
 from miniagent.runtime.result import RunError, RunResult, TerminationReason
-from miniagent.runtime.state import ConversationState, RunState, RunStatus
+from miniagent.runtime.state import ConversationState, RunCursor, RunState, RunStatus
 from miniagent.runtime.termination import tool_step_failed
 from miniagent.runtime.trace_context import RunTraceContext, ToolCorrelation
 from miniagent.runtime.transitions import (
@@ -80,7 +88,7 @@ from miniagent.runtime.transitions import (
 from miniagent.runtime.transitions import (
     resolve_approval as transition_from_approval,
 )
-from miniagent.tools.contracts import ToolCall, ToolResult
+from miniagent.tools.contracts import ToolResult
 from miniagent.tools.rendering import render_tool_result
 
 
@@ -126,6 +134,7 @@ class RunExecution:
     state: RunState
     journal: RunJournal
     trace: RunTraceContext
+    _active_mark: float = field(default_factory=monotonic)
     pending_approval_resolution: _PendingApprovalResolution | None = None
     pending_evaluation_result: _PendingEvaluationResult | None = None
 
@@ -142,6 +151,89 @@ class RunExecution:
         )
         await execution._start()
         return execution
+
+    @classmethod
+    def attach(cls, state: RunState, journal: RunJournal) -> "RunExecution":
+        trace = RunTraceContext.create(state.identity.run_id)
+        if state.execution.current_step is not None:
+            trace.begin_step(state.execution.current_step.step_number)
+            operation = state.execution.active_operation
+            if operation is not None and operation.kind == "model":
+                trace.begin_model()
+        return cls(state=state, journal=journal, trace=trace)
+
+    def account_active_time(self) -> None:
+        now = monotonic()
+        elapsed_ms = int((now - self._active_mark) * 1000)
+        self._active_mark += elapsed_ms / 1000
+        self.state = self.state.model_copy(
+            update={
+                "usage": self.state.usage.model_copy(
+                    update={
+                        "active_duration_ms": self.state.usage.active_duration_ms
+                        + elapsed_ms
+                    }
+                )
+            }
+        )
+
+    async def record_termination(self, decision: TerminationDecision) -> None:
+        self.account_active_time()
+        state = self.state.model_copy(
+            update={
+                "execution": self.state.execution.model_copy(
+                    update={
+                        "phase": ExecutionPhase.TERMINATE,
+                        "response_disposition": TerminateDisposition(decision=decision),
+                        "active_operation": None,
+                        "tool_batch": None,
+                        "cursor": self.state.execution.cursor
+                        if self.state.lifecycle.status is not RunStatus.RUNNING
+                        else RunCursor.REQUEST_MODEL,
+                    }
+                )
+            }
+        )
+        state = RunState.model_validate(state.model_dump(mode="python"))
+        await self.journal.record_activity(
+            state, [self.trace.run_event(TerminationDecided(decision=decision))]
+        )
+        self.state = state
+
+    async def interrupt_operation(self, *, unconfirmed: bool) -> None:
+        operation = self.state.execution.active_operation
+        if operation is None:
+            return
+        if operation.kind not in ("model", "summary"):
+            raise ValueError("Model interruption requires a model or summary attempt")
+        trace = deepcopy(self.trace)
+        event = trace.run_event(
+            ModelResponded(
+                attempt_id=operation.attempt_id,
+                finish_reason="interrupted_unconfirmed"
+                if unconfirmed
+                else "interrupted",
+                tool_call_count=0,
+            )
+        )
+        usage = self.state.usage.model_copy(
+            update={
+                "unconfirmed_model_requests": self.state.usage.unconfirmed_model_requests
+                + int(unconfirmed)
+            }
+        )
+        state = self.state.model_copy(
+            update={
+                "usage": usage,
+                "execution": self.state.execution.model_copy(
+                    update={"active_operation": None}
+                ),
+            }
+        )
+        if trace.has_model:
+            trace.end_model()
+        await self.journal.record_activity(state, [event])
+        self.state, self.trace = state, trace
 
     async def _start(self) -> None:
         await self.journal.create(self.state)
@@ -257,8 +349,26 @@ class RunExecution:
             ).model_dump(mode="python")
         )
         next_trace.begin_model()
+        attempt_id = uuid4()
         model_requested = next_trace.model_event(
-            ModelRequested(provider=provider, model=model)
+            ModelRequested(provider=provider, model=model, attempt_id=attempt_id)
+        )
+        next_state = next_state.model_copy(
+            update={
+                "execution": next_state.execution.model_copy(
+                    update={
+                        "active_operation": OperationRef(
+                            kind="model",
+                            attempt_id=attempt_id,
+                            started_event_id=model_requested.event_id,
+                            started_sequence=record.last_event_sequence + 2
+                            if record
+                            else 2,
+                            step_number=next_state.execution.steps_started,
+                        )
+                    }
+                )
+            }
         )
         await self.journal.record_activity(
             next_state,
@@ -268,13 +378,32 @@ class RunExecution:
         self.trace = next_trace
 
     async def record_model_failure(self, code: str) -> None:
+        operation = self.state.execution.active_operation
         trace = deepcopy(self.trace)
         event = trace.model_event(
-            ModelResponded(finish_reason="error", tool_call_count=0, error_code=code)
+            ModelResponded(
+                attempt_id=operation.attempt_id if operation else None,
+                finish_reason="error",
+                tool_call_count=0,
+                error_code=code,
+            )
         )
         trace.end_model()
-        await self.journal.record_activity(self.state, [event])
-        self.trace = trace
+        state = self.state.model_copy(
+            update={
+                "execution": self.state.execution.model_copy(
+                    update={"active_operation": None}
+                ),
+                "usage": self.state.usage.model_copy(
+                    update={
+                        "unconfirmed_model_requests": self.state.usage.unconfirmed_model_requests
+                        + 1
+                    }
+                ),
+            }
+        )
+        await self.journal.record_activity(state, [event])
+        self.state, self.trace = state, trace
 
     async def begin_model_retry(self) -> None:
         trace = deepcopy(self.trace)
@@ -287,16 +416,34 @@ class RunExecution:
                 )
             }
         )
-        await self.journal.record_activity(
-            state,
-            [
-                trace.model_event(
-                    ModelRequested(
-                        provider=target.provider, model=target.model, attempt=2
-                    )
-                )
-            ],
+        attempt_id = uuid4()
+        event = trace.model_event(
+            ModelRequested(
+                provider=target.provider,
+                model=target.model,
+                attempt=state.usage.model_requests,
+                attempt_id=attempt_id,
+            )
         )
+        record = self.journal.recorder.record
+        state = state.model_copy(
+            update={
+                "execution": state.execution.model_copy(
+                    update={
+                        "active_operation": OperationRef(
+                            kind="model",
+                            attempt_id=attempt_id,
+                            started_event_id=event.event_id,
+                            started_sequence=record.last_event_sequence + 1
+                            if record
+                            else 1,
+                            step_number=state.execution.steps_started,
+                        )
+                    }
+                )
+            }
+        )
+        await self.journal.record_activity(state, [event])
         self.state = state
         self.trace = trace
 
@@ -305,17 +452,31 @@ class RunExecution:
         response: ModelResponse,
         request_cost: RequestCost | None,
         *,
-        tool_calls: Sequence[ToolCall] | None = None,
+        disposition: ResponseDisposition,
     ) -> None:
+        self.account_active_time()
+        operation = self.state.execution.active_operation
         next_state = accept_model_response(
             self.state,
             response,
             request_cost,
-            tool_calls=tuple(tool_calls) if tool_calls is not None else None,
+            disposition=disposition,
         )
+        if response.usage is None:
+            next_state = next_state.model_copy(
+                update={
+                    "usage": next_state.usage.model_copy(
+                        update={
+                            "unconfirmed_model_requests": next_state.usage.unconfirmed_model_requests
+                            + 1
+                        }
+                    )
+                }
+            )
         next_trace = deepcopy(self.trace)
         event = next_trace.model_event(
             ModelResponded(
+                attempt_id=operation.attempt_id if operation else None,
                 finish_reason=response.finish_reason.value,
                 tool_call_count=len(response.message.tool_calls),
             )
@@ -626,6 +787,7 @@ class RunExecution:
         self,
         termination: RunTermination,
     ) -> RunResult:
+        self.account_active_time()
         pending = self.pending_approval_resolution
         if (
             termination.status is RunStatus.CANCELLED
