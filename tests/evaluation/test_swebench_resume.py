@@ -265,3 +265,37 @@ async def test_artifact_control_error_is_not_translated_to_evaluation_failure(
     ):
         await evaluator.evaluate(request)
     assert calls == ["evaluation_predictions"]
+
+
+async def test_ended_preflight_helpers_do_not_prove_harness_end(
+    evaluation_case, tmp_path
+):
+    evaluator, request, _artifacts = evaluation_case
+    _store, execution = await scope_for(evaluator, request, tmp_path)
+    with evaluation_scope(execution.evaluation_observer()):
+        await evaluator.evaluate(request)
+    state = SWEbenchAttemptState.model_validate(
+        execution.state.execution.evaluation.attempt.payload
+    )
+    process = await asyncio.create_subprocess_exec(
+        "sleep", "0.1", start_new_session=True
+    )
+    identity = identify_host_process(
+        process.pid,
+        attempt_id=state.attempt_id,
+        execution_id=uuid4(),
+        role="docker_helper",
+    )
+    await process.wait()
+    calls = evaluator.docker_executable.parent / "docker-calls.jsonl"
+    before = calls.read_bytes()
+    facts = await inspect_attempt_resources(
+        state,
+        evaluator.connection,
+        docker_executable=evaluator.docker_executable,
+        host_executions=(identity,),
+    )
+    assert not facts.host_ended
+    with pytest.raises(EvaluationAttemptBusy):
+        await cleanup_attempt_resources(facts, deadline=monotonic() + 5)
+    assert calls.read_bytes() == before

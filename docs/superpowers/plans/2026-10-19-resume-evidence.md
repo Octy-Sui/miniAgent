@@ -64,6 +64,36 @@ AC 同笔断言应检查公开 store 提交后的 State/Event/Snapshot/Approval�
 | AC17 | TC-U17-01、TC-U17-03～05 |
 | AC18 | TC-U14-05、TC-U14-06、TC-U14-11 |
 
+## Source mapping
+
+下面保留绑定 TD 的 R/TA→TC/U 映射；执行层沿下文 TC→组内 node→JUnit variant 追踪。该映射本身不计作通过。
+
+| Source | Test cases | Source | Test cases |
+| --- | --- | --- | --- |
+| R01 | TC-U2-01、TC-U2-13、TC-U4-01 | R21 | TC-U14-04～07、TC-U14-11、TC-U8-14～16 |
+| R02 | TC-U14-01～03、TC-U14-07～09 | R22 | TC-U18-01～07、TC-U18-10 |
+| R03 | TC-U6-01、TC-U7-01、TC-U8-03 | R23 | TC-U1-01～14 |
+| R04 | TC-U6-02、TC-U7-02、TC-U8-04～05、TC-U21-01～02 | R24 | TC-U6-03～04、TC-U19-04 |
+| R05 | TC-U6-05～07、TC-U6-11、TC-U9-08、TC-U18-10 | R25 | TC-U1-11、TC-U13-01～06、TC-U13-10～11、TC-U21-05～06 |
+| R06 | TC-U6-08、TC-U6-10 | R26 | TC-U8-14～16、TC-U14-09～10、TC-U21-03 |
+| R07 | TC-U5-05、TC-U5-11、TC-U5-14、TC-U7-03～04、TC-U8-06 | R27 | TC-U13-07～10、TC-U21-04～06 |
+| R08 | TC-U5-09、TC-U7-06、TC-U15-01 | R28 | TC-U15-02、TC-U15-08～10、TC-U21-04 |
+| R09 | TC-U7-05、TC-U7-08、TC-U15-06～07 | R29 | TC-U15-03～07 |
+| R10 | TC-U3-04、TC-U9-01～08 | R30 | TC-U16-01～02、TC-U16-06、TC-U16-10、TC-U21-04 |
+| R11 | TC-U18-08、TC-U20-01～07 | R31 | TC-U16-03～06、TC-U16-12 |
+| R12 | TC-U3-06～08、TC-U4-01～17、TC-U14-10、TC-U21-03 | R32 | TC-U7-07、TC-U16-07～10 |
+| R13 | TC-U3-01～05、TC-U19-01～02、TC-U19-04～08、TC-U19-13 | R33 | TC-U2-02～10、TC-U3-09～11、TC-U5-02～14、TC-U16-11、TC-U18-13 |
+| R14 | TC-U6-05～06、TC-U17-02、TC-U19-03、TC-U19-06 | R34 | TC-U4-05～09、TC-U4-14～17、TC-U17-02～04、TC-U17-07～08、TC-U19-09～13 |
+| R15 | TC-U12-01～08 | R35 | TC-U15-02、TC-U15-11、TC-U17-01 |
+| R16 | TC-U4-05、TC-U12-09～10、TC-U21-02 | R36 | TC-U11-06～10、TC-U11-16、TC-U17-06 |
+| R17 | TC-U12-11～17、TC-U21-05 | R37 | TC-U11-01～05、TC-U11-11～15 |
+| R18 | TC-U12-09、TC-U21-02 | R38 | TC-U17-01、TC-U17-03～06、TC-U19-05 |
+| R19 | TC-U6-09～10、TC-U10-01～05、TC-U11-08～09、TC-U20-04 | R39 | TC-U2-11～12 |
+| R20 | TC-U8-09～13、TC-U7-04 | — | — |
+
+TA追踪（未改变原分析义务）：TA-01→U2/U4/U5；TA-02→U20；TA-03→U6；TA-04→U4；TA-05→U6/U7；TA-06→U5/U7/U8；TA-07→U6；TA-08→U10；TA-09/10→U11；TA-11→U7；TA-12→U3/U5；TA-13→U19；TA-14→U3/U17；TA-15/16→U12；TA-17→U13/U21；TA-18→U4/U9；TA-19→U13；TA-20→U8/U14；TA-21→U15；TA-22/23→U16/U21；TA-24→U4/U17；TA-25→U18；TA-26→U1；TA-27→U21；TA-28→U18；TA-29→U2；TA-30→U14/U21。
+
+
 ## Traceability index
 
 R01–R39、TA-01–30 按 TD §4.3 映射到 U1–U21。以下给出每个 TC 的实际测试组入口，再列组内 node；组内测试执行通过不自动证明 TC 的全部独立 variants。未逐 variant 核对的项保留 `variant audit pending`，因此本文件不是完整 AC/TC 审计通过声明。
@@ -696,4 +726,108 @@ R01–R39、TA-01–30 按 TD §4.3 映射到 U1–U21。以下给出每个 TC �
 
 ## Verification result
 
-Final suite and final review results are appended after actual execution. No prefilled pass.
+首次全量回归：791 passed / 6 skipped（235.33s），随后旧 Docker workspace 真镜像入口单独 1 passed（2.72s）。
+
+一次 fresh-context `gpt-6-astra` 审查（e228f70..aa66be2）发现 1 Critical / 5 Important / 2 Minor；已进行一次修复 pass，不进行二次审查。修复前每类新回归均观察到失败：
+
+| Finding | RED → GREEN regression |
+| --- | --- |
+| Later unrecorded host command / missing harness proof | `tests/cli/test_host_execution_gates.py` 四个真实 caller SIGKILL variants；`tests/evaluation/test_swebench_resume.py::test_ended_preflight_helpers_do_not_prove_harness_end` |
+| Exhausted failed-Step window | `tests/runtime/test_terminal_resume_boundaries.py::test_failed_step_stop_survives_lost_completion_ack` |
+| Terminal model failure window | 同文件 `test_fatal_model_failure_survives_lost_closure_ack`（provider/usage）与 `test_exhausted_context_retry_survives_confirmed_failure_reopen` |
+| Approval termination/signal window | `tests/cli/test_approval_termination_signals.py` 拒绝/过期/UI异常 × SIGINT/SIGTERM 六 variants，真实审批协调器、SQLite、OS 信号 |
+| Current capacity validation | `tests/cli/test_resume_model_capacity.py` 缺文件/缺 entry/两类不兼容/兼容变化保留冻结值 |
+| Prefixed full UUID contract | `tests/cli/test_resume_main.py` 的两个 `run_` 完整 UUID variants；原 Task 27 拒绝 ruling 已撤回 |
+
+全量回归曾暴露 `HARNESS_START_FAILED` 被误分为 `HARNESS_PROCESS_FAILED`：已增加 close-on-exec 错误确认管道，保留原 exec 错误契约；相关 44 项定向回归通过，随后重新运行全量。
+
+宿主命令采用独立 permission pipe，目标 exec 前确认身份；只有父调用者持写端，目标 stdin 独立，exec 保留 PID/出生身份。Local、Docker CLI、harness 共用此门。缺 harness 身份仍保守 busy。
+
+Deferred minors：同目录不同数据库/同 UUID 的锁键假冲突（fail closed）；bootstrap 函数内导入。外部环境和逐 variant 审计缺口不因修复或全量测试通过而消失。
+
+修复后最终全量回归：**815 passed, 5 skipped in 267.91s**。Ruff（本次相关 Python 文件）、`ty check`、`git diff --check` 通过。
+
+`/private/tmp/miniagent-resume-reviewed.xml` 和 `/private/tmp/miniagent-resume-reviewed.log` 为本次最终逐 node/variant 结果。5 个 skipped 的明确原因如下；没有将其计为 PASS。
+
+- `tests.acceptance.resume.test_docker_connections::test_workspace_and_evaluator_use_their_own_daemons`: DEFER: three independently prepared daemon connections unavailable
+
+- `tests.acceptance.resume.test_docker_connections::test_frozen_tls_connection_survives_resume`: DEFER: independently prepared verified TLS daemon/image unavailable
+
+- `tests.acceptance.resume.test_swebench::test_swebench_resume_preserves_patch_and_expected_unresolved`: DEFER: no independent prior unresolved manifest; user confirmed unavailable
+
+- `tests.integration.test_swebench_evaluation::test_real_ready_development_patch_is_verified`: Real SWE-bench requires explicit cached-image opt-in
+
+- `tests.integration.test_swebench_evaluation::test_real_invalid_patch_fails`: Real SWE-bench requires explicit cached-image opt-in
+
+## Rulings I made
+
+按时间顺序保留执行裁决和错误代价；其中 Task 27 的 run_ 拒绝规则已被 Final 裁决明确撤回。
+
+- Ruling: create isolated worktree without another conversational consent gate — development authorization covers reversible isolation under developer instructions — cost if wrong: discard isolated branch.
+- Task 4: Ruling: application envelope lives in runtime.recovery and CLI imports it — runtime must not import CLI; metadata is runtime-owned — cost if wrong: relocate one data type without a format change.
+- Task 4: Ruling: advance recovery-context decoder to v2 here, rather than Task 5 — round-trip tests require writer and reader to agree within this commit — cost if wrong: version work lands one task early.
+- Task 5: Ruling: explicitly close SQLite connections at every store I/O boundary — sqlite3 context managers only end transactions and leaked handles blocked journal-mode test setup — cost if wrong: formerly implicit connection lifetimes end sooner, with no caller-visible connection API.
+- Task 6: Ruling: add tests/__init__.py so public cross-domain resume_support imports are stable — tests was not an importable package — cost if wrong: pytest import names may change; targeted and final regression must verify collection.
+- Task 8: Ruling: expose read-only attempt_id on ExecutionObserver — Workspace identity producers otherwise cannot associate executions with the current operation using the frozen API — cost if wrong: observer adapters must provide this one identifier.
+- Task 9: Ruling: retain owned process identities in a WeakKeyDictionary through register_host_process — reap_process keeps its existing signature but must use the original birth identity after leader exit — cost if wrong: process handles remain weakly tracked for their lifetime; no persisted format change.
+- Task 10: Ruling: add shared Workspace/WorkspaceBackend protocol requirements with Task 13 after Docker attach exists — requiring them now would force fake Docker stubs or break currently valid callers — cost if wrong: protocol enforcement is delayed across three intermediate commits; Local concrete methods are available now.
+- Task 11: Ruling: add optional max_output_bytes to run_docker_exec — required backend-configured truncation cannot be preserved through the frozen signature otherwise — cost if wrong: one optional keyword beyond the planned signature; existing callers remain valid.
+- Task 11: Ruling: StoreBoundary can additionally match identity permission — exact create/start E/U barriers must use real SQLite at distinct public event boundaries — cost if wrong: test-only fixture matcher gains one optional filter.
+- Ruling: Task 12 adds run_docker_exec_output with raw byte output and optional stdin_bytes while retaining run_docker_exec's public result contract — existing checkpoint tar streams and binary subprocess I/O cannot round-trip through UTF-8 strings — extra optional internal API must remain consistent with the single execution core.
+- Ruling: Task 12 dispatches container exec from DockerWorkspaceBackend._run to the managed SDK core — every production exec, including lifecycle/export/checkpoint, is gated while existing scripted backend tests continue to exercise command assembly — tests overriding _run do not verify the SDK boundary; real Docker SDK tests supply that evidence.
+- Ruling: Task 12 moves shared export fixtures from a fake Docker CLI execution path to a fake external Engine HTTP boundary with real fixture subprocesses — production container exec no longer uses CLI and cannot support the old fake boundary — tests now allow bounded remote EOF cleanup propagation before probing the fixture process; real guest cleanup has separate Docker evidence.
+- Ruling: Task 12 export budget fixture uses eight seconds instead of three — four fresh SDK helper interpreter startups made the old budget expire before reaching the cleanup fault under load (observed task-done failure) — elapsed budget assertion remains bounded at eleven seconds; test runtime increases.
+- Ruling: Task 13 adds an optional AttachmentT generic parameter to WorkspaceBackend and describe_attachment to Workspace, updating the two typed test doubles — each concrete backend consumes its own attachment subtype while existing one-parameter Backend annotations remain valid — generic consumers needing attach must select the attachment type.
+- Ruling: Task 13 leaves historical guest_execution_groups as an ordered pending live check — the attachment has no historical execution identities; those are persisted in State and consumed by Task 23's resume transaction — attach verifies each of its own managed command groups, while Task 23 must inspect historical guest identities before business continuation.
+- Ruling: Task 14 adds TerminationDecided as a persisted event and optional attempt_id fields on model events, with every production request writer supplying the UUID — response disposition/state remains authoritative, and existing synthetic model events remain constructible — consumers can require attempt IDs when validating a current OperationRef but cannot assume every synthetic historical model event has one.
+- Ruling: Task 14 replaces the context-compaction acceptance harness's private manual loop with the common _drive entrypoint and updates private request-handler tests — keeping a second old loop would bypass persisted phase dispatch — the harness now validates the same phase driver used by normal and resumed execution.
+- Ruling: Task 15 persists hard_trigger on CompactionRequested and reuses the original request's covered_messages/source_version during continuation — a fresh estimator can otherwise choose a different prefix even with the same source Snapshot — readers tolerate the synthetic event default, while production writers always record the trigger; frozen prefix selection adds one optional context planning parameter.
+- Ruling: Task 16 preserves the original tool_step_failed all-non-success rule from binding design §9 (“按原 Step 失败规则继续”), overriding test-design TC-U7-03's contradictory mixed-result expected failed — changing to any-non-success would alter runtime behavior beyond resume requirements — the mixed ERROR/SUCCESS oracle is successful and an earlier SUCCESS followed by ERROR/ERROR proves whole-batch recovery; if the intended product change was any failure, that needs an explicit requirement change.
+- Ruling: Task 16 extends waiting_case with an optional fully formed State — old storage-focused fixture intentionally omits runtime prefix/allowed-tools; current-policy tests need genuine runtime input — a small optional test factory parameter, existing callers unchanged.
+- Ruling: Task 17 verifies every identified execution's matching committed ended evidence before accepting tool/evaluation results or replacing component operations — an adapter returning a result after identification without ended evidence otherwise silently cleared the operation (new RED test demonstrated this) — persisted operations require an extra history read at completion; memory-only runs retain evidence in a local collector.
+- Ruling: Task 17 removes the private stage_evaluation_result/pending_evaluation_result path and uses the full durable EvaluationResult for terminal output/artifacts — no callers outside Runtime existed and keeping the fallback would preserve a second result authority — private integrations using that helper must move to await record_evaluation_result.
+- Ruling: Task 18 introduces the planned OperationInterrupted payload and generalizes interrupt_operation to non-model operations only after verified chain end — Runtime resume phase tests need a genuine completed-recovery prefix, and Task 24 must close safe export/evaluation/read-only operations too — adds explicit interruption events instead of pretending interrupted requests produced ModelResponded; only model/summary closures affect unknown usage.
+- Ruling: Task 19 adds a callable cleanup-deadline scope in environments and bounds Journal.record_activity with the first interruption's remaining budget — a task already running must observe a later signal without an environments→Runtime import, and identity/result writes must not get a fresh pause timeout — two small shared-scope APIs and one extra journal deadline check; regular cancellation behavior is unchanged.
+- Ruling: Task 19 adds minimal RunSuspension rendering before Task 27 — widening ApplicationResult immediately makes the existing renderer's RunResult-only contract invalid — detailed resume/status output remains Task 27; this early branch only shows the Run ID and signal exit code.
+- Ruling: Task 20 recognizes a duplicate Run only by SQLite PRIMARYKEY constraint code — the real AFTER INSERT RAISE(FAIL) test showed run_exists sees the newly inserted uncommitted row and wrongly translated a trigger failure to RunAlreadyExists — adds sqlite.py to this task; genuine duplicate-ID behavior remains unchanged.
+- Ruling: Task 20 cleans newly owned resources after a create error only when the concrete SQLite call returned sqlite3.Error and a fresh read proves the target row absent — this store's awaited transaction has finished rollback, unlike generic confirmation uncertainty — unknown/no-dispatch adapters still retain resources; cleanup is bounded to ten seconds.
+- Ruling: Task 20 extends the existing external Engine fixture with an optional CLI command prefix and moves configured_host to the shared CLI conftest — bound Docker bootstrap now uses the SDK and cannot be tested with CLI-only exec responses — legacy fake CLI lifecycle checks remain, while guest execution crosses the external Engine API boundary.
+- Ruling: Task 21 captures diagnostic submit's returned value in Application finalization and updates typed Workspace doubles for the optional temporary_index_path — result now intentionally exposes only candidate state, so the old finalizer would lose diagnostic output — diagnostic event persistence remains Task 25; candidate and diagnostic cache identities are independent now.
+- Ruling: Task 21 records verified Local cleanup end evidence for timeout/cancellation only, while persistence/managed failures remain immediate stop controls — Task 17's trusted-result guard requires genuine ended evidence for a confirmed TIMEOUT, but writing after an uncertain identity commit would be unsafe — adds one awaited cleanup evidence commit within the same operation/deadline.
+- Ruling: Task 21 keeps the current evaluator's generic attempt ID as an in-process correlation after a candidate component closes its narrower export operation — record_evaluation_result still binds to the already committed EvaluationStart without inventing a new attempt — one non-authoritative correlation field, recreated by begin_evaluation after resume.
+- Task 22: Ruling: SWEbenchAttemptState lives in evaluation/swebench_docker rather than CLI — keeps evaluation independent of CLI and lets the planner consume a single typed resource contract — cost if wrong: relocate/re-export the schema.
+- Task 22: Ruling: shared Docker CLI subprocess runner also uses managed host identity and observer — all evaluator CLI commands require the same stop proof as harness commands — cost if wrong: stricter process identity requirements on standalone preflight.
+- Task 22: Ruling: resource inspection accepts frozen executable and host executions as optional keyword arguments — connection and attempt alone cannot prove original harness end — cost if wrong: callers must supply persisted execution facts.
+- Task 23: Ruling: use RESUME_METADATA_MISSING and RESUME_STATE_INCONSISTENT rather than abbreviated plan step names — binding design §13 defines the stable public codes — cost if wrong: consumers using abbreviated draft codes must update.
+- Task 24: Ruling: rehydrate_application requires explicit run_store keyword — RunRecord deliberately contains no database locator, so deriving a database or consulting ambient Settings would break the held-lock source — cost if wrong: factory callers must supply the already-open writer.
+- Task 24: Ruling: dry-run constructs only inert retained Workspace descriptors to read current tool contracts, without attach/prepare/execute — tool metadata currently belongs to concrete tool instances — cost if wrong: future tool constructors must remain free of side effects or expose separate metadata.
+- Task 24: Ruling: deferred guest inspection is implemented at the application live-check boundary using a read-only /proc probe after attach — the backend attachment alone has no historical execution identities — cost if wrong: unavailable guest Python or ambiguous PID identity conservatively blocks resume.
+- Task 25: Ruling: finalize_diagnostic accepts optional cleanup_timeout_seconds and CandidateSubmission accepts a separate diagnostic observer getter — preserve frozen cleanup reserves and prevent a diagnostic call inheriting a business evaluation scope — cost if wrong: callers supplying custom observers must choose the correct channel.
+- Task 25: Ruling: external FinalizationWorkspace tests now describe a retained attachment — diagnostic export must allocate an owned temporary index before effects — cost if wrong: third-party Workspace doubles need the already-public attachment contract.
+- Task 25: Ruling: Resume orchestration also closes verified old diagnostic chains before ResumeCompleted — read-only proof authorizes continuation, but the historical chain must be explicitly interrupted with its fresh end facts before new business work — cost if wrong: extra audit-only commits may conservatively reject uncertain persistence.
+- Task 26: Ruling: startup RunExecution.start is also awaited through interruption handling — signal arrival during the first create otherwise waits for the hard deadline — cost if wrong: interrupted create is conservatively reported as persistence uncertainty and cleaned only after fresh no-row proof.
+- Task 26: Ruling: cancellation while awaiting a store acknowledgement is RunPersistenceError after the real SQLite worker drains; repeated cancellation cannot release the Run lock early — cancellation does not prove rollback — cost if wrong: OS-level stuck storage can delay hard exit; wall-clock acceptance remains separately measured.
+- Task 26: Ruling: ExecutionObserver adds synchronous check_permission and Docker attach accepts optional before_start — checking only before a commit leaves a signal window between its acknowledgement and actual permission — cost if wrong: custom observers must implement the added method; all repository callers and doubles were updated.
+- Task 27: Ruling: reject run_ prefixed IDs despite the contradictory plan assertion — binding design and the same task acceptance text require full UUID forms only — cost if wrong: users must copy the full published UUID rather than a prefixed display token.
+- Task 27: Ruling: ModelLimitsError preserves the existing safe model-limit diagnostics while generic configuration failures stay redacted — broad ValueError redaction broke trigger CLI compatibility — cost if wrong: callers matching ValueError still work, but additional safe configuration errors may need typed presentation later.
+- Task 28: Ruling: rehydrate_application accepts a fresh approval_handler and CLI resume installs ConsoleApprovalHandler — the real B3 journey was RED with only c0 written because restored calls had no handler — cost if wrong: custom rehydration callers must explicitly provide their current approval UI.
+- Task 28: Ruling: Console approval uses cancellable POSIX stdin readiness instead of a default executor thread — a real open-pipe SIGINT test hung after suspension until supervisory cleanup (RED), then exited 130 after the fix — cost if wrong: non-POSIX CLI input needs a separate adapter.
+- Task 28: Ruling: the existing compaction acceptance runner forwards its configured approval_handler to the common Runtime driver — integration exposed APPROVAL_UNAVAILABLE caused by an omitted dependency after Task 14 — cost if wrong: runner approval must track the public runtime constructor.
+- Task 29: Ruling: precise delayed-start/parent-death permission windows reuse the existing external Engine tests; six new acceptance variants use the actual prepared daemon — fake RPC observations and real SDK/guest behavior are complementary evidence, not substitutes — cost if wrong: real delayed network-start and full application Docker journey remain DEFER rather than an unsupported PASS.
+- Task 29: Ruling: same-container acceptance proves a fresh-process backend attach and outside-workdir layer retention; a complete Docker Application/evaluator journey remains DEFER pending the independent Task 30 development fixture — no evaluator downgrade or invented task context — cost if wrong: complete Local + Docker support is not yet accepted.
+- Task 30: Ruling: keep independent unresolved, three-daemon and verified TLS journeys explicitly DEFER when their external inputs are unavailable — user confirmed no independent unresolved manifest; synthetic reports cannot establish the expected real result — cost if wrong: complete Local + Docker support remains unaccepted.
+- Task 30: Ruling: the evidence index lists every one of 244 TD cases with actual executable group/node entry points, but labels per-variant audit pending instead of inferring coverage from a green group — current tests do not carry a trustworthy one-to-one TC annotation — cost if wrong: requirement-by-requirement acceptance still needs an independent variant audit.
+- Final: Ruling: withdraw the Task 27 rejection of run_ full UUID inputs — the actual binding design section 5 explicitly permits prefixed hyphenated and 32-hex UUIDs; prior reading was incorrect — cost if wrong: two accepted full-UUID spellings must be reconsidered, never abbreviations.
+- Final: Ruling: share a stdlib-only permission-pipe host launcher across Local commands, Docker CLI and SWE-bench harness — the reviewer reproduced later unrecorded commands running while earlier ended identities authorized retry — cost if wrong: one host Python startup per command and dependence on a private exec gate; target argv/stdin/PID/birth identity remain preserved.
+- Final: Ruling: require an explicit harness identity plus whole-chain end for evaluation cleanup — ended preflight docker_helper identities cannot prove a harness never started or ended — cost if wrong: prelaunch crashes with no harness identity conservatively remain busy.
+- Final: Ruling: check the persisted consecutive-failure limit before the max-step guard on new-Step entry — a committed failed Step can precede its termination commit; original consecutive-failure termination precedence must survive that gap — cost if wrong: persisted exhausted counters stop a Run earlier than a max-step reason.
+- Final: Ruling: persist fatal model TerminationDecided/disposition atomically with operation interruption or final context-failure response, and make matching record_termination idempotent — a confirmed terminal failure must not become an unknown retry after a lost acknowledgement — cost if wrong: private interrupt_operation/record_model_failure gain optional termination/message keywords and audit events may share the closure commit.
+- Final: Ruling: commit staged approval rejection/expiry/invalidation together with TerminationDecided and clear pending before dropping its batch — the previously durable WAITING_APPROVAL/terminate prefix could not suspend — cost if wrong: approval audit resolution appears before RunFinished and the valid intermediate business status is RUNNING.
+- Final: Ruling: load current capacity from the frozen model_limits_file and require support for the frozen context window and selected output limit, without replacing frozen values — binding section 7.3 requires missing/incompatible capacity rejection — cost if wrong: unavailable capacity files now block Resume; compatible larger values do not expand requests.
+
+## Deferred minors
+
+- Final: minor (deferred): RunLock key omits database filename; different databases in one directory with the same UUID falsely conflict (fail closed).
+- Final: minor (deferred): bootstrap rehydration has function-local imports contrary to the repository import-placement rule.
+
+Task 30 保持部分验收状态；本记录不宣称 Local + Docker 完整支持已经验收。

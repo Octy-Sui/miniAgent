@@ -241,30 +241,77 @@ class RunExecution:
             }
         )
 
-    async def record_termination(self, decision: TerminationDecision) -> None:
-        self.account_active_time()
-        state = self.state.model_copy(
+    @staticmethod
+    def _with_termination(state: RunState, decision: TerminationDecision) -> RunState:
+        state = state.model_copy(
             update={
-                "execution": self.state.execution.model_copy(
+                "execution": state.execution.model_copy(
                     update={
                         "phase": ExecutionPhase.TERMINATE,
                         "response_disposition": TerminateDisposition(decision=decision),
                         "active_operation": None,
                         "tool_batch": None,
-                        "cursor": self.state.execution.cursor
-                        if self.state.lifecycle.status is not RunStatus.RUNNING
+                        "cursor": state.execution.cursor
+                        if state.lifecycle.status is not RunStatus.RUNNING
                         else RunCursor.REQUEST_MODEL,
                     }
                 )
             }
         )
         state = RunState.model_validate(state.model_dump(mode="python"))
-        await self.journal.record_activity(
-            state, [self.trace.run_event(TerminationDecided(decision=decision))]
-        )
-        self.state = state
+        return state
 
-    async def interrupt_operation(self, *, unconfirmed: bool) -> None:
+    async def record_termination(self, decision: TerminationDecision) -> None:
+        if (
+            self.state.execution.phase is ExecutionPhase.TERMINATE
+            and self.state.execution.response_disposition
+            == TerminateDisposition(decision=decision)
+        ):
+            return
+        self.account_active_time()
+        trace = deepcopy(self.trace)
+        state = self.state
+        events = []
+        resolution = None
+        if state.approval.pending is not None:
+            resolution = (
+                self.pending_approval_resolution.resolution
+                if self.pending_approval_resolution
+                else ApprovalResolution(
+                    approval_id=state.approval.pending.approval_id,
+                    outcome=ApprovalOutcome.INVALIDATED,
+                    actor_kind="system",
+                    actor_id="runtime",
+                    reason="The run stopped before authorization.",
+                    resolved_at=datetime.now(UTC),
+                )
+            )
+            correlation = trace.tool_correlation
+            events.append(
+                trace.approval_event(
+                    ApprovalResolved(
+                        call_index=correlation.call_index,
+                        tool_call_id=correlation.tool_call_id,
+                        tool_name=correlation.tool_name,
+                        approval_id=resolution.approval_id,
+                        outcome=resolution.outcome.value,
+                    )
+                )
+            )
+            trace.end_approval()
+            state = transition_from_approval(state, resolution)
+        state = self._with_termination(state, decision)
+        events.append(trace.run_event(TerminationDecided(decision=decision)))
+        if resolution is not None:
+            await self.journal.resolve_approval(state, events, resolution)
+        else:
+            await self.journal.record_activity(state, events)
+        self.state, self.trace = state, trace
+        self.pending_approval_resolution = None
+
+    async def interrupt_operation(
+        self, *, unconfirmed: bool, termination: TerminationDecision | None = None
+    ) -> None:
         operation = self.state.execution.active_operation
         if operation is None:
             return
@@ -311,7 +358,11 @@ class RunExecution:
             trace.end_tool_execution()
         if trace.has_tool:
             trace.end_tool()
-        await self.journal.record_activity(state, [event])
+        events = [event]
+        if termination is not None:
+            state = self._with_termination(state, termination)
+            events.append(trace.run_event(TerminationDecided(decision=termination)))
+        await self.journal.record_activity(state, events)
         self.state, self.trace = state, trace
 
     async def _start(
@@ -328,6 +379,14 @@ class RunExecution:
         self.state = next_state
 
     def before_next_step(self) -> RunTermination | None:
+        if (
+            self.state.execution.consecutive_failed_steps
+            >= self.state.definition.config.max_consecutive_failures
+        ):
+            return RunTermination(
+                status=RunStatus.FAILED,
+                reason=TerminationReason.CONSECUTIVE_FAILURE_LIMIT,
+            )
         if self.state.execution.steps_started < self.state.definition.config.max_steps:
             return None
         return RunTermination(
@@ -538,7 +597,9 @@ class RunExecution:
         self.state = next_state
         self.trace = next_trace
 
-    async def record_model_failure(self, code: str) -> None:
+    async def record_model_failure(
+        self, code: str, *, message: str | None = None
+    ) -> None:
         operation = self.state.execution.active_operation
         trace = deepcopy(self.trace)
         event = trace.model_event(
@@ -578,7 +639,23 @@ class RunExecution:
                     )
                 }
             )
-        await self.journal.record_activity(state, [event])
+        events = [event]
+        if (
+            code == "CONTEXT_CAPACITY_EXCEEDED"
+            and state.execution.request_progress.business_retry_used >= 1
+        ):
+            decision = TerminationDecision(
+                status="failed",
+                reason=TerminationReason.MODEL_FAILED,
+                error=RunError(
+                    code=code,
+                    message=message
+                    or "Provider rejected context after the original retry",
+                ),
+            )
+            state = self._with_termination(state, decision)
+            events.append(trace.run_event(TerminationDecided(decision=decision)))
+        await self.journal.record_activity(state, events)
         self.state, self.trace = state, trace
 
     async def begin_model_retry(self, *, context_retry: bool = False) -> None:

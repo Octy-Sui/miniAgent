@@ -724,7 +724,9 @@ class AgentRuntime:
             except (CancellationRequested, InterruptionRequested):
                 raise
             except ModelContextLimitError as exc:
-                await execution.record_model_failure("CONTEXT_CAPACITY_EXCEEDED")
+                await execution.record_model_failure(
+                    "CONTEXT_CAPACITY_EXCEEDED", message=str(exc)
+                )
                 if execution.state.execution.request_progress.business_retry_used >= 1:
                     return TerminateRun(
                         self._context_failure("CONTEXT_CAPACITY_EXCEEDED", str(exc))
@@ -746,17 +748,18 @@ class AgentRuntime:
                 await execution.begin_model_retry(context_retry=True)
                 continue
             except Exception as exc:  # noqa: BLE001
-                await execution.interrupt_operation(unconfirmed=True)
-                return TerminateRun(
-                    RunTermination(
-                        status=RunStatus.FAILED,
-                        reason=TerminationReason.MODEL_FAILED,
-                        error=RunError(
-                            code="PROVIDER_EXCEPTION",
-                            message=f"{type(exc).__name__}: {exc}",
-                        ),
-                    )
+                decision = TerminationDecision(
+                    status="failed",
+                    reason=TerminationReason.MODEL_FAILED,
+                    error=RunError(
+                        code="PROVIDER_EXCEPTION",
+                        message=f"{type(exc).__name__}: {exc}",
+                    ),
                 )
+                await execution.interrupt_operation(
+                    unconfirmed=True, termination=decision
+                )
+                return ContinueRun()
             break
 
         if (
@@ -767,17 +770,18 @@ class AgentRuntime:
         request_cost = None
         if self.pricing is not None:
             if response.usage is None:
-                await execution.interrupt_operation(unconfirmed=True)
-                return TerminateRun(
-                    RunTermination(
-                        status=RunStatus.FAILED,
-                        reason=TerminationReason.MODEL_FAILED,
-                        error=RunError(
-                            code="MODEL_USAGE_MISSING",
-                            message="Provider response did not include token usage",
-                        ),
-                    )
+                decision = TerminationDecision(
+                    status="failed",
+                    reason=TerminationReason.MODEL_FAILED,
+                    error=RunError(
+                        code="MODEL_USAGE_MISSING",
+                        message="Provider response did not include token usage",
+                    ),
                 )
+                await execution.interrupt_operation(
+                    unconfirmed=True, termination=decision
+                )
+                return ContinueRun()
             request_cost = calculate_request_cost(
                 provider=agent.model.provider,
                 model=agent.model.model,

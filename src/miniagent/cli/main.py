@@ -151,9 +151,7 @@ def cli(
 
 
 def parse_run_id(value: str) -> UUID:
-    if value.startswith("run_"):
-        raise ValueError("Expected a complete UUID")
-    return UUID(value)
+    return UUID(value.removeprefix("run_"))
 
 
 async def _resume_main(config: ResumeConfig) -> None:

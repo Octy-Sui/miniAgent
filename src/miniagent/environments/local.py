@@ -38,12 +38,11 @@ from miniagent.environments.managed_execution import (
 )
 from miniagent.environments.process import (
     decode_output,
-    identify_host_process,
     inspect_host_execution,
     process_group_absent,
     read_stream,
     reap_process,
-    register_host_process,
+    start_host_process,
     write_stdin,
 )
 
@@ -445,14 +444,17 @@ class LocalWorkspaceBackend:
         observer = current_execution_observer()
         if observer is not None:
             observer.check_permission()
-        process = await asyncio.create_subprocess_exec(
-            *argv,
+        process, identity = await start_host_process(
+            argv,
+            role="local_command",
+            attempt_id=observer.attempt_id if observer else uuid4(),
+            observer=observer,
+            deadline=cleanup_deadline
+            or started_at
+            + (timeout_seconds if timeout_seconds is not None else float("inf")),
             cwd=cwd,
             env=self._environment(environment),
             stdin=asyncio.subprocess.PIPE if stdin is not None else None,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
         )
         if process.stdout is None or process.stderr is None:
             raise LocalWorkspaceError("Local process output pipes are unavailable")
@@ -486,22 +488,7 @@ class LocalWorkspaceBackend:
                 max(0.0, remaining - min(0.1, remaining / 4)),
             )
 
-        identity = None
         try:
-            try:
-                identity = identify_host_process(
-                    process.pid,
-                    attempt_id=observer.attempt_id if observer is not None else uuid4(),
-                    execution_id=uuid4(),
-                    role="local_command",
-                )
-            except ManagedExecutionError:
-                if observer is not None or not process_group_absent(process.pid):
-                    raise
-            if identity is not None:
-                register_host_process(process, identity)
-                if observer is not None:
-                    await observer.identified(identity)
             await asyncio.wait_for(asyncio.gather(*tasks), timeout=timeout_seconds)
             if identity is not None:
                 evidence = inspect_host_execution(identity)

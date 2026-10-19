@@ -17,10 +17,9 @@ from miniagent.environments.managed_execution import (
     execution_scope,
 )
 from miniagent.environments.process import (
-    identify_host_process,
     inspect_host_execution,
     reap_process,
-    register_host_process,
+    start_host_process,
 )
 from miniagent.evaluation import EvaluationError, EvaluationRequest, EvaluationResult
 from miniagent.evaluation.swebench_data import EvaluationPreparationError, PreparedTask
@@ -612,26 +611,19 @@ class SWEbenchEvaluator:
                     observer = current_execution_observer()
                     if observer is not None:
                         observer.check_permission()
-                    process = await asyncio.create_subprocess_exec(
-                        *argv,
+                    process, identity = await start_host_process(
+                        argv,
+                        role="harness",
+                        attempt_id=observer.attempt_id
+                        if observer
+                        else attempt.attempt_id,
+                        observer=observer,
+                        deadline=deadline,
                         cwd=attempt.directory,
                         env=self.environment,
                         stdout=stdout,
                         stderr=stderr,
-                        start_new_session=True,
                     )
-                    observer = current_execution_observer()
-                    identity = identify_host_process(
-                        process.pid,
-                        attempt_id=observer.attempt_id
-                        if observer
-                        else attempt.attempt_id,
-                        execution_id=uuid4(),
-                        role="harness",
-                    )
-                    register_host_process(process, identity)
-                    if observer:
-                        await observer.identified(identity)
                     stage = "process"
                     await process.wait()
             async with asyncio.timeout(self.settings.swebench_artifact_timeout_seconds):

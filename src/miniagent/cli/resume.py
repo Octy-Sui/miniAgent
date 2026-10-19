@@ -1,3 +1,4 @@
+import asyncio
 import os
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -16,6 +17,7 @@ from miniagent.cli.candidate_submission import (
 )
 from miniagent.cli.console_approval import ConsoleApprovalHandler
 from miniagent.cli.execution_scope import application_execution_scope
+from miniagent.cli.model_limits import load_model_limits
 from miniagent.cli.run_definition import (
     CandidateSubmissionState,
     CLIApplicationDefinition,
@@ -284,6 +286,32 @@ async def _inspect(config: ResumeConfig) -> _Inspection | ResumeRejection:
                     config,
                     "MODEL_CONFIG_MISMATCH",
                     "Original provider protocol is unavailable",
+                )
+            )
+        try:
+            current_limits = await asyncio.to_thread(
+                load_model_limits,
+                definition.model_limits_file,
+                record.state.definition.agent_spec.model.provider,
+                record.state.definition.agent_spec.model.model,
+            )
+            original = record.state.definition
+            if (
+                current_limits.context_window_tokens
+                < original.config.context_window_tokens
+                or (
+                    original.agent_spec.generation.max_output_tokens is not None
+                    and current_limits.max_output_tokens
+                    < original.agent_spec.generation.max_output_tokens
+                )
+            ):
+                raise ValueError("Current capacity cannot support the frozen request")
+        except (OSError, ValueError):
+            dependencies.append(
+                _rejection(
+                    config,
+                    "MODEL_CONFIG_MISMATCH",
+                    "Current model capacity data is missing or incompatible with the frozen request",
                 )
             )
         candidate_rejection = None

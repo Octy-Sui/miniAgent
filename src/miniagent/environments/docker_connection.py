@@ -15,11 +15,9 @@ from miniagent.environments.managed_execution import (
     current_execution_observer,
 )
 from miniagent.environments.process import (
-    identify_host_process,
     inspect_host_execution,
-    process_group_absent,
     reap_process,
-    register_host_process,
+    start_host_process,
 )
 
 
@@ -66,32 +64,19 @@ async def _run_command(
         observer.check_permission()
     try:
         async with asyncio.timeout_at(deadline - reserve):
-            process = await asyncio.create_subprocess_exec(
-                *argv,
+            process, identity = await start_host_process(
+                argv,
+                role="docker_helper",
+                attempt_id=observer.attempt_id if observer else uuid4(),
+                observer=observer,
+                deadline=deadline - reserve,
                 env=environment,
-                start_new_session=True,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
             )
             assert process.stdout is not None and process.stderr is not None
             readers = [
                 asyncio.create_task(_read_output(process.stdout)),
                 asyncio.create_task(_read_output(process.stderr)),
             ]
-            try:
-                identity = identify_host_process(
-                    process.pid,
-                    attempt_id=observer.attempt_id if observer else uuid4(),
-                    execution_id=uuid4(),
-                    role="docker_helper",
-                )
-            except ManagedExecutionError:
-                if observer is not None or not process_group_absent(process.pid):
-                    raise
-            if identity is not None:
-                register_host_process(process, identity)
-                if observer:
-                    await observer.identified(identity)
             stdout, stderr = await asyncio.gather(*readers)
             code = await process.wait()
             if identity is not None:

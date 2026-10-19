@@ -13,6 +13,8 @@ from miniagent.cli.main import parse_run_id, resume_app, run_app
     [
         ("12345678-1234-4234-8234-123456789abc",),
         ("12345678123442348234123456789abc",),
+        ("run_12345678-1234-4234-8234-123456789abc",),
+        ("run_12345678123442348234123456789abc",),
         ("{12345678-1234-4234-8234-123456789abc}",),
         ("urn:uuid:12345678-1234-4234-8234-123456789abc",),
     ],
@@ -23,9 +25,9 @@ def test_complete_uuid_forms_identify_same_run(value):
 
 @pytest.mark.parametrize(
     ("value",),
-    [("12345678",), ("run_12345678123442348234123456789abc",), ("not-a-uuid",)],
+    [("12345678",), ("run_12345678",), ("run_xxx",), ("not-a-uuid",)],
 )
-def test_short_or_prefixed_ids_are_parameter_errors(value):
+def test_short_or_arbitrary_ids_are_parameter_errors(value):
     assert CliRunner().invoke(resume_app, ["--run-id", value]).exit_code == 2
 
 

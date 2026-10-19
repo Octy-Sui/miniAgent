@@ -278,7 +278,10 @@ async def inspect_attempt_resources(
         if isinstance(identity, HostProcessIdentity)
     )
     ended = (
-        bool(evidence)
+        any(
+            isinstance(identity, HostProcessIdentity) and identity.role == "harness"
+            for identity in host_executions
+        )
         and len(evidence) == len(host_executions)
         and all(
             item.outcome == "ended" and item.group_ended and item.issuer_ended

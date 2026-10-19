@@ -2,10 +2,12 @@ import asyncio
 import os
 import signal
 import socket
+import sys
 from contextlib import suppress
 from hashlib import sha256
+from pathlib import Path
 from time import monotonic
-from typing import Literal
+from typing import BinaryIO, Literal
 from uuid import UUID, uuid4
 from weakref import WeakKeyDictionary
 
@@ -13,6 +15,7 @@ import psutil
 
 from miniagent.environments.managed_execution import (
     ExecutionEvidence,
+    ExecutionObserver,
     HostProcessIdentity,
     ManagedExecutionError,
     current_cleanup_deadline,
@@ -179,6 +182,97 @@ async def reap_process(
         if pending:
             diagnostics.append(f"CLI PID {process.pid} stream tasks remain pending")
     return tuple(diagnostics)
+
+
+async def start_host_process(
+    argv: list[str],
+    *,
+    role: Literal["local_command", "docker_helper", "harness"],
+    attempt_id: UUID,
+    observer: ExecutionObserver | None,
+    deadline: float,
+    cwd: Path | str | None = None,
+    env: dict[str, str] | None = None,
+    stdin: int | None = None,
+    stdout: int | BinaryIO = asyncio.subprocess.PIPE,
+    stderr: int | BinaryIO = asyncio.subprocess.PIPE,
+) -> tuple[asyncio.subprocess.Process, HostProcessIdentity]:
+    deadline = min(deadline, current_cleanup_deadline() or float("inf"))
+    if deadline <= monotonic():
+        raise TimeoutError("Host execution deadline exhausted")
+    if observer is not None:
+        observer.check_permission()
+    read_fd, write_fd = os.pipe()
+    error_read, error_write = os.pipe()
+    process = None
+    identified = False
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-I",
+            str(Path(__file__).with_name("host_exec.py")),
+            str(read_fd),
+            str(deadline),
+            str(error_write),
+            *argv,
+            cwd=cwd,
+            env=env,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+            pass_fds=(read_fd, error_write),
+            start_new_session=True,
+        )
+        os.close(read_fd)
+        read_fd = None
+        os.close(error_write)
+        error_write = None
+        identity = identify_host_process(
+            process.pid, attempt_id=attempt_id, execution_id=uuid4(), role=role
+        )
+        register_host_process(process, identity)
+        if observer is not None:
+            await observer.identified(identity)
+            identified = True
+            observer.check_permission()
+        if monotonic() >= deadline:
+            raise TimeoutError("Host execution permission deadline exhausted")
+        os.write(write_fd, b"1")
+        loop = asyncio.get_running_loop()
+        readable: asyncio.Future[None] = loop.create_future()
+
+        def ready() -> None:
+            if not readable.done():
+                readable.set_result(None)
+
+        loop.add_reader(error_read, ready)
+        try:
+            async with asyncio.timeout_at(deadline):
+                await readable
+                error = os.read(error_read, 4)
+        finally:
+            loop.remove_reader(error_read)
+        if error:
+            number = int.from_bytes(error, "big")
+            raise OSError(number, os.strerror(number), argv[0])
+        return process, identity
+    except BaseException as exc:
+        if process is not None:
+            diagnostics = await reap_process(process, [], deadline=deadline)
+            for diagnostic in diagnostics:
+                exc.add_note(diagnostic)
+            if isinstance(exc, (OSError, TimeoutError, asyncio.CancelledError)):
+                if diagnostics:
+                    raise ManagedExecutionError(
+                        "Host launcher cleanup is unconfirmed"
+                    ) from exc
+                if observer is not None and identified:
+                    await observer.ended(inspect_host_execution(identity))
+        raise
+    finally:
+        for descriptor in (read_fd, write_fd, error_read, error_write):
+            if descriptor is not None:
+                os.close(descriptor)
 
 
 async def read_stream(
