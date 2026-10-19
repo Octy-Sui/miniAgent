@@ -38,6 +38,7 @@ class RunEventType(StrEnum):
     COMPACTION_COMPLETED = "compaction_completed"
     OPERATION_EXECUTION_IDENTIFIED = "operation_execution_identified"
     OPERATION_EXECUTION_ENDED = "operation_execution_ended"
+    OPERATION_INTERRUPTED = "operation_interrupted"
     RUN_SUSPENDED = "run_suspended"
     RESUME_STARTED = "resume_started"
     RESUME_COMPLETED = "resume_completed"
@@ -174,6 +175,15 @@ class ToolExecutionEnded(ToolScopePayload):
     status: str
     error_code: str | None = None
     reason: str | None = None
+
+
+class OperationInterrupted(_Payload):
+    type: Literal[RunEventType.OPERATION_INTERRUPTED] = (
+        RunEventType.OPERATION_INTERRUPTED
+    )
+    attempt_id: UUID
+    operation_kind: Literal["model", "summary", "tool", "patch_export", "evaluation"]
+    unconfirmed: bool
 
 
 class OperationExecutionIdentified(_Payload):
@@ -322,6 +332,7 @@ type EventPayload = Annotated[
     | ToolExecutionStarted
     | ToolExecutionEnded
     | OperationExecutionIdentified
+    | OperationInterrupted
     | OperationExecutionEnded
     | PolicyDecided
     | ApprovalRequested

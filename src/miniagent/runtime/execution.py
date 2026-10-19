@@ -41,6 +41,7 @@ from miniagent.runtime.events import (
     ModelResponded,
     OperationExecutionEnded,
     OperationExecutionIdentified,
+    OperationInterrupted,
     PolicyDecided,
     RunFinished,
     RunStarted,
@@ -66,6 +67,7 @@ from miniagent.runtime.progress import (
 )
 from miniagent.runtime.result import RunError, RunResult, TerminationReason
 from miniagent.runtime.state import ConversationState, RunCursor, RunState, RunStatus
+from miniagent.runtime.store_contracts import RunRecord
 from miniagent.runtime.termination import tool_step_failed
 from miniagent.runtime.trace_context import RunTraceContext, ToolCorrelation
 from miniagent.runtime.transitions import (
@@ -183,13 +185,28 @@ class RunExecution:
         return execution
 
     @classmethod
-    def attach(cls, state: RunState, journal: RunJournal) -> "RunExecution":
+    def attach(cls, record: RunRecord, journal: RunJournal) -> "RunExecution":
+        if journal.recorder.record != record:
+            raise ValueError("Attached journal differs from current Run record")
+        state = RunState.model_validate(record.state.model_dump(mode="python"))
         trace = RunTraceContext.create(state.identity.run_id)
         if state.execution.current_step is not None:
             trace.begin_step(state.execution.current_step.step_number)
             operation = state.execution.active_operation
             if operation is not None and operation.kind == "model":
                 trace.begin_model()
+            if operation is not None and operation.kind == "tool":
+                batch = state.execution.tool_batch
+                assert batch is not None and operation.call_index is not None
+                call = batch.calls[operation.call_index]
+                trace.begin_tool(
+                    ToolCorrelation(
+                        call_index=operation.call_index,
+                        tool_call_id=call.id,
+                        tool_name=call.name,
+                    )
+                )
+                trace.begin_tool_execution()
         if state.lifecycle.status is RunStatus.EVALUATING:
             trace.begin_evaluation()
         return cls(state=state, journal=journal, trace=trace)
@@ -236,22 +253,21 @@ class RunExecution:
         operation = self.state.execution.active_operation
         if operation is None:
             return
-        if operation.kind not in ("model", "summary"):
-            raise ValueError("Model interruption requires a model or summary attempt")
+        metered = operation.kind in ("model", "summary")
+        if not metered:
+            await self._require_operation_ended()
         trace = deepcopy(self.trace)
         event = trace.run_event(
-            ModelResponded(
+            OperationInterrupted(
                 attempt_id=operation.attempt_id,
-                finish_reason="interrupted_unconfirmed"
-                if unconfirmed
-                else "interrupted",
-                tool_call_count=0,
+                operation_kind=operation.kind,
+                unconfirmed=unconfirmed,
             )
         )
         usage = self.state.usage.model_copy(
             update={
                 "unconfirmed_model_requests": self.state.usage.unconfirmed_model_requests
-                + int(unconfirmed)
+                + int(unconfirmed and metered)
             }
         )
         state = self.state.model_copy(
@@ -276,6 +292,10 @@ class RunExecution:
             )
         if trace.has_model:
             trace.end_model()
+        if trace.has_tool_execution:
+            trace.end_tool_execution()
+        if trace.has_tool:
+            trace.end_tool()
         await self.journal.record_activity(state, [event])
         self.state, self.trace = state, trace
 
@@ -436,7 +456,11 @@ class RunExecution:
         self.state = state
 
     async def begin_step(self, *, provider: str, model: str) -> None:
-        next_state = advance_step(self.state)
+        next_state = advance_step(
+            start_running(self.state)
+            if self.state.lifecycle.status is RunStatus.PREPARING
+            else self.state
+        )
         next_state = next_state.model_copy(
             update={
                 "execution": next_state.execution.model_copy(

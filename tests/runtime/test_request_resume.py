@@ -53,7 +53,7 @@ async def started(tmp_path):
 async def reopen(store, execution):
     record = await store.get(execution.state.identity.run_id)
     return RunExecution.attach(
-        record.state, RunJournal.attach(RunRecorder.attach(store, record), [])
+        record, RunJournal.attach(RunRecorder.attach(store, record), [])
     )
 
 

@@ -27,6 +27,12 @@ from miniagent.runtime.events import (
     RunEvent,
     RunEventType,
 )
+from miniagent.runtime.execution import (
+    EvaluationObserver,
+    RunExecution,
+    current_evaluation_observer,
+    evaluation_scope,
+)
 from miniagent.runtime.loop import AgentRuntime
 from miniagent.runtime.recording import RunPersistenceError
 from miniagent.runtime.recovery import (
@@ -70,6 +76,7 @@ __all__ = [
     "CandidateOutput",
     "EvaluationCheck",
     "EvaluationError",
+    "EvaluationObserver",
     "EvaluationPlan",
     "EvaluationRequest",
     "EvaluationResult",
@@ -91,6 +98,7 @@ __all__ = [
     "RunError",
     "RunEvent",
     "RunEventType",
+    "RunExecution",
     "RunPersistenceError",
     "RunRecoveryContext",
     "RunResult",
@@ -111,5 +119,7 @@ __all__ = [
     "add_request_usage",
     "calculate_request_cost",
     "create_run_state",
+    "current_evaluation_observer",
+    "evaluation_scope",
     "validate_state",
 ]

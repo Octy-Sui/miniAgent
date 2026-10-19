@@ -68,7 +68,7 @@ async def test_committed_evaluation_result_finishes_without_evaluator(
     record = await store.get(execution.state.identity.run_id)
     assert record.state.execution.evaluation.result == supplied
     execution = RunExecution.attach(
-        record.state, RunJournal.attach(RunRecorder.attach(store, record), [])
+        record, RunJournal.attach(RunRecorder.attach(store, record), [])
     )
 
     class MustNotEvaluate:
@@ -195,7 +195,7 @@ async def test_real_observer_commit_uncertainty_stops_evaluation(tmp_path, actio
         store, action=action, event_type=RunEventType.OPERATION_EXECUTION_IDENTIFIED
     )
     execution = RunExecution.attach(
-        record.state, RunJournal.attach(RunRecorder.attach(boundary, record), [])
+        record, RunJournal.attach(RunRecorder.attach(boundary, record), [])
     )
     calls = []
 

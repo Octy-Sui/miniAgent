@@ -136,7 +136,7 @@ async def prefix(
     return (
         reopened,
         RunExecution.attach(
-            record.state, RunJournal.attach(RunRecorder.attach(reopened, record), [])
+            record, RunJournal.attach(RunRecorder.attach(reopened, record), [])
         ),
         tool,
     )

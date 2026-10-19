@@ -52,7 +52,12 @@ from miniagent.runtime.context import (
     should_compact,
     validate_summary,
 )
-from miniagent.runtime.events import CompactionAttempt, CompactionRequested
+from miniagent.runtime.events import (
+    CompactionAttempt,
+    CompactionRequested,
+    ResumeCompleted,
+    ResumeStarted,
+)
 from miniagent.runtime.execution import (
     ContinueRun,
     EvaluateCandidate,
@@ -79,7 +84,7 @@ from miniagent.runtime.state import (
     RunStatus,
     create_run_state,
 )
-from miniagent.runtime.store_contracts import RuntimeStore
+from miniagent.runtime.store_contracts import RunRecord, RuntimeStore
 from miniagent.runtime.termination import evaluate_model_response
 from miniagent.runtime.tool_runner import ToolCallRunner
 from miniagent.tools.registry import ToolRegistry
@@ -166,6 +171,70 @@ class AgentRuntime:
             ),
         )
         return await self._drive(execution)
+
+    async def resume(self, record: RunRecord) -> RunResult:
+        if self.run_store is None:
+            raise ValueError("Resume requires a persisted Run store")
+        latest = await self.run_store.get(record.state.identity.run_id)
+        if latest != record:
+            raise ValueError("Resume record is stale")
+        state = record.state
+        if state.lifecycle.status not in (
+            RunStatus.PREPARING,
+            RunStatus.RUNNING,
+            RunStatus.EVALUATING,
+        ):
+            raise ValueError("Resume requires a completed recovery status")
+        if (
+            state.recovery.session is not None
+            or state.recovery.suspension is not None
+            or state.execution.active_operation is not None
+        ):
+            raise ValueError("Resume requires completed recovery and closed operations")
+        events = await self.run_store.list_events(state.identity.run_id)
+        if (
+            not events
+            or events[-1].sequence != record.last_event_sequence
+            or not isinstance(events[-1].payload, ResumeCompleted)
+        ):
+            raise ValueError("Resume requires the latest ResumeCompleted event")
+        completed = events[-1].payload
+        started = [
+            event
+            for event in events
+            if isinstance(event.payload, ResumeStarted)
+            and event.payload.resume_attempt_id == completed.resume_attempt_id
+        ]
+        if len(started) != 1:
+            raise ValueError("Resume completed event has no unique start")
+        start = started[0]
+        payload = start.payload
+        assert isinstance(payload, ResumeStarted)
+        expected_status = {"created": "preparing", "waiting_approval": "running"}.get(
+            completed.business_status, completed.business_status
+        )
+        if (
+            payload.source_sequence != completed.source_sequence
+            or payload.business_status != completed.business_status
+            or payload.phase != completed.phase
+            or completed.phase != state.execution.phase
+            or expected_status != state.lifecycle.status.value
+            or not completed.source_sequence < start.sequence < events[-1].sequence
+            or sum(isinstance(event.payload, ResumeStarted) for event in events)
+            != state.recovery.resume_attempts
+        ):
+            raise ValueError(
+                "ResumeCompleted scope differs from current state or source"
+            )
+        self._validate_agent_tools(state.definition.agent_spec)
+        state.definition.config.validate_output_limit(
+            state.definition.agent_spec.generation.max_output_tokens
+        )
+        journal = RunJournal.attach(
+            RunRecorder.attach(self.run_store, record),
+            await self.run_store.list_unconsumed_approvals(state.identity.run_id),
+        )
+        return await self._drive(RunExecution.attach(record, journal))
 
     async def _drive(self, execution: RunExecution) -> RunResult:
         agent = execution.state.definition.agent_spec

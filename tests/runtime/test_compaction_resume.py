@@ -82,7 +82,7 @@ async def failed_summary(tmp_path, used):
         )
     record = await store.get(seed.identity.run_id)
     execution = RunExecution.attach(
-        record.state, RunJournal.attach(RunRecorder.attach(store, record), [])
+        record, RunJournal.attach(RunRecorder.attach(store, record), [])
     )
     return runtime, execution, store
 
@@ -161,7 +161,7 @@ async def test_published_summary_and_business_retry_survive_reopen(
         await execution.begin_model_retry(context_retry=True)
     record = await store.get(execution.state.identity.run_id)
     execution = RunExecution.attach(
-        record.state, RunJournal.attach(RunRecorder.attach(store, record), [])
+        record, RunJournal.attach(RunRecorder.attach(store, record), [])
     )
     if authorized:
         await execution.interrupt_operation(unconfirmed=True)
