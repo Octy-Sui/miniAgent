@@ -257,8 +257,13 @@ async def start_host_process(
             raise OSError(number, os.strerror(number), argv[0])
         return process, identity
     except BaseException as exc:
+        # EOF releases an unpermitted launcher even when its identity is unavailable.
+        os.close(write_fd)
+        write_fd = None
         if process is not None:
-            diagnostics = await reap_process(process, [], deadline=deadline)
+            diagnostics = await reap_process(
+                process, [], deadline=min(deadline, monotonic() + 5.0)
+            )
             for diagnostic in diagnostics:
                 exc.add_note(diagnostic)
             if isinstance(exc, (OSError, TimeoutError, asyncio.CancelledError)):
