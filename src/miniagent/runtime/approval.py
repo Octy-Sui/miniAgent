@@ -17,10 +17,15 @@ from miniagent.policy import (
 from miniagent.runtime.cancellation import (
     CancellationRequested,
     CancellationToken,
-    await_with_cancellation,
+    await_with_stop,
 )
 from miniagent.runtime.config import RuntimeConfig
 from miniagent.runtime.execution import RunExecution, RunTermination
+from miniagent.runtime.interruption import (
+    InterruptionRequested,
+    current_interruption_token,
+    raise_if_interrupted,
+)
 from miniagent.runtime.journal import ApprovalCommitExpired
 from miniagent.runtime.result import RunError, TerminationReason
 from miniagent.runtime.state import RunStatus
@@ -68,6 +73,7 @@ class ApprovalCoordinator:
                 )
             )
 
+        raise_if_interrupted()
         now = datetime.now(UTC)
         request = ApprovalRequest(
             approval_id=uuid4(),
@@ -80,14 +86,15 @@ class ApprovalCoordinator:
         )
         await execution.open_approval(request, decision)
         try:
-            resolution = await await_with_cancellation(
+            resolution = await await_with_stop(
                 asyncio.wait_for(
                     self.handler.resolve(request, decision),
                     timeout=self.config.approval_timeout_seconds,
                 ),
                 self.cancellation_token,
+                current_interruption_token(),
             )
-        except CancellationRequested:
+        except (CancellationRequested, InterruptionRequested):
             raise
         except TimeoutError:
             resolution = self._system_resolution(

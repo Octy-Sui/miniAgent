@@ -15,6 +15,7 @@ from miniagent.environments.managed_execution import (
     ExecutionEvidence,
     HostProcessIdentity,
     ManagedExecutionError,
+    current_cleanup_deadline,
 )
 
 _OWNED_PROCESSES: WeakKeyDictionary[asyncio.subprocess.Process, HostProcessIdentity] = (
@@ -135,6 +136,9 @@ async def reap_process(
     *,
     deadline: float,
 ) -> tuple[str, ...]:
+    shared_deadline = current_cleanup_deadline()
+    if shared_deadline is not None:
+        deadline = min(deadline, shared_deadline)
     identity = _OWNED_PROCESSES.get(process)
     diagnostics = []
     if identity is None and process.returncode is None:

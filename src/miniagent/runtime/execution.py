@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -45,6 +46,7 @@ from miniagent.runtime.events import (
     PolicyDecided,
     RunFinished,
     RunStarted,
+    RunSuspended,
     StepCompleted,
     StepStarted,
     TerminationDecided,
@@ -53,19 +55,26 @@ from miniagent.runtime.events import (
     ToolExecutionStarted,
     ToolStarted,
 )
+from miniagent.runtime.interruption import InterruptionRequested
 from miniagent.runtime.journal import RunJournal
 from miniagent.runtime.progress import (
     ComponentEnvelope,
     CurrentStep,
     EvaluationProgress,
     ExecutionPhase,
+    InterruptionInfo,
     OperationRef,
     RequestProgress,
     ResponseDisposition,
     TerminateDisposition,
     TerminationDecision,
 )
-from miniagent.runtime.result import RunError, RunResult, TerminationReason
+from miniagent.runtime.result import (
+    RunError,
+    RunResult,
+    RunSuspension,
+    TerminationReason,
+)
 from miniagent.runtime.state import ConversationState, RunCursor, RunState, RunStatus
 from miniagent.runtime.store_contracts import RunRecord
 from miniagent.runtime.termination import tool_step_failed
@@ -96,6 +105,9 @@ from miniagent.runtime.transitions import (
 )
 from miniagent.runtime.transitions import (
     resolve_approval as transition_from_approval,
+)
+from miniagent.runtime.transitions import (
+    suspend as suspend_state,
 )
 from miniagent.tools.contracts import ToolResult
 from miniagent.tools.rendering import render_tool_result
@@ -1130,6 +1142,70 @@ class RunExecution:
     ) -> None:
         self.pending_approval_resolution = _PendingApprovalResolution(
             resolution=resolution,
+        )
+
+    async def suspend(
+        self, interruption: InterruptionInfo, *, deadline: float
+    ) -> RunSuspension:
+        if monotonic() >= deadline:
+            raise InterruptionRequested("No suspension commit budget remains")
+        self.account_active_time()
+        state = suspend_state(self.state, interruption)
+        metadata = state.recovery.suspension
+        assert metadata is not None
+        events = []
+        resolution = None
+        pending = self.state.approval.pending
+        if pending is not None:
+            batch = self.state.execution.tool_batch
+            assert batch is not None
+            call = batch.calls[pending.call_index]
+            resolution = ApprovalResolution(
+                approval_id=pending.approval_id,
+                outcome=ApprovalOutcome.INVALIDATED,
+                actor_kind="system",
+                actor_id="runtime",
+                reason="The run was suspended.",
+                resolved_at=datetime.now(UTC),
+            )
+            events.append(
+                self.trace.approval_event(
+                    ApprovalResolved(
+                        call_index=pending.call_index,
+                        tool_call_id=call.id,
+                        tool_name=call.name,
+                        approval_id=pending.approval_id,
+                        outcome="invalidated",
+                    )
+                )
+            )
+        assert state.execution.phase is not None
+        events.append(
+            self.trace.run_event(
+                RunSuspended(
+                    interruption=interruption,
+                    business_status=metadata.business_status,
+                    phase=state.execution.phase,
+                )
+            )
+        )
+        async with asyncio.timeout_at(deadline):
+            if self.journal.recorder.store is None:
+                await self.journal.record_activity(state, events)
+            else:
+                await self.journal.suspend_run(
+                    state, events, approval_resolution=resolution
+                )
+        self.state = state
+        return RunSuspension(
+            run_id=state.identity.run_id,
+            usage=state.usage,
+            started_at=state.lifecycle.started_at,
+            suspended_at=metadata.suspended_at,
+            interruption=interruption,
+            workspace_id=self.journal.recorder.recovery_context.workspace_id
+            if self.journal.recorder.recovery_context
+            else None,
         )
 
     async def finish(

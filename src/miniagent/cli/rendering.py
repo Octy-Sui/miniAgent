@@ -2,7 +2,7 @@ import typer
 
 from miniagent.artifacts import ArtifactRef
 from miniagent.cli.application import ApplicationResult
-from miniagent.runtime import RunResult, RunStatus
+from miniagent.runtime import RunResult, RunStatus, RunSuspension
 
 
 def print_patch_artifact(patch_artifact: ArtifactRef | None) -> None:
@@ -11,11 +11,14 @@ def print_patch_artifact(patch_artifact: ArtifactRef | None) -> None:
 
 
 def print_run_result(
-    result: RunResult,
+    result: RunResult | RunSuspension,
     *,
     failure_exit_code: int,
     patch_artifact: ArtifactRef | None = None,
 ) -> None:
+    if isinstance(result, RunSuspension):
+        typer.echo(f"Run suspended: {result.run_id}")
+        raise typer.Exit(code=128 + result.interruption.signal_number)
     if result.status is RunStatus.SUCCEEDED:
         typer.echo(result.output)
         typer.echo(

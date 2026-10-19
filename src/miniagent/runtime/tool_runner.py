@@ -20,9 +20,14 @@ from miniagent.runtime.approval import ApprovalCoordinator
 from miniagent.runtime.cancellation import (
     CancellationRequested,
     CancellationToken,
-    await_with_cancellation,
+    await_with_stop,
 )
 from miniagent.runtime.execution import RunExecution, RunTermination
+from miniagent.runtime.interruption import (
+    InterruptionRequested,
+    current_interruption_token,
+    raise_if_interrupted,
+)
 from miniagent.runtime.recording import RunPersistenceError
 from miniagent.runtime.result import RunError, TerminationReason
 from miniagent.runtime.state import RunStatus, ToolBatch
@@ -65,6 +70,7 @@ class ToolCallRunner:
             raise ValueError("Tool execution requires an active batch")
         results: list[ToolResult] = []
         for call_index in range(batch.next_index, len(batch.calls)):
+            raise_if_interrupted()
             call = batch.calls[call_index]
             if self.cancellation_token.is_cancelled:
                 raise CancellationRequested
@@ -182,16 +188,23 @@ class ToolCallRunner:
         call: ToolCall,
         prepared: PreparedToolCall,
     ) -> ToolResult:
+        raise_if_interrupted()
         await execution.begin_tool_execution()
         try:
             operation = execution.state.execution.active_operation
             assert operation is not None
             with execution_scope(execution.execution_observer(operation.attempt_id)):
-                result = await await_with_cancellation(
+                result = await await_with_stop(
                     prepared.invoke(call.id),
                     self.cancellation_token,
+                    current_interruption_token(),
                 )
-        except (CancellationRequested, RunPersistenceError, ManagedExecutionError):
+        except (
+            CancellationRequested,
+            InterruptionRequested,
+            RunPersistenceError,
+            ManagedExecutionError,
+        ):
             raise
         except Exception:
             logger.exception("Tool execution failed", extra={"tool": call.name})

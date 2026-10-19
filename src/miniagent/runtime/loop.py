@@ -5,6 +5,7 @@
 import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime
+from typing import overload
 from uuid import UUID, uuid4
 
 from miniagent.agents import AgentSpec
@@ -39,7 +40,7 @@ from miniagent.runtime.approval import ApprovalCoordinator
 from miniagent.runtime.cancellation import (
     CancellationRequested,
     CancellationToken,
-    await_with_cancellation,
+    await_with_stop,
 )
 from miniagent.runtime.config import RuntimeConfig
 from miniagent.runtime.context import (
@@ -67,6 +68,13 @@ from miniagent.runtime.execution import (
     TerminateRun,
     evaluation_scope,
 )
+from miniagent.runtime.interruption import (
+    InterruptionRequested,
+    InterruptionToken,
+    current_interruption_token,
+    interruption_scope,
+    raise_if_interrupted,
+)
 from miniagent.runtime.journal import RunJournal
 from miniagent.runtime.progress import (
     CandidateDisposition,
@@ -77,7 +85,12 @@ from miniagent.runtime.progress import (
 )
 from miniagent.runtime.recording import RunPersistenceError, RunRecorder
 from miniagent.runtime.recovery import RunRecoveryContext
-from miniagent.runtime.result import RunError, RunResult, TerminationReason
+from miniagent.runtime.result import (
+    RunError,
+    RunResult,
+    RunSuspension,
+    TerminationReason,
+)
 from miniagent.runtime.state import (
     RunDefinition,
     RunState,
@@ -122,6 +135,7 @@ class AgentRuntime:
         self.run_store = run_store
         self.estimator = estimator or QwenPromptTokenEstimator()
 
+    @overload
     async def run(
         self,
         agent: AgentSpec,
@@ -129,7 +143,46 @@ class AgentRuntime:
         *,
         run_id: UUID | None = None,
         recovery_context: RunRecoveryContext | None = None,
-    ) -> RunResult:
+        interruption_token: None = None,
+    ) -> RunResult: ...
+
+    @overload
+    async def run(
+        self,
+        agent: AgentSpec,
+        task: str,
+        *,
+        run_id: UUID | None = None,
+        recovery_context: RunRecoveryContext | None = None,
+        interruption_token: InterruptionToken,
+    ) -> RunResult | RunSuspension: ...
+
+    @overload
+    async def run(
+        self,
+        agent: AgentSpec,
+        task: str,
+        *,
+        run_id: UUID | None = None,
+        recovery_context: RunRecoveryContext | None = None,
+        interruption_token: InterruptionToken | None,
+    ) -> RunResult | RunSuspension: ...
+
+    async def run(
+        self,
+        agent: AgentSpec,
+        task: str,
+        *,
+        run_id: UUID | None = None,
+        recovery_context: RunRecoveryContext | None = None,
+        interruption_token: InterruptionToken | None = None,
+    ) -> RunResult | RunSuspension:
+        if (
+            interruption_token is not None
+            and interruption_token.is_requested
+            and not self.cancellation_token.is_cancelled
+        ):
+            raise InterruptionRequested("Run interrupted before initial record")
         self._validate_agent_tools(agent)
         self.config.validate_output_limit(agent.generation.max_output_tokens)
         if self.pricing is not None:
@@ -170,9 +223,21 @@ class AgentRuntime:
                 )
             ),
         )
-        return await self._drive(execution)
+        return await self._drive(execution, interruption_token=interruption_token)
 
-    async def resume(self, record: RunRecord) -> RunResult:
+    @overload
+    async def resume(
+        self, record: RunRecord, *, interruption_token: None = None
+    ) -> RunResult: ...
+
+    @overload
+    async def resume(
+        self, record: RunRecord, *, interruption_token: InterruptionToken | None
+    ) -> RunResult | RunSuspension: ...
+
+    async def resume(
+        self, record: RunRecord, *, interruption_token: InterruptionToken | None = None
+    ) -> RunResult | RunSuspension:
         if self.run_store is None:
             raise ValueError("Resume requires a persisted Run store")
         latest = await self.run_store.get(record.state.identity.run_id)
@@ -234,104 +299,136 @@ class AgentRuntime:
             RunRecorder.attach(self.run_store, record),
             await self.run_store.list_unconsumed_approvals(state.identity.run_id),
         )
-        return await self._drive(RunExecution.attach(record, journal))
+        return await self._drive(
+            RunExecution.attach(record, journal), interruption_token=interruption_token
+        )
 
-    async def _drive(self, execution: RunExecution) -> RunResult:
-        agent = execution.state.definition.agent_spec
-        approval = ApprovalCoordinator(
-            config=execution.state.definition.config,
-            handler=self.approval_handler,
-            policy_engine=self.policy_engine,
-            cancellation_token=self.cancellation_token,
-        )
-        tools = ToolCallRunner(
-            tools=self.tools,
-            policy_engine=self.policy_engine,
-            policy_context=self.policy_context,
-            approval=approval,
-            cancellation_token=self.cancellation_token,
-        )
-        try:
-            while True:
-                execution.account_active_time()
-                if self.cancellation_token.is_cancelled:
-                    raise CancellationRequested
-                phase = execution.state.execution.phase
-                if phase in (ExecutionPhase.PREPARE, ExecutionPhase.REQUEST_MODEL):
-                    if execution.state.execution.current_step is None:
-                        termination = execution.before_next_step()
-                        if termination is not None:
-                            await execution.record_termination(
-                                TerminationDecision(
-                                    status="failed",
-                                    reason=termination.reason,
-                                    error=termination.error,
-                                )
-                            )
-                            continue
-                    outcome = await self._request_model(execution, agent)
-                elif phase is ExecutionPhase.EXECUTE_TOOLS:
-                    tool_outcome = await tools.execute(
-                        execution, agent, execution.state.execution.tool_batch
-                    )
-                    outcome = (
-                        TerminateRun(tool_outcome.termination)
-                        if tool_outcome.termination
-                        else ContinueRun()
-                    )
-                elif phase is ExecutionPhase.COMPLETE_STEP:
-                    termination = await execution.complete_tool_step()
-                    outcome = (
-                        TerminateRun(termination) if termination else ContinueRun()
-                    )
-                elif phase is ExecutionPhase.EVALUATE_CANDIDATE:
-                    disposition = execution.state.execution.response_disposition
-                    if not isinstance(disposition, CandidateDisposition):
-                        raise ValueError(
-                            "Candidate phase requires candidate disposition"
-                        )
-                    outcome = await self._evaluate(
-                        execution,
-                        EvaluateCandidate(CandidateOutput(text=disposition.text)),
-                    )
-                elif phase is ExecutionPhase.TERMINATE:
-                    disposition = execution.state.execution.response_disposition
-                    if not isinstance(disposition, TerminateDisposition):
-                        raise ValueError(
-                            "Terminate phase requires a persisted decision"
-                        )
-                    decision = disposition.decision
-                    return await execution.finish(
-                        RunTermination(
-                            status=RunStatus(decision.status),
-                            reason=decision.reason,
-                            error=decision.error,
-                        )
-                    )
-                else:
-                    raise ValueError(f"Unsupported execution phase: {phase}")
-                if isinstance(outcome, TerminateRun):
-                    await execution.record_termination(
-                        TerminationDecision(
-                            status="succeeded"
-                            if outcome.termination.status is RunStatus.SUCCEEDED
-                            else "cancelled"
-                            if outcome.termination.status is RunStatus.CANCELLED
-                            else "failed",
-                            reason=outcome.termination.reason,
-                            error=outcome.termination.error,
-                        )
-                    )
-        except CancellationRequested:
-            operation = execution.state.execution.active_operation
-            if operation is not None and operation.kind in ("model", "summary"):
-                await execution.interrupt_operation(unconfirmed=True)
-            return await execution.finish(
-                RunTermination(
-                    status=RunStatus.CANCELLED,
-                    reason=TerminationReason.CANCEL_REQUESTED,
-                )
+    @overload
+    async def _drive(
+        self, execution: RunExecution, *, interruption_token: None = None
+    ) -> RunResult: ...
+
+    @overload
+    async def _drive(
+        self, execution: RunExecution, *, interruption_token: InterruptionToken | None
+    ) -> RunResult | RunSuspension: ...
+
+    async def _drive(
+        self,
+        execution: RunExecution,
+        *,
+        interruption_token: InterruptionToken | None = None,
+    ) -> RunResult | RunSuspension:
+        with interruption_scope(interruption_token):
+            agent = execution.state.definition.agent_spec
+            approval = ApprovalCoordinator(
+                config=execution.state.definition.config,
+                handler=self.approval_handler,
+                policy_engine=self.policy_engine,
+                cancellation_token=self.cancellation_token,
             )
+            tools = ToolCallRunner(
+                tools=self.tools,
+                policy_engine=self.policy_engine,
+                policy_context=self.policy_context,
+                approval=approval,
+                cancellation_token=self.cancellation_token,
+            )
+            try:
+                while True:
+                    execution.account_active_time()
+                    if self.cancellation_token.is_cancelled:
+                        raise CancellationRequested
+                    raise_if_interrupted()
+                    phase = execution.state.execution.phase
+                    if phase in (ExecutionPhase.PREPARE, ExecutionPhase.REQUEST_MODEL):
+                        if execution.state.execution.current_step is None:
+                            termination = execution.before_next_step()
+                            if termination is not None:
+                                await execution.record_termination(
+                                    TerminationDecision(
+                                        status="failed",
+                                        reason=termination.reason,
+                                        error=termination.error,
+                                    )
+                                )
+                                continue
+                        outcome = await self._request_model(execution, agent)
+                    elif phase is ExecutionPhase.EXECUTE_TOOLS:
+                        tool_outcome = await tools.execute(
+                            execution, agent, execution.state.execution.tool_batch
+                        )
+                        outcome = (
+                            TerminateRun(tool_outcome.termination)
+                            if tool_outcome.termination
+                            else ContinueRun()
+                        )
+                    elif phase is ExecutionPhase.COMPLETE_STEP:
+                        termination = await execution.complete_tool_step()
+                        outcome = (
+                            TerminateRun(termination) if termination else ContinueRun()
+                        )
+                    elif phase is ExecutionPhase.EVALUATE_CANDIDATE:
+                        disposition = execution.state.execution.response_disposition
+                        if not isinstance(disposition, CandidateDisposition):
+                            raise ValueError(
+                                "Candidate phase requires candidate disposition"
+                            )
+                        outcome = await self._evaluate(
+                            execution,
+                            EvaluateCandidate(CandidateOutput(text=disposition.text)),
+                        )
+                    elif phase is ExecutionPhase.TERMINATE:
+                        disposition = execution.state.execution.response_disposition
+                        if not isinstance(disposition, TerminateDisposition):
+                            raise ValueError(
+                                "Terminate phase requires a persisted decision"
+                            )
+                        decision = disposition.decision
+                        return await execution.finish(
+                            RunTermination(
+                                status=RunStatus(decision.status),
+                                reason=decision.reason,
+                                error=decision.error,
+                            )
+                        )
+                    else:
+                        raise ValueError(f"Unsupported execution phase: {phase}")
+                    if isinstance(outcome, TerminateRun):
+                        await execution.record_termination(
+                            TerminationDecision(
+                                status="succeeded"
+                                if outcome.termination.status is RunStatus.SUCCEEDED
+                                else "cancelled"
+                                if outcome.termination.status is RunStatus.CANCELLED
+                                else "failed",
+                                reason=outcome.termination.reason,
+                                error=outcome.termination.error,
+                            )
+                        )
+            except InterruptionRequested:
+                token = current_interruption_token()
+                assert token is not None and token.deadline is not None
+                if token.remaining_seconds() <= 0:
+                    raise
+                try:
+                    return await execution.suspend(
+                        token.interruption, deadline=token.deadline
+                    )
+                except TimeoutError as exc:
+                    raise InterruptionRequested(
+                        "Suspension commit deadline exhausted"
+                    ) from exc
+            except CancellationRequested:
+                operation = execution.state.execution.active_operation
+                if operation is not None and operation.kind in ("model", "summary"):
+                    await execution.interrupt_operation(unconfirmed=True)
+                return await execution.finish(
+                    RunTermination(
+                        status=RunStatus.CANCELLED,
+                        reason=TerminationReason.CANCEL_REQUESTED,
+                    )
+                )
 
     @staticmethod
     def _context_failure(code: str, reason: str) -> RunTermination:
@@ -438,17 +535,21 @@ class AgentRuntime:
                 break
             if self.cancellation_token.is_cancelled:
                 raise CancellationRequested
+            raise_if_interrupted()
             await execution.begin_compaction_attempt(
                 plan, number, branch="forced_compaction" if force else "boundary"
             )
             try:
-                response = await await_with_cancellation(
+                response = await await_with_stop(
                     asyncio.wait_for(
                         self.provider.generate(summary_request),
                         timeout=config.compaction_timeout_seconds,
                     ),
                     self.cancellation_token,
+                    current_interruption_token(),
                 )
+            except InterruptionRequested:
+                raise
             except CancellationRequested:
                 attempt = CompactionAttempt(attempt=number, error_code="CANCELLED")
                 attempts.append(attempt)
@@ -583,6 +684,7 @@ class AgentRuntime:
                 return TerminateRun(request)
             if self.cancellation_token.is_cancelled:
                 raise CancellationRequested
+            raise_if_interrupted()
             await execution.begin_step(
                 provider=agent.model.provider, model=agent.model.model
             )
@@ -605,10 +707,12 @@ class AgentRuntime:
                 )
         while True:
             try:
-                response = await await_with_cancellation(
-                    self.provider.generate(request), self.cancellation_token
+                response = await await_with_stop(
+                    self.provider.generate(request),
+                    self.cancellation_token,
+                    current_interruption_token(),
                 )
-            except CancellationRequested:
+            except (CancellationRequested, InterruptionRequested):
                 raise
             except ModelContextLimitError as exc:
                 await execution.record_model_failure("CONTEXT_CAPACITY_EXCEEDED")
@@ -703,7 +807,7 @@ class AgentRuntime:
                 evaluation_scope(execution.evaluation_observer()),
                 execution_scope(execution.execution_observer(operation.attempt_id)),
             ):
-                evaluation = await await_with_cancellation(
+                evaluation = await await_with_stop(
                     self.evaluator.evaluate(
                         EvaluationRequest(
                             run_id=execution.state.identity.run_id,
@@ -712,8 +816,14 @@ class AgentRuntime:
                         )
                     ),
                     self.cancellation_token,
+                    current_interruption_token(),
                 )
-        except (CancellationRequested, RunPersistenceError, ManagedExecutionError):
+        except (
+            CancellationRequested,
+            InterruptionRequested,
+            RunPersistenceError,
+            ManagedExecutionError,
+        ):
             raise
         except Exception as exc:  # noqa: BLE001
             evaluation = EvaluationResult(

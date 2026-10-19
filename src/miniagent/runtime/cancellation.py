@@ -6,6 +6,9 @@ import asyncio
 from collections.abc import Awaitable
 from contextlib import suppress
 
+from miniagent.environments.managed_execution import cleanup_deadline_scope
+from miniagent.runtime.interruption import InterruptionRequested, InterruptionToken
+
 
 class CancellationRequested(Exception):
     pass
@@ -57,3 +60,57 @@ async def await_with_cancellation[T](
         for task in (operation, cancellation):
             with suppress(asyncio.CancelledError):
                 await task
+
+
+async def await_with_stop[T](
+    awaitable: Awaitable[T],
+    cancellation_token: CancellationToken,
+    interruption_token: InterruptionToken | None = None,
+) -> T:
+    if interruption_token is None:
+        return await await_with_cancellation(awaitable, cancellation_token)
+    if cancellation_token.is_cancelled or interruption_token.is_requested:
+        if asyncio.iscoroutine(awaitable):
+            awaitable.close()
+        if cancellation_token.is_cancelled:
+            raise CancellationRequested
+        raise InterruptionRequested
+    with cleanup_deadline_scope(lambda: interruption_token.deadline):
+        operation = asyncio.ensure_future(awaitable)
+    cancellation = asyncio.create_task(cancellation_token.wait())
+    interruption = asyncio.create_task(interruption_token.wait())
+    try:
+        done, _ = await asyncio.wait(
+            {operation, cancellation, interruption}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if operation in done:
+            return operation.result()
+        operation.cancel()
+        if cancellation in done:
+            with suppress(asyncio.CancelledError):
+                await operation
+            raise CancellationRequested
+        remaining = interruption_token.remaining_seconds()
+        if remaining > 0:
+            finished, _ = await asyncio.wait({operation}, timeout=remaining)
+            if operation in finished:
+                with suppress(asyncio.CancelledError):
+                    operation.result()
+        raise InterruptionRequested
+    finally:
+        for task in (operation, cancellation, interruption):
+            if not task.done():
+                task.cancel()
+        for task in (cancellation, interruption):
+            with suppress(asyncio.CancelledError):
+                await task
+        if not interruption_token.is_requested and not operation.done():
+            with suppress(asyncio.CancelledError):
+                await operation
+        if operation.done():
+            with suppress(asyncio.CancelledError):
+                operation.exception()
+        else:
+            operation.add_done_callback(
+                lambda task: None if task.cancelled() else task.exception()
+            )

@@ -10,6 +10,7 @@ from miniagent.agents import AgentSpec
 from miniagent.artifacts import ArtifactNotFoundError, ArtifactRef, ArtifactStore
 from miniagent.cli.candidate_submission import CandidateSubmission
 from miniagent.environments import Workspace
+from miniagent.environments.managed_execution import ManagedExecutionError
 from miniagent.evaluation import Evaluator, PassThroughEvaluator
 from miniagent.metering.pricing import PriceConfig
 from miniagent.models.protocol import ModelProvider
@@ -20,9 +21,12 @@ from miniagent.runtime import (
     RunRecoveryContext,
     RunResult,
     RunStatus,
+    RunSuspension,
     RuntimeConfig,
     RuntimeStore,
 )
+from miniagent.runtime.interruption import InterruptionRequested
+from miniagent.runtime.recording import RunPersistenceError
 from miniagent.tools.registry import ToolRegistry
 
 
@@ -42,7 +46,7 @@ class FinalizationError(BaseModel):
 class ApplicationResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    run_result: RunResult
+    run_result: RunResult | RunSuspension
     artifacts: tuple[ArtifactRef, ...] = ()
     finalization_errors: tuple[FinalizationError, ...] = ()
 
@@ -94,6 +98,8 @@ class Application:
                 run_id=dependencies.run_id,
                 recovery_context=dependencies.recovery_context,
             )
+        except (RunPersistenceError, ManagedExecutionError, InterruptionRequested):
+            raise
         except BaseException as exc:
             _, errors = await self._finalize_patch()
             for error in errors:

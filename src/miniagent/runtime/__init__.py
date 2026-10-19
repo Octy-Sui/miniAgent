@@ -44,7 +44,12 @@ from miniagent.runtime.recovery import (
     RecoveryTrigger,
     RunRecoveryContext,
 )
-from miniagent.runtime.result import RunError, RunResult, TerminationReason
+from miniagent.runtime.result import (
+    RunError,
+    RunResult,
+    RunSuspension,
+    TerminationReason,
+)
 from miniagent.runtime.snapshots import (
     NewRunSnapshot,
     RunSnapshot,
@@ -83,6 +88,8 @@ __all__ = [
     "Evaluator",
     "EventSequenceConflictError",
     "EventStore",
+    "InterruptionRequested",
+    "InterruptionToken",
     "InvalidRunTransition",
     "NewRunEvent",
     "NewRunSnapshot",
@@ -105,6 +112,7 @@ __all__ = [
     "RunSnapshot",
     "RunState",
     "RunStatus",
+    "RunSuspension",
     "RunTrace",
     "RunUsage",
     "RuntimeConfig",

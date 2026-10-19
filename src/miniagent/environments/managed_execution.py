@@ -1,4 +1,4 @@
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -122,3 +122,22 @@ class MemoryExecutionObserver:
         ):
             raise ManagedExecutionError("Execution whole group end is unconfirmed")
         self.evidence[evidence.execution_id] = evidence
+
+
+_CLEANUP_DEADLINE: ContextVar[Callable[[], float | None] | None] = ContextVar(
+    "miniagent_cleanup_deadline", default=None
+)
+
+
+@contextmanager
+def cleanup_deadline_scope(deadline: Callable[[], float | None]) -> Iterator[None]:
+    token = _CLEANUP_DEADLINE.set(deadline)
+    try:
+        yield
+    finally:
+        _CLEANUP_DEADLINE.reset(token)
+
+
+def current_cleanup_deadline() -> float | None:
+    getter = _CLEANUP_DEADLINE.get()
+    return getter() if getter is not None else None

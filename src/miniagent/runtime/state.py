@@ -12,13 +12,19 @@ from miniagent.runtime.progress import (
     CurrentStep,
     EvaluationProgress,
     ExecutionPhase,
+    InterruptionInfo,
     OperationRef,
     RecoverySession,
     RequestProgress,
     ResponseDisposition,
     SuspensionMetadata,
 )
-from miniagent.runtime.result import RunError, RunResult, TerminationReason
+from miniagent.runtime.result import (
+    RunError,
+    RunResult,
+    RunSuspension,
+    TerminationReason,
+)
 from miniagent.tools.contracts import ToolCall, ToolDefinition
 
 
@@ -284,3 +290,7 @@ def validate_state(state: RunState) -> None:
 
 
 RunResult.model_rebuild(_types_namespace={"RunStatus": RunStatus})
+
+RunSuspension.model_rebuild(
+    _types_namespace={"RunStatus": RunStatus, "InterruptionInfo": InterruptionInfo}
+)

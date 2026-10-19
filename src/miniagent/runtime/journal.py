@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Sequence
 from hashlib import sha256
 from uuid import UUID, uuid4
@@ -11,6 +12,10 @@ from miniagent.runtime.events import (
     CompactionAttempt,
     CompactionCompleted,
     NewRunEvent,
+)
+from miniagent.runtime.interruption import (
+    InterruptionRequested,
+    current_interruption_token,
 )
 from miniagent.runtime.recording import RunPersistenceError, RunRecorder
 from miniagent.runtime.state import ContextProgress, ConversationState, RunState
@@ -239,7 +244,18 @@ class RunJournal:
         state: RunState,
         events: Sequence[NewRunEvent],
     ) -> None:
-        await self.recorder.commit(state, events=events)
+        token = current_interruption_token()
+        if token is None or not token.is_requested:
+            await self.recorder.commit(state, events=events)
+            return
+        remaining = token.remaining_seconds()
+        if remaining <= 0:
+            raise InterruptionRequested("No operation commit budget remains")
+        try:
+            async with asyncio.timeout(remaining):
+                await self.recorder.commit(state, events=events)
+        except TimeoutError as exc:
+            raise InterruptionRequested("Operation commit deadline exhausted") from exc
 
     async def complete_step(
         self,

@@ -18,6 +18,7 @@ from miniagent.runtime import (
     RunStatus,
     TerminationReason,
 )
+from miniagent.runtime.recording import RunPersistenceError
 
 
 async def test_cancel_during_harness_collects_diagnostics_without_completed_event(
@@ -179,3 +180,21 @@ async def test_published_patch_is_recovered_after_submission_cancellation(
     record = await deps.artifact_store.get_record(result.artifacts[0])
     assert record.metadata["submission_id"] == str(submission.result.submission_id)
     assert (tmp_path / "export-calls.jsonl").read_bytes() == calls_before
+
+
+async def test_persistence_uncertainty_skips_diagnostic_finalization(delivery_case):
+    deps, submission = delivery_case
+    (deps.workspace.root / "tracked.txt").write_text("must remain unexported\n")
+
+    class UncertainEvaluator:
+        async def evaluate(self, request):
+            raise RunPersistenceError(
+                run_id=request.run_id, operation="evaluation", last_confirmed_sequence=1
+            )
+
+    with pytest.raises(RunPersistenceError):
+        await Application(replace(deps, evaluator=UncertainEvaluator())).run(
+            CancellationToken()
+        )
+    assert submission.result.status == "not_attempted"
+    assert deps.workspace.root.exists()

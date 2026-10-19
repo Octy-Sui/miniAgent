@@ -14,6 +14,7 @@ from miniagent.models.protocol import FinishReason, ModelResponse, ModelUsage
 from miniagent.runtime import (
     CancellationToken,
     RunEventType,
+    RunResult,
     RunStatus,
     TerminationReason,
 )
@@ -56,6 +57,7 @@ async def verify_application(application, passed):
     deps = application.dependencies
     application = Application(replace(deps, provider=SubmissionProvider()))
     result = await application.run(CancellationToken())
+    assert isinstance(result.run_result, RunResult)
     assert result.run_result.status is (
         RunStatus.SUCCEEDED if passed else RunStatus.FAILED
     ), result.run_result.error

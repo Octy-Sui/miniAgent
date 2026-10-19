@@ -1,13 +1,14 @@
 from datetime import datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from miniagent.metering.usage import RunUsage
 
 if TYPE_CHECKING:
+    from miniagent.runtime.progress import InterruptionInfo
     from miniagent.runtime.state import RunState, RunStatus
 
 
@@ -77,3 +78,17 @@ class RunResult(BaseModel):
             started_at=lifecycle.started_at,
             finished_at=lifecycle.finished_at,
         )
+
+
+class RunSuspension(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    run_id: UUID
+    status: "Literal[RunStatus.SUSPENDED]" = Field(
+        default="suspended", validate_default=True
+    )
+    usage: RunUsage
+    started_at: datetime | None
+    suspended_at: datetime
+    interruption: "InterruptionInfo"
+    workspace_id: str | None = None
