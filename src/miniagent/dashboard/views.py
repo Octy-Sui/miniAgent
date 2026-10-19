@@ -116,3 +116,14 @@ class PreviewView:
     inline_continuation: bool
     read_at: datetime
     issues: tuple[ReadIssue, ...]
+
+
+@dataclass(frozen=True)
+class EvaluationAttemptView:
+    attempt_id: UUID | None
+    outcome: Literal[
+        "recorded_pass", "conflict", "incomplete", "unsupported", "recorded_failure"
+    ]
+    fields: tuple[FieldView, ...]
+    artifact_ids: tuple[UUID, ...]
+    issues: tuple[ReadIssue, ...]
