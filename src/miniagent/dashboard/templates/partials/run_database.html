@@ -1,5 +1,5 @@
-<section id="run-database" data-as-of="{{ as_of }}" data-snapshot-version="{{ snapshot_version }}" data-boundary="{{ boundary_token }}" data-terminal="{{ 'true' if terminal else 'false' }}">
-<p><span class="badge">{{ status }}</span> · {{ '终态记录' if terminal else '最后记录状态，尚未终止' }} · as_of_sequence={{ as_of }} · Snapshot 上界={{ snapshot_version }} · read_at=<time datetime="{{ read_at }}" title="{{ read_at }}">{{ read_at }} UTC</time></p>
+<section id="run-database" data-run-status="{{ status }}" data-read-at="{{ read_at }}" data-generation="0" data-as-of="{{ as_of }}" data-snapshot-version="{{ snapshot_version }}" data-boundary="{{ boundary_token }}" data-terminal="{{ 'true' if terminal else 'false' }}">
+{% if located %}<p>独立定位窗口：保留筛选条件，定位事件及相邻范围不受筛选限制。</p>{% endif %}<p><span class="badge">{{ status }}</span> · {{ '终态记录' if terminal else '最后记录状态，尚未终止' }} · as_of_sequence={{ as_of }} · Snapshot 上界={{ snapshot_version }} · read_at=<time datetime="{{ read_at }}" title="{{ read_at }}">{{ read_at }} UTC</time></p>
 {% for issue in issues %}<p class="issue">{{ issue.message }}</p>{% endfor %}
 {% for title, fields in sections %}<section><h2>{{ title }}</h2>{% include "partials/fields.html" %}</section>{% endfor %}
 {% include "partials/memory.html" %}{% include "partials/timeline.html" %}</section>

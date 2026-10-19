@@ -169,6 +169,7 @@ def render_runs(
     html = render_page(
         "partials/run_list.html" if fragment else "runs.html",
         {
+            "read_at": result.read_at.isoformat(),
             "rows": rows,
             "total": result.total,
             "counts": result.counts,
@@ -443,6 +444,7 @@ def render_run(
     view = project_run(read.run, boundary, evaluation_event=read.evaluation_event)
     context: dict[str, object] = {
         "run_id": str(run_id),
+        "located": params.event_id is not None,
         "status": view.status,
         "terminal": view.terminal,
         "as_of": boundary.as_of_sequence,

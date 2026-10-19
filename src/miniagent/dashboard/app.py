@@ -82,6 +82,16 @@ class LocalBoundary:
             and b"cross-site" not in headers.get(b"sec-fetch-site", [])
         )
 
+        generations = headers.get(b"x-dashboard-generation", [])
+        generation = generations[0] if len(generations) == 1 else b""
+        valid_generation = not generations or (
+            len(generations) == 1
+            and 1 <= len(generation) <= 10
+            and generation.isdigit()
+            and generation == str(int(generation)).encode()
+            and int(generation) <= 2147483647
+        )
+
         async def secure_send(message: Message) -> None:
             if message["type"] == "http.response.start":
                 message["headers"] = [
@@ -91,12 +101,17 @@ class LocalBoundary:
                         for key, value in _HEADERS.items()
                     ),
                 ]
+                if generation and valid_generation:
+                    message["headers"].append((b"x-dashboard-generation", generation))
             elif message["type"] == "http.response.body" and scope["method"] == "HEAD":
                 message["body"] = b""
             await send(message)
 
         if not valid:
             await error_response(403)(scope, receive, secure_send)
+            return
+        if not valid_generation:
+            await error_response(422)(scope, receive, secure_send)
             return
         try:
             await self.app(scope, receive, secure_send)

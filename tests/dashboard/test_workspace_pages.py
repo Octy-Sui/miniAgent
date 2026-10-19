@@ -18,7 +18,12 @@ from tests.dashboard.builders import evaluation_example, report_document
 
 
 async def publish_evaluation(
-    database: Path, root: Path, *, report: dict | None = None, long_log: bool = False
+    database: Path,
+    root: Path,
+    *,
+    report: dict | None = None,
+    long_log: bool = False,
+    persist_run: bool = True,
 ):
     example = evaluation_example(root)
     store = FileArtifactStore(root)
@@ -50,6 +55,8 @@ async def publish_evaluation(
         )
         records[number] = await store.get_record(ref)
         refs.append(ref)
+    if not persist_run:
+        return records
     assert example.run.record is not None
     run_store = SQLiteRunStore(database)
     await run_store.create(

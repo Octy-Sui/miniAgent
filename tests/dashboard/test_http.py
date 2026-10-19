@@ -62,3 +62,23 @@ async def test_error_responses_never_echo_input(
             assert response.status_code == 422
             assert sentinel not in response.text
     assert sentinel not in caplog.text
+
+
+async def test_generation_is_bounded_and_reflected(
+    database: Path, tmp_path: Path
+) -> None:
+    app = create_app(DashboardSettings(database=database, artifacts=tmp_path))
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8080"
+        ) as client,
+    ):
+        response = await client.get("/runs", headers={"X-Dashboard-Generation": "123"})
+        assert response.headers["X-Dashboard-Generation"] == "123"
+        for value in ("-1", "1.2", "2147483648", "secret-sentinel", "01"):
+            response = await client.get(
+                "/runs", headers={"X-Dashboard-Generation": value}
+            )
+            assert response.status_code == 422
+            assert value not in response.headers.get("X-Dashboard-Generation", "")
