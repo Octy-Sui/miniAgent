@@ -93,3 +93,12 @@ def select_approval_version(
         "SELECT version FROM approvals WHERE approval_id = ? AND run_id = ?",
         (str(approval_id), str(run_id)),
     ).fetchone()
+
+
+def select_uninvalidated_approvals(
+    connection: sqlite3.Connection, run_id: UUID
+) -> list[sqlite3.Row]:
+    return connection.execute(
+        "SELECT * FROM approvals WHERE run_id = ? AND authorization_invalidated_event_id IS NULL AND (outcome IS NULL OR outcome = 'approved') ORDER BY requested_at, approval_id",
+        (str(run_id),),
+    ).fetchall()

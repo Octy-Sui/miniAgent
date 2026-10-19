@@ -21,6 +21,7 @@ from miniagent.runtime.store_contracts import (
     InvalidateApproval,
     ResolveApproval,
     SnapshotChange,
+    StoredApproval,
 )
 
 
@@ -32,6 +33,89 @@ class RunJournal:
     def __init__(self, recorder: RunRecorder) -> None:
         self.recorder = recorder
         self._approval_versions: dict[UUID, int] = {}
+
+    @classmethod
+    def attach(
+        cls, recorder: RunRecorder, approvals: Sequence[StoredApproval]
+    ) -> "RunJournal":
+        if recorder.record is None:
+            raise ValueError("Journal attach requires an existing record")
+        journal = cls(recorder)
+        for stored in approvals:
+            request = stored.approval.request
+            if (
+                request.run_id != recorder.run_id
+                or request.approval_id in journal._approval_versions
+            ):
+                raise ValueError(
+                    "Attached approval scope must be unique within the run"
+                )
+            journal._approval_versions[request.approval_id] = stored.version
+        return journal
+
+    async def _commit_recovery(
+        self,
+        state: RunState,
+        events: Sequence[NewRunEvent],
+        *,
+        approval_resolution: ApprovalResolution | None = None,
+    ) -> CommitResult:
+        changes = []
+        if approval_resolution is not None:
+            changes.append(
+                ResolveApproval(
+                    resolution=approval_resolution,
+                    expected_version=self._approval_version(
+                        approval_resolution.approval_id
+                    ),
+                    resolution_event_id=self._event_id(
+                        events, ApprovalResolved, approval_resolution.approval_id
+                    ),
+                )
+            )
+        result = await self.recorder.commit(
+            state, events=events, approval_changes=changes, snapshot=True
+        )
+        if result is None:
+            raise RuntimeError("Recovery requires a persisted journal")
+        for approval in result.approvals:
+            self._approval_versions[approval.approval.request.approval_id] = (
+                approval.version
+            )
+        return result
+
+    async def suspend_run(
+        self,
+        state: RunState,
+        events: Sequence[NewRunEvent],
+        *,
+        approval_resolution: ApprovalResolution | None = None,
+    ) -> CommitResult:
+        return await self._commit_recovery(
+            state, events, approval_resolution=approval_resolution
+        )
+
+    async def start_resume(
+        self,
+        state: RunState,
+        events: Sequence[NewRunEvent],
+        *,
+        approval_resolution: ApprovalResolution | None = None,
+    ) -> CommitResult:
+        return await self._commit_recovery(
+            state, events, approval_resolution=approval_resolution
+        )
+
+    async def complete_resume(
+        self,
+        state: RunState,
+        events: Sequence[NewRunEvent],
+        *,
+        approval_resolution: ApprovalResolution | None = None,
+    ) -> CommitResult:
+        return await self._commit_recovery(
+            state, events, approval_resolution=approval_resolution
+        )
 
     def prepare_compaction(
         self,
@@ -95,7 +179,7 @@ class RunJournal:
     async def compact(self, state: RunState, event: NewRunEvent) -> CommitResult | None:
         payload = event.payload
         if not isinstance(payload, CompactionCompleted):
-            raise ValueError("compaction commit requires completion event")
+            raise ValueError("compaction commit requires completion event")  # noqa: TRY004
         record = self.recorder.record
         change = None
         if record is not None:

@@ -9,6 +9,7 @@ from miniagent.artifacts.contracts import ArtifactRef
 from miniagent.metering.usage import RequestCost
 from miniagent.models.protocol import ModelUsage
 from miniagent.policy import PolicyDecision
+from miniagent.runtime.progress import BusinessStatus, ExecutionPhase, InterruptionInfo
 from miniagent.runtime.tracing import SpanId
 from miniagent.tools.contracts import ToolResult
 
@@ -25,6 +26,10 @@ class RunEventType(StrEnum):
     COMPACTION_ATTEMPT_RECORDED = "compaction_attempt_recorded"
     COMPACTION_FAILED = "compaction_failed"
     COMPACTION_COMPLETED = "compaction_completed"
+    RUN_SUSPENDED = "run_suspended"
+    RESUME_STARTED = "resume_started"
+    RESUME_COMPLETED = "resume_completed"
+    RESUME_FAILED = "resume_failed"
     RUN_STARTED = "run_started"
     STEP_STARTED = "step_started"
     STEP_COMPLETED = "step_completed"
@@ -49,6 +54,34 @@ class _Payload(BaseModel):
 
 class RunStarted(_Payload):
     type: Literal[RunEventType.RUN_STARTED] = RunEventType.RUN_STARTED
+
+
+class RunSuspended(_Payload):
+    type: Literal[RunEventType.RUN_SUSPENDED] = RunEventType.RUN_SUSPENDED
+    interruption: InterruptionInfo
+    business_status: BusinessStatus
+    phase: ExecutionPhase
+
+
+class _ResumePayload(_Payload):
+    resume_attempt_id: UUID
+    source_sequence: int = Field(ge=0)
+    business_status: BusinessStatus
+    phase: ExecutionPhase
+
+
+class ResumeStarted(_ResumePayload):
+    type: Literal[RunEventType.RESUME_STARTED] = RunEventType.RESUME_STARTED
+
+
+class ResumeCompleted(_ResumePayload):
+    type: Literal[RunEventType.RESUME_COMPLETED] = RunEventType.RESUME_COMPLETED
+
+
+class ResumeFailed(_ResumePayload):
+    type: Literal[RunEventType.RESUME_FAILED] = RunEventType.RESUME_FAILED
+    code: str
+    message: str
 
 
 class StepStarted(_Payload):
@@ -224,6 +257,10 @@ type EventPayload = Annotated[
     | CompactionFailed
     | CompactionCompleted
     | RunStarted
+    | RunSuspended
+    | ResumeStarted
+    | ResumeCompleted
+    | ResumeFailed
     | StepStarted
     | StepCompleted
     | ModelRequested

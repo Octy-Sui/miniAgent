@@ -46,6 +46,17 @@ class RunRecorder:
         self.recovery_context = recovery_context
         self.record: RunRecord | None = None
 
+    @classmethod
+    def attach(cls, store: RuntimeStore, record: RunRecord) -> "RunRecorder":
+        record = RunRecord.model_validate_json(record.model_dump_json())
+        recorder = cls(
+            run_id=record.state.identity.run_id,
+            store=store,
+            recovery_context=record.recovery_context,
+        )
+        recorder.record = record
+        return recorder
+
     async def create(self, state: RunState) -> None:
         if self.store is None:
             return

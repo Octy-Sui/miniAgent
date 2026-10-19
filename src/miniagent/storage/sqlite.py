@@ -20,6 +20,8 @@ from miniagent.runtime.events import (
     NewRunEvent,
     RunEvent,
     RunEventType,
+    ToolEnded,
+    ToolExecutionStarted,
 )
 from miniagent.runtime.recovery import RunRecoveryContext
 from miniagent.runtime.snapshots import (
@@ -32,6 +34,7 @@ from miniagent.runtime.store_contracts import (
     ApprovalConflictError,
     ApprovalExpiredError,
     CommitResult,
+    CorruptStoredDataError,
     CreateApproval,
     ResolveApproval,
     RunAlreadyExistsError,
@@ -39,6 +42,7 @@ from miniagent.runtime.store_contracts import (
     RunNotFoundError,
     RunRecord,
     StoredApproval,
+    ToolResultFact,
     UnsupportedStorageVersionError,
 )
 from miniagent.storage.codecs import (
@@ -60,6 +64,7 @@ from miniagent.storage.queries.approvals import (
     select_approval_for_run,
     select_approval_version,
     select_pending_approvals,
+    select_uninvalidated_approvals,
 )
 from miniagent.storage.queries.approvals import (
     invalidate_approval as invalidate_approval_row,
@@ -204,6 +209,131 @@ class SQLiteRunStore:
 
     async def list_pending_approvals(self) -> list[StoredApproval]:
         return await self._in_thread(self._list_pending_approvals_sync)
+
+    async def list_tool_results(
+        self, run_id: UUID, *, step_number: int
+    ) -> list[ToolResultFact]:
+        if step_number < 1:
+            raise ValueError("step_number must be positive")
+
+        def read() -> list[ToolResultFact]:
+            with closing(self._connect()) as connection:
+                connection.execute("BEGIN")
+                record = self._get_record(connection, run_id)
+                execution = record.state.execution
+                if (
+                    execution.current_step is not None
+                    and execution.current_step.step_number == step_number
+                    and execution.tool_batch is not None
+                ):
+                    calls = execution.tool_batch.calls
+                    expected_count = execution.tool_batch.next_index
+                else:
+                    completed = next(
+                        (
+                            step
+                            for step in record.state.conversation.completed_steps
+                            if step.step_number == step_number
+                        ),
+                        None,
+                    )
+                    if completed is None:
+                        raise CorruptStoredDataError(
+                            "Tool result batch scope is unavailable"
+                        )
+                    messages = record.state.conversation.messages[
+                        completed.message_start : completed.message_end
+                    ]
+                    calls = next(
+                        (
+                            message.tool_calls
+                            for message in messages
+                            if message.role == "assistant" and message.tool_calls
+                        ),
+                        (),
+                    )
+                    expected_count = len(calls)
+                facts = []
+                for row in select_events(
+                    connection, run_id, after_sequence=0, limit=None
+                ):
+                    event = decode_event(row)
+                    payload = event.payload
+                    if (
+                        event.step_number != step_number
+                        or not isinstance(payload, ToolEnded)
+                        or payload.result is None
+                    ):
+                        continue
+                    if (
+                        payload.call_index >= expected_count
+                        or payload.tool_call_id != calls[payload.call_index].id
+                        or payload.tool_name != calls[payload.call_index].name
+                    ):
+                        raise CorruptStoredDataError(
+                            "Tool result scope does not match original batch"
+                        )
+                    facts.append(
+                        ToolResultFact(
+                            step_number=step_number,
+                            call_index=payload.call_index,
+                            tool_call_id=payload.tool_call_id,
+                            result=payload.result,
+                            event_sequence=event.sequence,
+                        )
+                    )
+                if sorted(fact.call_index for fact in facts) != list(
+                    range(expected_count)
+                ):
+                    raise CorruptStoredDataError(
+                        "Tool results must uniquely cover committed batch prefix"
+                    )
+                return sorted(facts, key=lambda fact: fact.call_index)
+
+        return await self._in_thread(read)
+
+    async def list_unconsumed_approvals(self, run_id: UUID) -> list[StoredApproval]:
+        def read() -> list[StoredApproval]:
+            with closing(self._connect()) as connection:
+                connection.execute("BEGIN")
+                self._get_record(connection, run_id)
+                approvals = [
+                    decode_approval(row)
+                    for row in select_uninvalidated_approvals(connection, run_id)
+                ]
+                executions = [
+                    decode_event(row)
+                    for row in select_events(
+                        connection, run_id, after_sequence=0, limit=None
+                    )
+                ]
+                return [
+                    stored
+                    for stored in approvals
+                    if not any(
+                        isinstance(event.payload, ToolExecutionStarted)
+                        and event.sequence
+                        > next(
+                            (
+                                request_event.sequence
+                                for request_event in executions
+                                if request_event.event_id == stored.request_event_id
+                            ),
+                            0,
+                        )
+                        and event.step_number
+                        == stored.approval.decision.request.step_number
+                        and event.payload.call_index
+                        == stored.approval.decision.request.call_index
+                        and event.payload.tool_call_id
+                        == stored.approval.decision.request.tool_call_id
+                        and event.payload.tool_name
+                        == stored.approval.decision.request.tool_name
+                        for event in executions
+                    )
+                ]
+
+        return await self._in_thread(read)
 
     async def _in_thread(self, operation: Callable[[], _T]) -> _T:
         task = asyncio.create_task(asyncio.to_thread(operation))

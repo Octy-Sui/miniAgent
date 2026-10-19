@@ -1,4 +1,5 @@
 from collections.abc import Awaitable
+from dataclasses import dataclass
 from typing import Annotated, Literal, Protocol
 from uuid import UUID
 
@@ -22,6 +23,7 @@ from miniagent.runtime.events import (
 from miniagent.runtime.recovery import RunRecoveryContext
 from miniagent.runtime.snapshots import RunSnapshot
 from miniagent.runtime.state import RunState
+from miniagent.tools.contracts import ToolResult
 
 
 class RunNotFoundError(LookupError):
@@ -208,6 +210,15 @@ class CommitResult(BaseModel):
     idempotent: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class ToolResultFact:
+    step_number: int
+    call_index: int
+    tool_call_id: str
+    result: ToolResult
+    event_sequence: int
+
+
 class RuntimeStore(Protocol):
     def create(
         self,
@@ -225,3 +236,11 @@ class RuntimeStore(Protocol):
     async def list_events(
         self, run_id: UUID, *, after_sequence: int = 0, limit: int | None = None
     ) -> list[RunEvent]: ...
+
+    async def list_tool_results(
+        self, run_id: UUID, *, step_number: int
+    ) -> list[ToolResultFact]: ...
+
+    async def get_approval(self, approval_id: UUID) -> StoredApproval: ...
+
+    async def list_unconsumed_approvals(self, run_id: UUID) -> list[StoredApproval]: ...
