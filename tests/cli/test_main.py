@@ -279,3 +279,20 @@ def test_cli_model_override_preserves_generation_options(
     assert configs[0].agent.model.model == "replacement"
     assert configs[0].agent.model.provider == cli_main.DEFAULT_AGENT.model.provider
     assert configs[0].agent.generation == cli_main.DEFAULT_AGENT.generation
+
+
+def test_unknown_requests_are_not_rendered_as_zero_cost(monkeypatch):
+    result = successful_result()
+    result = result.model_copy(
+        update={
+            "usage": result.usage.model_copy(update={"unconfirmed_model_requests": 2})
+        }
+    )
+    stub_cli_run(monkeypatch, result)
+    invocation = CliRunner().invoke(app, ["task"])
+    assert invocation.exit_code == 0
+    assert "Cost (confirmed portion)" in invocation.stdout
+    assert (
+        "Unconfirmed model requests: 2; additional charges may apply"
+        in invocation.stdout
+    )

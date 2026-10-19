@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import ValidationError
 
 from miniagent.environments.attachment import AttachmentFacts
 from miniagent.environments.managed_execution import (
@@ -27,8 +27,8 @@ from miniagent.runtime.state import TERMINAL_STATUSES, RunState, RunStatus
 from miniagent.runtime.store_contracts import RunRecord, StoredApproval, ToolResultFact
 
 
-class ResumeRejection(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+@dataclass(frozen=True, slots=True)
+class ResumeRejection:
     code: str
     run_id: UUID
     message: str
@@ -403,6 +403,14 @@ def plan_resume(
         live_checks=attachment.live_checks,
         cleanup_requirements=cleanup,
         readiness="requires_live_checks" if attachment.live_checks else "ready",
+        diagnostics=(
+            f"Status: {state.lifecycle.status.value}",
+            f"Step: {state.execution.steps_started}; completed calls in current batch: {batch.next_index if batch else 0}",
+            f"Workspace: {context.workspace_id}",
+            f"Resume attempts (audit): {state.recovery.resume_attempts}",
+            f"Confirmed cost: ${state.usage.cost_usd:.8f} USD",
+            f"Unconfirmed model requests (including active request): {state.usage.unconfirmed_model_requests + int(operation is not None and operation.kind in ('model', 'summary'))}; additional charges may apply",
+        ),
     )
 
 

@@ -4,6 +4,10 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class ModelLimitsError(ValueError):
+    pass
+
+
 class ModelLimits(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -28,7 +32,7 @@ def load_model_limits(path: Path, provider: str, model: str) -> ModelLimits:
     for entry in entries:
         key = (entry.provider, entry.model)
         if key in seen:
-            raise ValueError(f"duplicate model limits: {key}")
+            raise ModelLimitsError(f"duplicate model limits: {key}")
         seen.add(key)
     for entry in entries:
         if (entry.provider, entry.model) == (provider, model):
@@ -36,4 +40,4 @@ def load_model_limits(path: Path, provider: str, model: str) -> ModelLimits:
                 context_window_tokens=entry.context_window_tokens,
                 max_output_tokens=entry.max_output_tokens,
             )
-    raise ValueError(f"missing model limits: {provider}/{model}")
+    raise ModelLimitsError(f"missing model limits: {provider}/{model}")

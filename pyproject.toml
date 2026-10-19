@@ -29,7 +29,7 @@ dev = [
 asyncio_mode = "auto"
 
 [project.scripts]
-miniagent = "miniagent.cli.main:app"
+miniagent = "miniagent.cli.main:entrypoint"
 
 [build-system]
 requires = ["uv_build>=0.12.8,<0.13.0"]
