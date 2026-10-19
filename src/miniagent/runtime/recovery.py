@@ -6,8 +6,16 @@ from enum import IntEnum, StrEnum
 from typing import Literal, Protocol
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
 
+from miniagent.environments.attachment import WorkspaceAttachment
 from miniagent.environments.config import DockerWorkspaceSpec, LocalWorkspaceSpec
 from miniagent.environments.contracts import WorkspaceCheckpoint
 from miniagent.environments.persistence import PersistedWorkspaceSpec
@@ -17,13 +25,24 @@ from miniagent.runtime.result import RunError
 from miniagent.runtime.state import RunState
 
 
+class ApplicationDefinitionEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["cli_application"] = "cli_application"
+    schema_version: Literal[1] = 1
+    payload: dict[str, JsonValue]
+    payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    run_definition_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class RunRecoveryContext(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     workspace_id: str = Field(min_length=1)
     workspace_spec: PersistedWorkspaceSpec
-    checkpoint: WorkspaceCheckpoint | None = None
+    attachment: WorkspaceAttachment | None = None
+    application: ApplicationDefinitionEnvelope | None = None
     policy_revision: str | None = None
     pricing_revision: str | None = None
 
@@ -31,25 +50,22 @@ class RunRecoveryContext(BaseModel):
     @classmethod
     def reject_runtime_workspace_spec(cls, value: object) -> object:
         if isinstance(value, (LocalWorkspaceSpec, DockerWorkspaceSpec)):
-            raise ValueError(
+            raise ValueError(  # noqa: TRY004 -- Pydantic converts ValueError to validation errors.
                 "Recovery context requires a sanitized persisted workspace spec"
             )
         return value
 
     @model_validator(mode="after")
     def validate_scope(self) -> "RunRecoveryContext":
-        if (
-            self.checkpoint is not None
-            and self.workspace_spec.run_id != self.checkpoint.run_id
-        ):
-            raise ValueError(
-                "Recovery checkpoint and workspace must belong to the same run"
-            )
-        if (
-            self.checkpoint is not None
-            and self.checkpoint.workspace_id != self.workspace_id
-        ):
-            raise ValueError("Recovery checkpoint must identify the current workspace")
+        if self.attachment is not None:
+            if self.attachment.run_id != self.workspace_spec.run_id:
+                raise ValueError("Recovery attachment must belong to the same run")
+            if self.attachment.workspace_id != self.workspace_id:
+                raise ValueError(
+                    "Recovery attachment must identify the current workspace"
+                )
+            if self.attachment.kind != self.workspace_spec.kind:
+                raise ValueError("Recovery attachment must match workspace kind")
         return self
 
 

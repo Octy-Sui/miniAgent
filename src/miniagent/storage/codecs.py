@@ -155,10 +155,10 @@ def decode_approval(row: sqlite3.Row) -> StoredApproval:
 def decode_recovery_context(value: str) -> RunRecoveryContext:
     raw = json.loads(value)
     version = raw.get("schema_version") if isinstance(raw, dict) else None
-    if version != 1:
+    if version != 2:
         raise UnsupportedStorageVersionError(
             f"Stored recovery context schema version {version!r} is unsupported; "
-            "expected 1"
+            "expected 2"
         )
     return RunRecoveryContext.model_validate(raw)
 

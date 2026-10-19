@@ -54,6 +54,7 @@ from miniagent.runtime.events import (
     StepStarted,
     ToolEnded,
 )
+from miniagent.runtime.progress import CurrentStep, ExecutionPhase
 from miniagent.runtime.state import ToolBatch
 from miniagent.runtime.store_contracts import (
     ApprovalConflictError,
@@ -433,6 +434,14 @@ async def test_approval_resolution_is_atomic_and_idempotent(
                 "execution": running.execution.model_copy(
                     update={
                         "cursor": RunCursor.EXECUTE_TOOL_CALLS,
+                        "phase": ExecutionPhase.EXECUTE_TOOLS,
+                        "steps_started": 1,
+                        "current_step": CurrentStep(
+                            step_number=1,
+                            message_start=0,
+                            started_event_id=uuid4(),
+                            started_sequence=1,
+                        ),
                         "tool_batch": ToolBatch(
                             calls=(
                                 ToolCall(
@@ -1028,7 +1037,7 @@ async def test_legacy_recovery_context_is_rejected_without_loading_values(
     state = make_state()
     await store.create(state)
     legacy = (
-        '{"schema_version":2,"workspace_id":"workspace-1",'
+        '{"schema_version":1,"workspace_id":"workspace-1",'
         '"workspace_spec":{"kind":"local","run_id":"'
         f"{state.identity.run_id}"
         '","source_dir":"/tmp/source","environment":'
