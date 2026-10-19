@@ -25,8 +25,8 @@ from miniagent.dashboard.reads import (
     RunListRead,
     RunPageRead,
     StoredRun,
+    _missing_state_fields,
 )
-from miniagent.metering.usage import RunUsage
 from miniagent.runtime.state import RunStatus
 from miniagent.runtime.store_contracts import (
     CorruptStoredDataError,
@@ -337,28 +337,3 @@ def _load_run(
         else "unknown",
         tuple(issues),
     )
-
-
-def _missing_state_fields(raw: object) -> tuple[ReadIssue, ...]:
-
-    paths = [
-        *(("usage", key) for key in RunUsage.model_fields),
-        ("execution", "steps_started"),
-        ("execution", "consecutive_failed_steps"),
-        ("definition", "config", "max_steps"),
-        ("definition", "config", "max_consecutive_failures"),
-        ("definition", "config", "context_window_tokens"),
-        ("definition", "agent_spec", "generation", "max_output_tokens"),
-        ("context", "current_version"),
-    ]
-    issues = []
-    for path in paths:
-        value = raw
-        for key in path:
-            if not isinstance(value, dict) or key not in value:
-                issues.append(
-                    ReadIssue("field_not_recorded", "历史字段未记录", field_path=path)
-                )
-                break
-            value = value[key]
-    return tuple(issues)

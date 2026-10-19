@@ -1,9 +1,10 @@
+from dataclasses import replace
 from decimal import Decimal
 from hashlib import sha256
 from importlib.resources import files
 
 import orjson
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
 from miniagent.dashboard.config import LIMITS
 from miniagent.dashboard.cursors import PageBoundary
@@ -26,7 +27,11 @@ from miniagent.dashboard.views import (
     SourceTarget,
 )
 from miniagent.models.messages import AssistantMessage
-from miniagent.runtime.context import CompactionSummary
+from miniagent.runtime.context import (
+    CompactionSummary,
+    SnapshotSource,
+    VerifiedEvidence,
+)
 from miniagent.runtime.events import (
     CompactionAttempt,
     CompactionAttemptRecorded,
@@ -334,6 +339,28 @@ def _project(
     issues: tuple[ReadIssue, ...],
 ) -> MemoryView:
     groups = group_compactions(facts.events)
+    limited_groups = {
+        issue.field_path[1]
+        for issue in facts.issues
+        if issue.code == "not_loaded"
+        and len(issue.field_path) == 2
+        and issue.field_path[0] == "compaction_group"
+    }
+    if limited_groups:
+        groups = tuple(
+            replace(
+                group,
+                total_cost_usd=None,
+                issues=(
+                    *group.issues,
+                    ReadIssue("not_loaded", "压缩事件组尚未完整加载"),
+                ),
+            )
+            if group.first_requested_sequence in limited_groups
+            else group
+            for group in groups
+        )
+    issues = (*issues, *facts.issues)
     if state is None or any(
         issue.code == "field_not_recorded"
         and issue.field_path == ("context", "current_version")
@@ -348,6 +375,28 @@ def _project(
         )
     version = state.context.current_version
     if version is None:
+        if any(
+            item.type == "compaction_completed"
+            and item.run_id == boundary.run_id
+            and item.sequence <= boundary.as_of_sequence
+            for item in facts.events
+        ):
+            return MemoryView(
+                None,
+                (
+                    FieldView(
+                        "memory", "Task Memory", "当前摘要版本与已记录压缩冲突", "Run"
+                    ),
+                ),
+                (),
+                groups,
+                (
+                    *issues,
+                    ReadIssue(
+                        "compaction_inconsistent", "当前摘要版本与已提交历史不一致"
+                    ),
+                ),
+            )
         return MemoryView(
             None,
             (FieldView("memory", "Task Memory", "尚未生成持久化 Task Memory", "Run"),),
@@ -405,10 +454,7 @@ def _project(
         for key, value in values.items()
         if key != "verified_evidence"
     )
-    evidence = tuple(
-        EvidenceView(redact_text(item.claim), "not_loaded", "未完成校验", None, ())
-        for item in summary.verified_evidence
-    )
+    evidence = _project_evidence(summary, version, boundary, facts, integrity)
     return MemoryView(
         version, fields, evidence, groups, tuple(dict.fromkeys((*issues, *integrity)))
     )
@@ -434,3 +480,186 @@ def project_historical_memory(
         facts,
         snapshot.issues,
     )
+
+
+def _supports(data: JsonValue, proof: VerifiedEvidence) -> bool:
+    if proof.excerpt is not None:
+        excerpt = proof.excerpt
+
+        def contains(value: JsonValue) -> bool:
+            if isinstance(value, str):
+                return excerpt in value
+            if isinstance(value, list):
+                return any(contains(item) for item in value)
+            if isinstance(value, dict):
+                return any(contains(item) for item in value.values())
+            return False
+
+        return (
+            bool(proof.excerpt.strip())
+            and proof.claim == proof.excerpt
+            and contains(data)
+        )
+    value = data
+    try:
+        for key in proof.field_path or ():
+            if isinstance(value, dict):
+                value = value[key]
+            elif isinstance(value, list):
+                value = value[int(key)]
+            else:
+                return False
+    except (KeyError, IndexError, ValueError):
+        return False
+    return (
+        bool(proof.field_path)
+        and orjson.dumps(value, option=orjson.OPT_SORT_KEYS)
+        == orjson.dumps(proof.value, option=orjson.OPT_SORT_KEYS)
+        and proof.claim == orjson.dumps(value).decode()
+    )
+
+
+def _project_evidence(
+    summary: CompactionSummary,
+    version: int,
+    boundary: PageBoundary,
+    facts: CompactionRead,
+    integrity: tuple[ReadIssue, ...],
+) -> tuple[EvidenceView, ...]:
+    chain = {
+        item.event.payload.current_version: item.event.payload
+        for item in facts.events
+        if item.event is not None
+        and isinstance(item.event.payload, CompactionCompleted)
+    }
+    ranges: dict[int, tuple[int, int]] = {}
+    steps: set[int] = set()
+    selected = version
+    seen = set()
+    ceiling = chain[version].source_event_sequence if version in chain else None
+    while (
+        selected is not None
+        and selected in chain
+        and selected not in seen
+        and len(seen) < LIMITS.compaction_versions
+    ):
+        seen.add(selected)
+        payload = chain[selected]
+        if payload.source_snapshot_version is not None:
+            ranges[payload.source_snapshot_version] = payload.covered_messages
+        steps.update(payload.covered_steps)
+        selected = payload.previous_version
+    chain_complete = selected is None
+    views = []
+    for proof in summary.verified_evidence:
+        state = "verified"
+        issues = []
+        target = None
+        data: JsonValue = None
+        source = proof.source
+        if source.run_id != boundary.run_id:
+            state = "inconsistent"
+            issues.append(ReadIssue("source_inconsistent", "来源不属于当前 Run"))
+        elif any(issue.code == "summary_hash_mismatch" for issue in integrity):
+            state = "inconsistent"
+            issues.append(ReadIssue("summary_hash_mismatch", "摘要完整性未通过"))
+        elif isinstance(source, SnapshotSource):
+            allowed = ranges.get(source.snapshot_version)
+            stored = facts.snapshots.get(source.snapshot_version)
+            if source.snapshot_version > boundary.latest_snapshot_version or (
+                allowed is not None
+                and not allowed[0]
+                <= source.message_start
+                < source.message_end
+                <= allowed[1]
+            ):
+                state = "inconsistent"
+            elif allowed is None:
+                state = "inconsistent" if chain_complete else "not_loaded"
+            elif stored is None or stored.snapshot is None:
+                known_missing = any(
+                    issue.code == "source_missing"
+                    and issue.field_path == ("snapshots", source.snapshot_version)
+                    for issue in facts.issues
+                )
+                state = "inconsistent" if known_missing else "not_loaded"
+                if known_missing:
+                    issues.append(ReadIssue("source_missing", "来源 Snapshot 不存在"))
+            elif (
+                stored.run_id != boundary.run_id
+                or stored.version != source.snapshot_version
+                or stored.event_sequence > boundary.as_of_sequence
+                or source.message_end > len(stored.snapshot.state.conversation.messages)
+            ):
+                state = "inconsistent"
+            else:
+                data = [
+                    message.model_dump(mode="json", exclude_unset=True)
+                    for message in stored.snapshot.state.conversation.messages[
+                        source.message_start : source.message_end
+                    ]
+                ]
+                for issue in stored.issues:
+                    path = issue.field_path
+                    if (
+                        issue.code == "field_not_recorded"
+                        and len(path) == 4
+                        and path[:2] == ("conversation", "messages")
+                        and isinstance(path[2], int)
+                        and source.message_start <= path[2] < source.message_end
+                    ):
+                        message = data[path[2] - source.message_start]
+                        if isinstance(message, dict):
+                            message.pop(str(path[3]), None)
+                target = SourceTarget(
+                    boundary.run_id,
+                    snapshot_version=source.snapshot_version,
+                    start=source.message_start,
+                    end=source.message_end,
+                )
+        else:
+            event = facts.source_events.get(source.event_id)
+            if ceiling is None:
+                state = "not_loaded"
+            elif event is None or event.event is None:
+                known_missing = any(
+                    issue.code == "source_missing"
+                    and issue.subject_id == source.event_id
+                    for issue in facts.issues
+                )
+                outside = any(
+                    issue.code == "source_outside_boundary"
+                    and issue.subject_id == source.event_id
+                    for issue in facts.issues
+                )
+                state = "inconsistent" if known_missing or outside else "not_loaded"
+                if known_missing:
+                    issues.append(ReadIssue("source_missing", "来源 Event 不存在"))
+            elif (
+                event.run_id != boundary.run_id
+                or event.sequence > min(ceiling, boundary.as_of_sequence)
+                or event.step_number not in steps
+            ):
+                state = "inconsistent"
+            else:
+                data = event.event.payload.model_dump(mode="json", exclude_unset=True)
+                target = SourceTarget(boundary.run_id, event_id=source.event_id)
+        if state == "verified" and not _supports(data, proof):
+            state = "inconsistent"
+            issues.append(ReadIssue("source_claim_mismatch", "来源内容不支持该 claim"))
+        if state == "not_loaded" and not issues:
+            issues.append(ReadIssue("not_loaded", "来源尚未完成校验"))
+        elif state == "inconsistent" and not issues:
+            issues.append(ReadIssue("source_inconsistent", "来源归属或范围不一致"))
+        views.append(
+            EvidenceView(
+                redact_text(proof.claim),
+                state,
+                "已校验来源"
+                if state == "verified"
+                else ("未完成校验" if state == "not_loaded" else "证据不一致"),
+                target,
+                tuple(issues),
+            )
+        )
+    return tuple(views)

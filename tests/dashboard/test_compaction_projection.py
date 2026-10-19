@@ -103,3 +103,16 @@ def test_conflicting_attempt_prices_remain_unknown() -> None:
     group = group_compactions(tuple(events))[0]
     assert group.total_cost_usd is None
     assert "attempt_conflict" in {issue.code for issue in group.attempts[0].issues}
+
+
+from miniagent.runtime.state import ContextProgress
+
+
+def test_explicit_no_summary_does_not_override_completed_fact() -> None:
+    run, boundary, facts = memory_example()
+    assert run.record is not None
+    state = run.record.state.model_copy(update={"context": ContextProgress()})
+    run = replace(run, record=run.record.model_copy(update={"state": state}))
+    memory = project_memory(run, boundary, facts)
+    assert "compaction_inconsistent" in {issue.code for issue in memory.issues}
+    assert "尚未生成持久化 Task Memory" not in [field.value for field in memory.fields]

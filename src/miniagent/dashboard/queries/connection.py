@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from miniagent.dashboard.config import LIMITS
+from miniagent.dashboard.cursors import PageBoundary
 from miniagent.dashboard.reads import ReadBudget, ReadFailure
 
 ConnectionFactory = Callable[..., sqlite3.Connection]
@@ -101,3 +102,14 @@ def validate_database(
             "SELECT json_valid('{}'), json_extract('{\"v\":1}', '$.v')"
         ).fetchone()[:] != (1, 1):
             raise ReadFailure(503, "database_unsupported")
+
+
+def _validate_boundary(connection: sqlite3.Connection, boundary: PageBoundary) -> None:
+    row = connection.execute(
+        "SELECT last_event_sequence,latest_snapshot_version FROM runs WHERE run_id=?",
+        (str(boundary.run_id),),
+    ).fetchone()
+    if row is None:
+        raise ReadFailure(404, "run_missing")
+    if boundary.as_of_sequence > row[0] or boundary.latest_snapshot_version > row[1]:
+        raise ReadFailure(422, "boundary_invalid")

@@ -8,6 +8,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
+from miniagent.metering.usage import RunUsage
 from miniagent.runtime.state import RunStatus
 
 
@@ -173,3 +174,43 @@ class CompactionRead:
     unloaded_versions: tuple[int, ...]
     unloaded_event_ids: tuple[UUID, ...]
     issues: tuple[ReadIssue, ...]
+
+
+def _missing_state_fields(raw: object) -> tuple[ReadIssue, ...]:
+
+    paths = [
+        *(("usage", key) for key in RunUsage.model_fields),
+        ("execution", "steps_started"),
+        ("execution", "consecutive_failed_steps"),
+        ("definition", "config", "max_steps"),
+        ("definition", "config", "max_consecutive_failures"),
+        ("definition", "config", "context_window_tokens"),
+        ("definition", "agent_spec", "generation", "max_output_tokens"),
+        ("context", "current_version"),
+    ]
+    issues = []
+    conversation = raw.get("conversation") if isinstance(raw, dict) else None
+    messages = conversation.get("messages") if isinstance(conversation, dict) else None
+    if isinstance(messages, list):
+        for index, message in enumerate(messages):
+            if isinstance(message, dict) and message.get("role") == "assistant":
+                for key in ("content", "tool_calls"):
+                    if key not in message:
+                        issues.append(
+                            ReadIssue(
+                                "field_not_recorded",
+                                "历史消息字段未记录",
+                                field_path=("conversation", "messages", index, key),
+                            )
+                        )
+
+    for path in paths:
+        value = raw
+        for key in path:
+            if not isinstance(value, dict) or key not in value:
+                issues.append(
+                    ReadIssue("field_not_recorded", "历史字段未记录", field_path=path)
+                )
+                break
+            value = value[key]
+    return tuple(issues)

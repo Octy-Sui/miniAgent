@@ -1,15 +1,24 @@
 import sqlite3
 from collections import deque
 from datetime import datetime
+from importlib.resources import files
 from pathlib import Path
 from uuid import UUID
+
+from pydantic import JsonValue, ValidationError
 
 from miniagent.dashboard.config import LIMITS
 from miniagent.dashboard.cursors import PageBoundary
 from miniagent.dashboard.json_content import ContentError, parse_json
 from miniagent.dashboard.parameters import EventFilters
-from miniagent.dashboard.queries.connection import ConnectionFactory, read_transaction
+from miniagent.dashboard.queries.connection import (
+    ConnectionFactory,
+    _validate_boundary,
+    read_transaction,
+)
+from miniagent.dashboard.queries.snapshots import _read_snapshot_record
 from miniagent.dashboard.reads import (
+    CompactionRead,
     EventBatch,
     ReadBudget,
     ReadFailure,
@@ -17,8 +26,13 @@ from miniagent.dashboard.reads import (
     ScopeFacts,
     ScopeRead,
     StoredEvent,
+    StoredRun,
+    StoredSnapshot,
     ToolFacts,
 )
+from miniagent.models.messages import AssistantMessage
+from miniagent.runtime.context import CompactionSummary, EventSource
+from miniagent.runtime.events import CompactionCompleted
 from miniagent.runtime.store_contracts import (
     CorruptStoredDataError,
     UnsupportedStorageVersionError,
@@ -27,17 +41,6 @@ from miniagent.storage.codecs import decode_event
 
 _EVENT_COLUMNS = """event_id,run_id,sequence,type,occurred_at,step_number,span_id,parent_span_id,schema_version,
 length(CAST(payload_json AS BLOB)) AS payload_bytes,length(CAST(artifacts_json AS BLOB)) AS artifacts_bytes"""
-
-
-def _validate_boundary(connection: sqlite3.Connection, boundary: PageBoundary) -> None:
-    row = connection.execute(
-        "SELECT last_event_sequence,latest_snapshot_version FROM runs WHERE run_id=?",
-        (str(boundary.run_id),),
-    ).fetchone()
-    if row is None:
-        raise ReadFailure(404, "run_missing")
-    if boundary.as_of_sequence > row[0] or boundary.latest_snapshot_version > row[1]:
-        raise ReadFailure(422, "boundary_invalid")
 
 
 def _load_event(
@@ -58,9 +61,19 @@ def _load_event(
             (row["run_id"], row["event_id"]),
         ).fetchone()
         try:
-            parse_json(body["payload_json"], budget=budget)
+            raw = parse_json(body["payload_json"], budget=budget)
             parse_json(body["artifacts_json"], budget=budget)
             event = decode_event(body)
+            if _json_changed(
+                raw, event.payload.model_dump(mode="json", exclude_unset=True)
+            ):
+                event = None
+                issues.append(
+                    ReadIssue(
+                        "payload_unsupported", "事件源字段发生类型转换，保留登记信息"
+                    )
+                )
+            del raw
         except (ContentError, CorruptStoredDataError, UnsupportedStorageVersionError):
             issues.append(ReadIssue("payload_unsupported", "事件正文无效或版本不支持"))
     return StoredEvent(
@@ -318,3 +331,258 @@ def read_scope_facts(
         else (ReadIssue("not_loaded", "部分 scope 未完成加载"),)
     )
     return ScopeRead(scopes, complete, issues)
+
+
+def read_compaction_sources(
+    database: Path,
+    boundary: PageBoundary,
+    *,
+    run: StoredRun | None = None,
+    version: int | None = None,
+    visible_events: tuple[StoredEvent, ...] = (),
+    budget: ReadBudget,
+    connect: ConnectionFactory = sqlite3.connect,
+) -> CompactionRead:
+    if run is None and version is None:
+        raise ReadFailure(422, "compaction_selection_missing")
+    if version is not None and version < 1:
+        raise ReadFailure(422, "compaction_version_invalid")
+    selected = (
+        version
+        if version is not None
+        else (
+            run.record.state.context.current_version
+            if run is not None and run.record is not None
+            else None
+        )
+    )
+    events = {
+        item.event_id: item
+        for item in visible_events
+        if item.type.startswith("compaction_")
+        and item.run_id == boundary.run_id
+        and item.sequence <= boundary.as_of_sequence
+    }
+    snapshots: dict[int, StoredSnapshot] = {}
+    source_events: dict[UUID, StoredEvent] = {}
+    unloaded = []
+    unloaded_events = []
+    issues = []
+    chain = []
+    seen = set()
+    with read_transaction(database, budget, connect=connect) as connection:
+        _validate_boundary(connection, boundary)
+        while selected is not None:
+            budget.check()
+            if len(seen) >= LIMITS.compaction_versions:
+                unloaded.append(selected)
+                issues.append(ReadIssue("not_loaded", "压缩版本链超过本次读取上限"))
+                break
+            if selected in seen:
+                issues.append(
+                    ReadIssue("compaction_chain_inconsistent", "压缩版本链成环")
+                )
+                break
+            seen.add(selected)
+            rows = connection.execute(
+                f"SELECT {_EVENT_COLUMNS} FROM run_events WHERE run_id=? AND sequence<=? AND type='compaction_completed' AND json_extract({_PAYLOAD},'$.current_version')=? ORDER BY sequence LIMIT 2",
+                (str(boundary.run_id), boundary.as_of_sequence, selected),
+            ).fetchall()
+            if not rows:
+                unresolved = connection.execute(
+                    "SELECT 1 FROM run_events WHERE run_id=? AND sequence<=? AND type='compaction_completed' AND (NOT json_valid(payload_json) OR length(CAST(payload_json AS BLOB))>1048576) LIMIT 1",
+                    (str(boundary.run_id), boundary.as_of_sequence),
+                ).fetchone()
+                if unresolved:
+                    unloaded.append(selected)
+                    issues.append(ReadIssue("not_loaded", "压缩记录尚未完整读取"))
+                else:
+                    issues.append(
+                        ReadIssue(
+                            "source_missing",
+                            "压缩版本记录不存在",
+                            field_path=("compactions", selected),
+                        )
+                    )
+                break
+            loaded = [_load_event(connection, row, budget) for row in rows]
+            events.update((item.event_id, item) for item in loaded)
+            if len(loaded) != 1:
+                issues.append(ReadIssue("compaction_duplicate", "压缩版本重复记录"))
+                break
+            item = loaded[0]
+            if item.event is None or not isinstance(
+                item.event.payload, CompactionCompleted
+            ):
+                unloaded.append(selected)
+                break
+            chain.append(item.event.payload)
+            selected = item.event.payload.previous_version
+        wanted = sorted(
+            {
+                number
+                for payload in chain
+                for number in (
+                    payload.source_snapshot_version,
+                    payload.new_snapshot_version,
+                )
+                if number is not None
+            }
+        )
+        allowed = [
+            number
+            for number in wanted
+            if 1 <= number <= boundary.latest_snapshot_version
+        ]
+        for number in set(wanted) - set(allowed):
+            issues.append(
+                ReadIssue(
+                    "source_outside_boundary",
+                    "Snapshot 引用超出页面边界",
+                    field_path=("snapshots", number),
+                )
+            )
+        if allowed:
+            rows = connection.execute(
+                f"SELECT snapshot_id,run_id,version,event_sequence,length(CAST(snapshot_json AS BLOB)) AS size FROM run_snapshots WHERE run_id=? AND version IN ({','.join('?' for _ in allowed)})",
+                (str(boundary.run_id), *allowed),
+            ).fetchall()
+            present = set()
+            for row in rows:
+                present.add(row["version"])
+                if row["event_sequence"] > boundary.as_of_sequence:
+                    issues.append(
+                        ReadIssue(
+                            "source_outside_boundary",
+                            "Snapshot 引用超出页面边界",
+                            field_path=("snapshots", row["version"]),
+                        )
+                    )
+                    continue
+                snapshots[row["version"]] = _read_snapshot_record(
+                    connection, boundary, row["version"], budget, envelope=row
+                )
+            for number in set(allowed) - present:
+                issues.append(
+                    ReadIssue(
+                        "source_missing",
+                        "来源 Snapshot 不存在",
+                        field_path=("snapshots", number),
+                    )
+                )
+        endings = [
+            item
+            for item in events.values()
+            if item.type in ("compaction_completed", "compaction_failed")
+        ]
+        for ending in endings:
+            start = connection.execute(
+                f"SELECT {_EVENT_COLUMNS} FROM run_events WHERE run_id=? AND sequence<=? AND type='compaction_requested' AND json_type({_PAYLOAD},'$.attempt')='integer' AND json_extract({_PAYLOAD},'$.attempt')=1 ORDER BY sequence DESC LIMIT 1",
+                (str(boundary.run_id), ending.sequence),
+            ).fetchone()
+            if start is None:
+                continue
+            rows = connection.execute(
+                f"SELECT {_EVENT_COLUMNS} FROM run_events WHERE run_id=? AND sequence>=? AND sequence<=? AND type IN ('compaction_requested','compaction_attempt_recorded','compaction_completed','compaction_failed') ORDER BY sequence LIMIT 201",
+                (str(boundary.run_id), start["sequence"], ending.sequence),
+            ).fetchall()
+            if len(rows) > 200:
+                issues.append(
+                    ReadIssue(
+                        "not_loaded",
+                        "压缩事件组超过读取上限",
+                        field_path=("compaction_group", start["sequence"]),
+                    )
+                )
+            for row in rows[:200]:
+                event_id = UUID(row["event_id"])
+                if event_id not in events:
+                    events[event_id] = _load_event(connection, row, budget)
+        states = []
+        if version is None and run is not None and run.record is not None:
+            states.append(run.record.state)
+        elif chain:
+            carrier = snapshots.get(chain[0].new_snapshot_version or 0)
+            if carrier is not None and carrier.snapshot is not None:
+                states.append(carrier.snapshot.state)
+        event_ids = set()
+        prefix = (
+            files("miniagent.runtime")
+            .joinpath("templates/compaction_v1.j2")
+            .read_text()
+            .split("{{ summary_json }}", 1)[0]
+        )
+        for state in states:
+            messages = state.conversation.messages
+            if (
+                len(messages) < 3
+                or not isinstance(messages[2], AssistantMessage)
+                or messages[2].tool_calls
+                or not (messages[2].content or "").startswith(prefix)
+            ):
+                continue
+            try:
+                summary = CompactionSummary.model_validate(
+                    parse_json(
+                        (messages[2].content or "")[len(prefix) :], budget=budget
+                    )
+                )
+            except (ContentError, ValidationError):
+                continue
+            event_ids.update(
+                proof.source.event_id
+                for proof in summary.verified_evidence
+                if isinstance(proof.source, EventSource)
+                and proof.source.run_id == boundary.run_id
+            )
+        identifiers = tuple(sorted(event_ids))
+        for offset in range(0, len(identifiers), 200):
+            batch = identifiers[offset : offset + 200]
+            rows = connection.execute(
+                f"SELECT {_EVENT_COLUMNS} FROM run_events WHERE run_id=? AND event_id IN ({','.join('?' for _ in batch)})",
+                (str(boundary.run_id), *(str(item) for item in batch)),
+            ).fetchall()
+            present = set()
+            for row in rows:
+                event_id = UUID(row["event_id"])
+                present.add(event_id)
+                if row["sequence"] > boundary.as_of_sequence:
+                    issues.append(
+                        ReadIssue(
+                            "source_outside_boundary",
+                            "来源 Event 超出页面边界",
+                            subject_id=event_id,
+                        )
+                    )
+                    continue
+                loaded = _load_event(connection, row, budget)
+                source_events[event_id] = loaded
+                if loaded.event is None:
+                    unloaded_events.append(event_id)
+            for event_id in set(batch) - present:
+                issues.append(
+                    ReadIssue(
+                        "source_missing", "来源 Event 不存在", subject_id=event_id
+                    )
+                )
+    return CompactionRead(
+        tuple(sorted(events.values(), key=lambda item: item.sequence)),
+        snapshots,
+        source_events,
+        tuple(unloaded),
+        tuple(unloaded_events),
+        tuple(issues),
+    )
+
+
+def _json_changed(original: JsonValue, decoded: JsonValue) -> bool:
+    if isinstance(original, dict) and isinstance(decoded, dict):
+        return any(
+            key not in decoded or _json_changed(value, decoded[key])
+            for key, value in original.items()
+        )
+    if isinstance(original, list) and isinstance(decoded, list):
+        return len(original) != len(decoded) or any(
+            _json_changed(a, b) for a, b in zip(original, decoded, strict=False)
+        )
+    return type(original) is not type(decoded) or original != decoded
