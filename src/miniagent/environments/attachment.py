@@ -68,3 +68,12 @@ class AttachmentFacts(BaseModel):
     checked: tuple[str, ...] = ()
     live_checks: tuple[str, ...] = ()
     errors: tuple[AttachmentProblem, ...] = ()
+
+
+class WorkspaceAttachmentError(RuntimeError):
+    def __init__(self, facts: AttachmentFacts) -> None:
+        if not facts.errors:
+            raise ValueError("Attachment rejection requires a problem")
+        self.facts = facts
+        self.code = facts.errors[0].code
+        super().__init__(f"{self.code}: {facts.errors[0].message}")

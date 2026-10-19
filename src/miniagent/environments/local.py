@@ -2,8 +2,10 @@ import asyncio
 import hashlib
 import math
 import os
+import re
 import shutil
 import signal
+import stat
 import tarfile
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -15,6 +17,12 @@ from time import monotonic
 from uuid import UUID, uuid4
 
 from miniagent.artifacts import ArtifactStore, ArtifactWrite
+from miniagent.environments.attachment import (
+    AttachmentFacts,
+    AttachmentProblem,
+    LocalAttachment,
+    WorkspaceAttachmentError,
+)
 from miniagent.environments.config import LocalWorkspaceSpec
 from miniagent.environments.contracts import (
     Command,
@@ -112,6 +120,142 @@ class LocalWorkspaceBackend:
         except BaseException:
             await asyncio.to_thread(shutil.rmtree, workspace_dir, True)
             raise
+
+    @staticmethod
+    def _require_original_path(path: Path) -> None:
+        if not path.is_absolute() or ".." in path.parts:
+            raise ValueError("Retained workspace path is not canonical")
+        for component in reversed((path, *path.parents)):
+            if stat.S_ISLNK(component.lstat().st_mode):
+                raise ValueError("Retained workspace path is redirected by a symlink")
+
+    async def inspect_attachment(self, attachment: LocalAttachment) -> AttachmentFacts:
+        checked: list[str] = []
+        errors: tuple[AttachmentProblem, ...] = ()
+        exists = attachment.repository_root.exists()
+        try:
+            if (
+                attachment.root != self.root
+                or attachment.workspace_dir
+                != self._workspace_dir(attachment.run_id, attachment.workspace_id)
+                or attachment.repository_root != attachment.workspace_dir / "repo"
+            ):
+                raise ValueError(
+                    "Retained workspace paths do not match original identity"
+                )
+            if Path(
+                attachment.workspace_id
+            ).name != attachment.workspace_id or attachment.workspace_id in (".", ".."):
+                raise ValueError("Invalid retained workspace ID")
+            if (
+                attachment.marker_run_id != attachment.run_id
+                or attachment.marker_workspace_id != attachment.workspace_id
+            ):
+                raise ValueError("Retained marker identity does not match workspace")
+            for path in (
+                attachment.root,
+                attachment.workspace_dir,
+                attachment.repository_root,
+                attachment.repository_root / ".git",
+            ):
+                self._require_original_path(path)
+                if not path.is_dir():
+                    raise ValueError("Retained workspace directory is not a directory")
+            checked.append("paths")
+            marker = attachment.workspace_dir / ".miniagent-workspace"
+            self._require_original_path(marker)
+            if marker.read_text() != self._marker_content(
+                attachment.run_id, attachment.workspace_id
+            ):
+                raise ValueError("Retained workspace marker identity differs")
+            checked.append("marker")
+            prefix = [
+                "git",
+                "--no-optional-locks",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "core.fsmonitor=false",
+            ]
+            top = await self._run(
+                [*prefix, "rev-parse", "--show-toplevel"],
+                cwd=attachment.repository_root,
+                timeout_seconds=5.0,
+            )
+            if (
+                top.exit_code
+                or Path(top.stdout.decode().strip()) != attachment.repository_root
+            ):
+                raise ValueError("Retained repository root differs")
+            checked.append("git_root")
+            if (
+                re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", attachment.base_revision)
+                is None
+            ):
+                raise ValueError("Invalid retained Git baseline")
+            baseline = await self._run(
+                [*prefix, "cat-file", "-e", f"{attachment.base_revision}^{{commit}}"],
+                cwd=attachment.repository_root,
+                timeout_seconds=5.0,
+            )
+            if baseline.exit_code:
+                raise ValueError("Original Git baseline is unavailable")
+            checked.append("baseline")
+        except FileNotFoundError:
+            errors = (
+                AttachmentProblem(
+                    code="WORKSPACE_MISSING",
+                    message="Retained workspace directory or marker is missing",
+                ),
+            )
+        except ValueError as exc:
+            errors = (
+                AttachmentProblem(code="WORKSPACE_IDENTITY_MISMATCH", message=str(exc)),
+            )
+        except (OSError, TimeoutError, ManagedExecutionError):
+            errors = (
+                AttachmentProblem(
+                    code="WORKSPACE_UNAVAILABLE",
+                    message="Retained workspace metadata cannot be inspected",
+                ),
+            )
+        return AttachmentFacts(
+            run_id=attachment.run_id,
+            workspace_id=attachment.workspace_id,
+            exists=exists,
+            identity_matches=not errors,
+            checked=tuple(checked),
+            errors=errors,
+        )
+
+    async def attach(
+        self, spec: LocalWorkspaceSpec, attachment: LocalAttachment
+    ) -> "LocalWorkspace":
+        if spec.run_id != attachment.run_id:
+            raise WorkspaceAttachmentError(
+                AttachmentFacts(
+                    run_id=attachment.run_id,
+                    workspace_id=attachment.workspace_id,
+                    exists=attachment.repository_root.exists(),
+                    identity_matches=False,
+                    errors=(
+                        AttachmentProblem(
+                            code="WORKSPACE_IDENTITY_MISMATCH",
+                            message="Workspace and requested Run differ",
+                        ),
+                    ),
+                )
+            )
+        facts = await self.inspect_attachment(attachment)
+        if facts.errors or not facts.identity_matches:
+            raise WorkspaceAttachmentError(facts)
+        return LocalWorkspace(
+            backend=self,
+            spec=spec,
+            _workspace_id=attachment.workspace_id,
+            root=attachment.repository_root,
+            base_revision=attachment.base_revision,
+        )
 
     async def recover(
         self,
@@ -458,6 +602,18 @@ class LocalWorkspace:
     @property
     def run_id(self) -> UUID:
         return self.spec.run_id
+
+    def describe_attachment(self) -> LocalAttachment:
+        return LocalAttachment(
+            run_id=self.run_id,
+            workspace_id=self.workspace_id,
+            base_revision=self.base_revision,
+            root=self.backend.root,
+            workspace_dir=self.root.parent,
+            repository_root=self.root,
+            marker_run_id=self.run_id,
+            marker_workspace_id=self.workspace_id,
+        )
 
     async def execute(self, command: Command) -> ExecutionResult:
         async with self._operation_lock:
