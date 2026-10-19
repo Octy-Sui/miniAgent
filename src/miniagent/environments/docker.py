@@ -9,7 +9,7 @@ import posixpath
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from time import monotonic
 from uuid import UUID, uuid4
 
@@ -22,6 +22,11 @@ from miniagent.environments.contracts import (
     Patch,
     PatchExportCleanupError,
     WorkspaceCheckpoint,
+)
+from miniagent.environments.docker_connection import (
+    DockerConnection,
+    docker_argv,
+    harness_environment,
 )
 from miniagent.environments.process import (
     decode_output,
@@ -62,12 +67,14 @@ class DockerWorkspaceBackend:
         artifact_store: ArtifactStore,
         docker_executable: str = "docker",
         max_output_bytes: int = 1024 * 1024,
+        connection: DockerConnection | None = None,
     ) -> None:
         if max_output_bytes < 1:
             raise ValueError("Docker command output limit must be positive")
         self.artifact_store = artifact_store
         self.docker_executable = docker_executable
         self.max_output_bytes = max_output_bytes
+        self.connection = connection
 
     async def create(self, spec: DockerWorkspaceSpec) -> "DockerWorkspace":
         image_id = await self._resolve_image_id(spec.options.image)
@@ -352,9 +359,21 @@ class DockerWorkspaceBackend:
         cleanup_deadline: float | None = None,
     ) -> DockerCommandResult:
         started_at = monotonic()
+        command = (
+            docker_argv(Path(self.docker_executable), self.connection, argv)
+            if self.connection is not None
+            else [self.docker_executable, *argv]
+        )
+        environment = (
+            harness_environment(
+                dict(self.connection.client_environment), self.connection
+            )
+            if self.connection is not None
+            else None
+        )
         process = await asyncio.create_subprocess_exec(
-            self.docker_executable,
-            *argv,
+            *command,
+            env=environment,
             stdin=asyncio.subprocess.PIPE if stdin is not None else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
