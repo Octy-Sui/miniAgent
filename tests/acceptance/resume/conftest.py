@@ -10,7 +10,7 @@ from time import monotonic
 
 import pytest
 
-from .environment import calibrate_timing, record_environment
+from .environment import calibrate_timing, record_docker_environment, record_environment
 
 
 async def receive(channel):
@@ -117,3 +117,69 @@ async def spawn_worker(tmp_path):
 @pytest.fixture
 async def timing(tmp_path):
     return await calibrate_timing(tmp_path / "timing-calibration.json")
+
+
+@pytest.fixture
+async def docker_workspace(tmp_path):
+    from uuid import uuid4
+
+    from miniagent.artifacts import FileArtifactStore
+    from miniagent.environments.config import DockerOptions, DockerWorkspaceSpec
+    from miniagent.environments.docker import DockerWorkspaceBackend
+    from miniagent.environments.docker_connection import resolve_docker_connection
+
+    image = os.environ.get("MINIAGENT_RESUME_DOCKER_IMAGE")
+    if not image:
+        pytest.skip(
+            "DEFER: explicit prepared MINIAGENT_RESUME_DOCKER_IMAGE is required; no pull"
+        )
+    connection = await resolve_docker_connection(Path("docker"), dict(os.environ))
+    await record_docker_environment(
+        tmp_path / "docker-environment.json", connection, image
+    )
+    # This transparent CLI audit proxy records real daemon commands, without simulating responses.
+    executable = tmp_path / "docker-audit"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        + """import json, subprocess, sys
+from pathlib import Path
+with (Path(__file__).parent / "docker-cli.jsonl").open("a") as stream:
+    stream.write(json.dumps(sys.argv[1:])+"\\n")
+raise SystemExit(subprocess.call(["docker", *sys.argv[1:]]))
+"""
+    )
+    executable.chmod(0o755)
+    backend = DockerWorkspaceBackend(
+        artifact_store=FileArtifactStore(tmp_path / "artifacts"),
+        connection=connection,
+        docker_executable=str(executable),
+    )
+    spec = DockerWorkspaceSpec(
+        run_id=uuid4(),
+        options=DockerOptions(image=image, workdir="/testbed"),
+    )
+    workspace = await backend.create(spec)
+    attachment = workspace.describe_attachment()
+    (tmp_path / "docker-attachment.json").write_text(
+        attachment.model_dump_json(indent=2)
+    )
+    (tmp_path / "docker-spec.json").write_text(spec.model_dump_json(indent=2))
+    try:
+        yield backend, workspace, spec, connection
+    finally:
+        # Never remove by name or discover unrelated resources.
+        process = await asyncio.create_subprocess_exec(
+            "docker",
+            "--host",
+            connection.endpoint,
+            "inspect",
+            "--format",
+            '{{index .Config.Labels "miniagent.run_id"}}',
+            workspace.container_id,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await process.communicate()
+        if process.returncode == 0:
+            assert stdout.decode().strip() == str(spec.run_id)
+            await workspace.destroy()

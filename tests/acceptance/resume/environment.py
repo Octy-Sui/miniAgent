@@ -44,3 +44,35 @@ async def calibrate_timing(output: Path) -> dict:
     }
     output.write_text(json.dumps(evidence, indent=2))
     return evidence
+
+
+async def record_docker_environment(output: Path, connection, image: str) -> None:
+    process = await asyncio.create_subprocess_exec(
+        "docker",
+        "--host",
+        connection.endpoint,
+        "version",
+        "--format",
+        "{{json .Server}}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    if process.returncode:
+        raise RuntimeError(stderr.decode())
+    output.write_text(
+        json.dumps(
+            {
+                "host": platform.platform(),
+                "daemon_id": connection.daemon_id,
+                "endpoint": connection.endpoint,
+                "server": json.loads(stdout),
+                "sdk_version": version("docker"),
+                "prepared_image": image,
+                "pull_policy": "never",
+                "second_daemon": "DEFER",
+                "verified_tls": "DEFER",
+            },
+            indent=2,
+        )
+    )
