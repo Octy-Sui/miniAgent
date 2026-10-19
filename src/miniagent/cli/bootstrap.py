@@ -36,7 +36,12 @@ from miniagent.cli.run_definition import (
     SWEbenchDefinition,
     freeze_application_definition,
 )
-from miniagent.cli.settings import RunLocationSettings, Settings
+from miniagent.cli.settings import (
+    ProviderCredentials,
+    RunLocationSettings,
+    Settings,
+    load_provider_credentials,
+)
 from miniagent.environments import (
     DockerOptions,
     DockerWorkspaceBackend,
@@ -531,6 +536,7 @@ def rehydrate_application(
     *,
     run_store: RuntimeStore,
     approval_handler: ApprovalHandler | None = None,
+    credentials: ProviderCredentials | None = None,
 ) -> Application:
     from miniagent.evaluation.swebench_data import PreparedTask
 
@@ -541,8 +547,11 @@ def rehydrate_application(
         raise ApplicationRehydrationError(
             "MODEL_CONFIG_MISMATCH", "Provider protocol differs"
         )
-    api_key = os.environ.get(provider.api_key_ref.key)
-    endpoint = os.environ.get(provider.endpoint_ref.key)
+    credentials = credentials or load_provider_credentials(
+        provider.api_key_ref.key, provider.endpoint_ref.key
+    )
+    api_key = credentials.api_key
+    endpoint = credentials.endpoint
     if not api_key or not endpoint:
         raise ApplicationRehydrationError(
             "ENVIRONMENT_REFERENCE_MISSING",

@@ -24,6 +24,7 @@ from miniagent.cli.run_definition import (
     SWEbenchDefinition,
     parse_application_definition,
 )
+from miniagent.cli.settings import load_provider_credentials
 from miniagent.environments import (
     DockerWorkspace,
     DockerWorkspaceBackend,
@@ -666,16 +667,20 @@ async def resume_application(
                         + inspected.definition.evaluator.cleanup_timeout_seconds,
                     )
                 assert journal.recorder.record is not None
+                credentials = load_provider_credentials(
+                    inspected.definition.provider.api_key_ref.key,
+                    inspected.definition.provider.endpoint_ref.key,
+                )
                 application = rehydrate_application(
                     journal.recorder.record,
                     workspace,
                     inspected.definition,
                     run_store=store,
                     approval_handler=ConsoleApprovalHandler(),
+                    credentials=credentials,
                 )
-                endpoint = urlsplit(
-                    os.environ[inspected.definition.provider.endpoint_ref.key]
-                )
+                assert credentials.endpoint is not None
+                endpoint = urlsplit(credentials.endpoint)
                 host = endpoint.hostname or ""
                 if ":" in host:
                     host = f"[{host}]"

@@ -1,6 +1,7 @@
 import asyncio
 import getpass
 import os
+import stat
 import sys
 from datetime import UTC, datetime
 
@@ -22,23 +23,31 @@ class ConsoleApprovalHandler:
     async def _confirm(self) -> bool:
         loop = asyncio.get_running_loop()
         descriptor = sys.stdin.fileno()
+        regular_file = stat.S_ISREG(os.fstat(descriptor).st_mode)
         while True:
             typer.echo("Allow this tool call? [y/N]: ", nl=False)
             while b"\n" not in self._input:
-                readable = loop.create_future()
-
-                def ready(readable: asyncio.Future[None] = readable) -> None:
-                    if not readable.done():
-                        readable.set_result(None)
-
-                loop.add_reader(descriptor, ready)
-                try:
-                    await readable
+                if regular_file:
+                    await asyncio.sleep(0)
                     data = os.read(descriptor, 4096)
-                finally:
-                    loop.remove_reader(descriptor)
+                else:
+                    readable = loop.create_future()
+
+                    def ready(readable: asyncio.Future[None] = readable) -> None:
+                        if not readable.done():
+                            readable.set_result(None)
+
+                    loop.add_reader(descriptor, ready)
+                    try:
+                        await readable
+                        data = os.read(descriptor, 4096)
+                    finally:
+                        loop.remove_reader(descriptor)
                 if not data:
-                    return False
+                    if not self._input:
+                        return False
+                    self._input += b"\n"
+                    break
                 self._input += data
             line, self._input = self._input.split(b"\n", 1)
             answer = line.strip().lower()

@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, create_model, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -81,3 +81,23 @@ class Settings(RunLocationSettings):
         env_file=".env",
         env_file_encoding="utf-8",
     )
+
+
+class ProviderCredentials(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
+
+    api_key: str | None = None
+    endpoint: str | None = None
+
+
+def load_provider_credentials(
+    api_key_reference: str, endpoint_reference: str
+) -> ProviderCredentials:
+    return create_model(
+        "ReferencedProviderCredentials",
+        __base__=ProviderCredentials,
+        api_key=(str | None, Field(default=None, validation_alias=api_key_reference)),
+        endpoint=(str | None, Field(default=None, validation_alias=endpoint_reference)),
+    )()

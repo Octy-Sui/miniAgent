@@ -1,8 +1,9 @@
 from miniagent.agents.default_agent import DEFAULT_AGENT
+from miniagent.cli.application import ApplicationResult
 from miniagent.cli.bootstrap import BootstrapConfig, bootstrap
 from miniagent.cli.resume import ResumeConfig, resume_application
 from miniagent.models.messages import SystemMessage, UserMessage
-from miniagent.runtime import CancellationToken
+from miniagent.runtime import CancellationToken, RunResult
 from miniagent.runtime.execution import RunExecution
 from miniagent.runtime.journal import RunJournal
 from miniagent.runtime.recording import RunRecorder
@@ -114,8 +115,6 @@ async def test_resume_uses_completed_commit_record(resume_case):
     deps = application.dependencies
     config = ResumeConfig(run_id=deps.run_id, database=deps.run_store.path)
     result = await resume_application(config, cancellation_token=CancellationToken())
-    from miniagent.cli.application import ApplicationResult
-    from miniagent.runtime import RunResult
 
     assert isinstance(result, ApplicationResult)
     assert isinstance(result.run_result, RunResult)
@@ -184,3 +183,36 @@ async def test_dry_run_rejects_valid_frozen_older_tool_contract(tmp_path, monkey
             cancellation_token=CancellationToken(),
         )
     assert provider.requests == []
+
+
+async def test_resume_loads_dotenv_credentials_and_audits_dotenv_endpoint(
+    resume_case, tmp_path, monkeypatch
+):
+
+    application, _execution, provider = resume_case
+    deps = application.dependencies
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("OPENAI_API_KEY")
+    monkeypatch.delenv("OPENAI_BASE_URL")
+    (tmp_path / ".env").write_text(
+        "OPENAI_API_KEY=dotenv-secret\n"
+        "OPENAI_BASE_URL=https://user:password@dotenv.example/v1?token=private\n"
+        "CANDIDATE_SUBMISSION_TIMEOUT_SECONDS=invalid-current-setting\n"
+    )
+    result = await resume_application(
+        ResumeConfig(run_id=deps.run_id, database=deps.run_store.path),
+        cancellation_token=CancellationToken(),
+    )
+
+    assert isinstance(result, ApplicationResult)
+    assert isinstance(result.run_result, RunResult)
+    assert result.run_result.output == "done"
+    assert len(provider.requests) == 1
+    events = await deps.run_store.list_events(deps.run_id)
+    changed = [e for e in events if e.type.value == "provider_identity_changed"]
+    assert len(changed) == 1
+    assert changed[0].payload.current_endpoint_identity == "https://dotenv.example/v1"
+    assert all(
+        secret not in changed[0].model_dump_json()
+        for secret in ("dotenv-secret", "password", "private")
+    )
