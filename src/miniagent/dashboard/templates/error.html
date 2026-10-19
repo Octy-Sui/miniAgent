@@ -1,0 +1,1 @@
+{% extends "base.html" %}{% block content %}<h1>{{ status }} · 无法显示</h1><p>{{ message }}</p>{% if error_id %}<p>错误 ID：<code>{{ error_id }}</code></p>{% endif %}<a href="/runs">返回 Runs</a>{% endblock %}

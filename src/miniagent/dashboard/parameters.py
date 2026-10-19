@@ -147,6 +147,10 @@ def run_parameters(pairs: list[tuple[str, str]]) -> RunListParams:
         },
         multiple="status",
     )
+    values = {key: value for key, value in values.items() if value != ""}
+    statuses = values["status"]
+    assert isinstance(statuses, list)
+    values["status"] = [value for value in statuses if value != ""]
     filters = {
         (
             {"status": "statuses", "from": "created_from", "to": "created_to"}.get(
