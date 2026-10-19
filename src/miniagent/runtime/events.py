@@ -6,6 +6,10 @@ from uuid import UUID, uuid4
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from miniagent.artifacts.contracts import ArtifactRef
+from miniagent.environments.managed_execution import (
+    ExecutionEvidence,
+    ExecutionIdentity,
+)
 from miniagent.metering.usage import RequestCost
 from miniagent.models.protocol import ModelUsage
 from miniagent.policy import PolicyDecision
@@ -26,6 +30,8 @@ class RunEventType(StrEnum):
     COMPACTION_ATTEMPT_RECORDED = "compaction_attempt_recorded"
     COMPACTION_FAILED = "compaction_failed"
     COMPACTION_COMPLETED = "compaction_completed"
+    OPERATION_EXECUTION_IDENTIFIED = "operation_execution_identified"
+    OPERATION_EXECUTION_ENDED = "operation_execution_ended"
     RUN_SUSPENDED = "run_suspended"
     RESUME_STARTED = "resume_started"
     RESUME_COMPLETED = "resume_completed"
@@ -143,14 +149,33 @@ class ToolEnded(ToolScopePayload):
 
 
 class ToolExecutionStarted(ToolScopePayload):
+    attempt_id: UUID
     type: Literal[RunEventType.TOOL_EXECUTION_START] = RunEventType.TOOL_EXECUTION_START
 
 
 class ToolExecutionEnded(ToolScopePayload):
+    attempt_id: UUID
     type: Literal[RunEventType.TOOL_EXECUTION_END] = RunEventType.TOOL_EXECUTION_END
     status: str
     error_code: str | None = None
     reason: str | None = None
+
+
+class OperationExecutionIdentified(_Payload):
+    type: Literal[RunEventType.OPERATION_EXECUTION_IDENTIFIED] = (
+        RunEventType.OPERATION_EXECUTION_IDENTIFIED
+    )
+    attempt_id: UUID
+    identity: ExecutionIdentity
+    permission: Literal["observe", "create_exec", "start_exec"] = "observe"
+
+
+class OperationExecutionEnded(_Payload):
+    type: Literal[RunEventType.OPERATION_EXECUTION_ENDED] = (
+        RunEventType.OPERATION_EXECUTION_ENDED
+    )
+    attempt_id: UUID
+    evidence: ExecutionEvidence
 
 
 class PolicyDecided(ToolScopePayload):
@@ -269,6 +294,8 @@ type EventPayload = Annotated[
     | ToolEnded
     | ToolExecutionStarted
     | ToolExecutionEnded
+    | OperationExecutionIdentified
+    | OperationExecutionEnded
     | PolicyDecided
     | ApprovalRequested
     | ApprovalResolved

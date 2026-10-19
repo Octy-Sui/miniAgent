@@ -1,6 +1,6 @@
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import orjson
 from pydantic import JsonValue, ValidationError
@@ -29,6 +29,7 @@ class _ToolBinding[ArgumentsT: ToolArguments]:
     tool: Tool[ArgumentsT]
     arguments_model: type[ArgumentsT]
     definition: ToolDefinition
+    unknown_outcome: Literal["reject", "retry_read_only"]
     contract_version: str
     execution_options: dict[str, JsonValue]
 
@@ -93,6 +94,7 @@ class ToolRegistry:
                 arguments_model=arguments_model,
                 definition=definition,
                 contract_version=tool.contract_version,
+                unknown_outcome=tool.unknown_outcome,
                 execution_options=execution_options,
             )
 
@@ -107,6 +109,7 @@ class ToolRegistry:
         return {
             "name": binding.definition.name,
             "version": binding.contract_version,
+            "unknown_outcome": binding.unknown_outcome,
             "input_schema": orjson.loads(orjson.dumps(binding.definition.input_schema)),
             "execution_options": orjson.loads(orjson.dumps(binding.execution_options)),
         }

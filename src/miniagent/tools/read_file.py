@@ -26,6 +26,7 @@ class ReadFileArguments(ToolArguments):
 
 class ReadFileTool(Tool[ReadFileArguments]):
     arguments_model = ReadFileArguments
+    unknown_outcome = "retry_read_only"
 
     def __init__(self, workspace: Workspace) -> None:
         self.workspace = workspace

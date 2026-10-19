@@ -1,4 +1,7 @@
-from typing import Annotated, Literal
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Annotated, Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -54,3 +57,39 @@ class ExecutionEvidence(_Identity):
     started_observed: bool
     group_ended: bool
     issuer_ended: bool
+
+
+class ManagedExecutionError(RuntimeError):
+    pass
+
+
+class ExecutionObserver(Protocol):
+    @property
+    def attempt_id(self) -> UUID: ...
+
+    async def identified(
+        self,
+        identity: ExecutionIdentity,
+        *,
+        permission: Literal["observe", "create_exec", "start_exec"] = "observe",
+    ) -> None: ...
+
+    async def ended(self, evidence: ExecutionEvidence) -> None: ...
+
+
+_OBSERVER: ContextVar[ExecutionObserver | None] = ContextVar(
+    "miniagent_execution_observer", default=None
+)
+
+
+@contextmanager
+def execution_scope(observer: ExecutionObserver) -> Iterator[None]:
+    token = _OBSERVER.set(observer)
+    try:
+        yield
+    finally:
+        _OBSERVER.reset(token)
+
+
+def current_execution_observer() -> ExecutionObserver | None:
+    return _OBSERVER.get()

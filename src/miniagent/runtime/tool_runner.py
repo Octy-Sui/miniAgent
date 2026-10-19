@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from miniagent.agents import AgentSpec
+from miniagent.environments.managed_execution import (
+    ManagedExecutionError,
+    execution_scope,
+)
 from miniagent.policy import (
     PolicyContext,
     PolicyDecision,
@@ -19,6 +23,7 @@ from miniagent.runtime.cancellation import (
     await_with_cancellation,
 )
 from miniagent.runtime.execution import RunExecution, RunTermination
+from miniagent.runtime.recording import RunPersistenceError
 from miniagent.runtime.result import RunError, TerminationReason
 from miniagent.runtime.state import RunStatus, ToolBatch
 from miniagent.tools.contracts import ToolCall, ToolError, ToolResult, ToolStatus
@@ -94,6 +99,8 @@ class ToolCallRunner:
                             call,
                             prepared,
                         )
+                    except (RunPersistenceError, ManagedExecutionError):
+                        raise
                     except Exception as exc:  # noqa: BLE001
                         return ToolBatchOutcome(
                             results=results,
@@ -177,11 +184,14 @@ class ToolCallRunner:
     ) -> ToolResult:
         await execution.begin_tool_execution()
         try:
-            result = await await_with_cancellation(
-                prepared.invoke(call.id),
-                self.cancellation_token,
-            )
-        except CancellationRequested:
+            operation = execution.state.execution.active_operation
+            assert operation is not None
+            with execution_scope(execution.execution_observer(operation.attempt_id)):
+                result = await await_with_cancellation(
+                    prepared.invoke(call.id),
+                    self.cancellation_token,
+                )
+        except (CancellationRequested, RunPersistenceError, ManagedExecutionError):
             raise
         except Exception:
             logger.exception("Tool execution failed", extra={"tool": call.name})

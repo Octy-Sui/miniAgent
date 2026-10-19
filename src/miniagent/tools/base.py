@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, JsonValue
 
@@ -12,6 +13,7 @@ class ToolArguments(BaseModel):
 class Tool[ArgumentsT: ToolArguments](ABC):
     arguments_model: type[ArgumentsT]
     contract_version = "1"
+    unknown_outcome: Literal["reject", "retry_read_only"] = "reject"
 
     @property
     @abstractmethod

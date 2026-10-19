@@ -2,9 +2,16 @@ from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from uuid import UUID
+from typing import Literal
+from uuid import UUID, uuid4
 
 from miniagent.artifacts import ArtifactRef
+from miniagent.environments.managed_execution import (
+    ExecutionEvidence,
+    ExecutionIdentity,
+    ExecutionObserver,
+    ManagedExecutionError,
+)
 from miniagent.evaluation import CandidateOutput
 from miniagent.metering.usage import RequestCost, add_request_usage
 from miniagent.models.messages import ToolMessage
@@ -28,6 +35,8 @@ from miniagent.runtime.events import (
     EvaluationStart,
     ModelRequested,
     ModelResponded,
+    OperationExecutionEnded,
+    OperationExecutionIdentified,
     PolicyDecided,
     RunFinished,
     RunStarted,
@@ -39,7 +48,7 @@ from miniagent.runtime.events import (
     ToolStarted,
 )
 from miniagent.runtime.journal import RunJournal
-from miniagent.runtime.progress import CurrentStep
+from miniagent.runtime.progress import CurrentStep, OperationRef
 from miniagent.runtime.result import RunError, RunResult, TerminationReason
 from miniagent.runtime.state import ConversationState, RunState, RunStatus
 from miniagent.runtime.termination import tool_step_failed
@@ -433,20 +442,51 @@ class RunExecution:
         next_trace = deepcopy(self.trace)
         next_trace.begin_tool_execution()
         correlation = next_trace.tool_correlation
-        await self.journal.record_activity(
-            next_state,
-            [
-                next_trace.tool_execution_event(
-                    ToolExecutionStarted(
-                        call_index=correlation.call_index,
-                        tool_call_id=correlation.tool_call_id,
-                        tool_name=correlation.tool_name,
-                    )
-                )
-            ],
+        attempt_id = uuid4()
+        event = next_trace.tool_execution_event(
+            ToolExecutionStarted(
+                attempt_id=attempt_id,
+                call_index=correlation.call_index,
+                tool_call_id=correlation.tool_call_id,
+                tool_name=correlation.tool_name,
+            )
         )
+        record = self.journal.recorder.record
+        operation = OperationRef(
+            kind="tool",
+            attempt_id=attempt_id,
+            started_event_id=event.event_id,
+            started_sequence=record.last_event_sequence + 1 if record else 1,
+            step_number=next_state.execution.steps_started,
+            call_index=correlation.call_index,
+            tool_call_id=correlation.tool_call_id,
+        )
+        next_state = RunState.model_validate(
+            next_state.model_copy(
+                update={
+                    "execution": next_state.execution.model_copy(
+                        update={"active_operation": operation}
+                    ),
+                }
+            ).model_dump(mode="python")
+        )
+        await self.journal.record_activity(next_state, [event])
         self.state = next_state
         self.trace = next_trace
+
+    def execution_observer(self, attempt_id: UUID) -> ExecutionObserver:
+        operation = self.state.execution.active_operation
+        if operation is None or operation.attempt_id != attempt_id:
+            raise ManagedExecutionError(
+                "Execution observer requires current operation attempt"
+            )
+        return _OperationObserver(self, attempt_id)
+
+    def _tool_attempt_id(self) -> UUID:
+        operation = self.state.execution.active_operation
+        if operation is None or operation.kind != "tool":
+            raise ManagedExecutionError("Tool completion requires active attempt")
+        return operation.attempt_id
 
     async def complete_tool(self, result: ToolResult) -> None:
         message = ToolMessage(
@@ -468,6 +508,7 @@ class RunExecution:
             events.append(
                 next_trace.tool_execution_event(
                     ToolExecutionEnded(
+                        attempt_id=self._tool_attempt_id(),
                         call_index=correlation.call_index,
                         tool_call_id=correlation.tool_call_id,
                         tool_name=correlation.tool_name,
@@ -643,6 +684,7 @@ class RunExecution:
                 events.append(
                     next_trace.tool_execution_event(
                         ToolExecutionEnded(
+                            attempt_id=self._tool_attempt_id(),
                             call_index=correlation.call_index,
                             tool_call_id=correlation.tool_call_id,
                             tool_name=correlation.tool_name,
@@ -691,3 +733,83 @@ class RunExecution:
         self.pending_approval_resolution = None
         self.pending_evaluation_result = None
         return RunResult.from_state(next_state)
+
+
+@dataclass(frozen=True, slots=True)
+class _OperationObserver:
+    execution: RunExecution
+    attempt_id: UUID
+
+    def _operation(self) -> OperationRef:
+        operation = self.execution.state.execution.active_operation
+        if operation is None or operation.attempt_id != self.attempt_id:
+            raise ManagedExecutionError("Observer operation is no longer current")
+        return operation
+
+    async def identified(
+        self,
+        identity: ExecutionIdentity,
+        *,
+        permission: Literal["observe", "create_exec", "start_exec"] = "observe",
+    ) -> None:
+        operation = self._operation()
+        if identity.attempt_id != self.attempt_id:
+            raise ManagedExecutionError("Execution identity belongs to another attempt")
+        identities = tuple(
+            item
+            for item in operation.executions
+            if item.execution_id != identity.execution_id
+        ) + (identity,)
+        state = self.execution.state
+        state = RunState.model_validate(
+            state.model_copy(
+                update={
+                    "execution": state.execution.model_copy(
+                        update={
+                            "active_operation": operation.model_copy(
+                                update={"executions": identities}
+                            )
+                        }
+                    ),
+                }
+            ).model_dump(mode="python")
+        )
+        await self.execution.journal.record_activity(
+            state,
+            [
+                self.execution.trace.run_event(
+                    OperationExecutionIdentified(
+                        attempt_id=self.attempt_id,
+                        identity=identity,
+                        permission=permission,
+                    )
+                )
+            ],
+        )
+        self.execution.state = state
+
+    async def ended(self, evidence: ExecutionEvidence) -> None:
+        operation = self._operation()
+        if (
+            evidence.execution_id != evidence.identity.execution_id
+            or evidence.identity not in operation.executions
+        ):
+            raise ManagedExecutionError(
+                "Execution evidence must match an identified execution"
+            )
+        await self.execution.journal.record_activity(
+            self.execution.state,
+            [
+                self.execution.trace.run_event(
+                    OperationExecutionEnded(
+                        attempt_id=self.attempt_id, evidence=evidence
+                    )
+                )
+            ],
+        )
+        if (
+            evidence.outcome != "ended"
+            or not evidence.group_ended
+            or not evidence.issuer_ended
+        ):
+            raise ManagedExecutionError("Execution chain end is not confirmed")

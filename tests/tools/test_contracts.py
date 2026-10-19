@@ -131,6 +131,7 @@ def test_tool_contract_metadata_is_logical_and_snapshotted() -> None:
     assert metadata == {
         "name": "text",
         "version": "text-v1",
+        "unknown_outcome": "reject",
         "input_schema": TextArguments.model_json_schema(),
         "execution_options": {"timeout_seconds": 2},
     }
@@ -258,3 +259,22 @@ async def test_read_file_preserves_failed_workspace_execution_evidence() -> None
     assert result.artifacts == [artifact]
     assert result.workspace_delta == delta
     assert result.output.stdout_truncated
+
+
+def test_unknown_outcome_is_part_of_tool_fingerprint() -> None:
+    """TC-U6: replay policy is explicit, snapshotted, and defaults to rejection."""
+    workspace = EvidenceWorkspace(
+        ExecutionResult(
+            status=ExecutionStatus.SUCCESS,
+            exit_code=0,
+            stdout="",
+            stderr="",
+            duration_ms=0,
+        )
+    )
+    registry = ToolRegistry([ReadFileTool(workspace), ShellTool(workspace), TextTool()])
+    assert (
+        registry.contract_metadata("read_file")["unknown_outcome"] == "retry_read_only"
+    )
+    assert registry.contract_metadata("shell")["unknown_outcome"] == "reject"
+    assert registry.contract_metadata("text")["unknown_outcome"] == "reject"

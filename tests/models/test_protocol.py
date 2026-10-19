@@ -83,6 +83,7 @@ def test_recovery_rejects_events_from_another_run() -> None:
                     sequence=1,
                     occurred_at=datetime.now(UTC),
                     payload=ToolExecutionEnded(
+                        attempt_id=uuid4(),
                         call_index=0,
                         tool_call_id="call-1",
                         tool_name="shell",

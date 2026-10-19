@@ -1,0 +1,174 @@
+import asyncio
+from datetime import UTC, datetime
+from uuid import uuid4
+
+import pytest
+
+from miniagent.environments.managed_execution import (
+    ExecutionEvidence,
+    HostProcessIdentity,
+    ManagedExecutionError,
+    current_execution_observer,
+    execution_scope,
+)
+from miniagent.models.messages import AssistantMessage
+from miniagent.models.protocol import FinishReason, ModelResponse
+from miniagent.policy import ApprovalOutcome, ApprovalResolution
+from miniagent.runtime import AgentRuntime
+from miniagent.runtime.events import RunEventType
+from miniagent.runtime.recording import RunPersistenceError
+from miniagent.storage.sqlite import SQLiteRunStore
+from miniagent.tools.base import Tool
+from miniagent.tools.contracts import ToolCall, ToolDefinition, ToolResult, ToolStatus
+from miniagent.tools.registry import ToolRegistry
+from tests.resume_support import StoreBoundary, waiting_case
+from tests.runtime.test_runtime import (
+    AllowPolicyEngine,
+    EmptyArguments,
+    QueueProvider,
+    agent,
+)
+
+
+async def test_execution_scope_isolated_and_reset_on_exception():
+    """TC-U6: parallel scopes and exceptional unwinding cannot leak observers."""
+    first, second = object(), object()
+    ready = asyncio.Event()
+    observations = []
+
+    async def work(observer, raises):
+        with execution_scope(observer):
+            ready.set()
+            await asyncio.sleep(0)
+            observations.append(current_execution_observer())
+            if raises:
+                raise ValueError("scope exit")
+        assert current_execution_observer() is None
+
+    results = await asyncio.gather(
+        work(first, True), work(second, False), return_exceptions=True
+    )
+    assert observations == [first, second]
+    assert isinstance(results[0], ValueError)
+    assert current_execution_observer() is None
+
+
+class ObservedTool(Tool[EmptyArguments]):
+    arguments_model = EmptyArguments
+
+    def __init__(self):
+        self.effects = []
+
+    @property
+    def definition(self):
+        return ToolDefinition(
+            name="observed",
+            description="Observed boundary",
+            input_schema=EmptyArguments.model_json_schema(),
+        )
+
+    async def execute(self, arguments, *, tool_call_id):
+        observer = current_execution_observer()
+        assert observer is not None
+        identity = HostProcessIdentity(
+            role="local_command",
+            attempt_id=observer.attempt_id,
+            execution_id=uuid4(),
+            pid=123,
+            create_time=1,
+            host_boot_id="boot",
+            pgid=123,
+            sid=123,
+        )
+        await observer.identified(identity)
+        self.effects.append("external action permitted")
+        return ToolResult(
+            tool_call_id=tool_call_id, status=ToolStatus.SUCCESS, content="done"
+        )
+
+
+@pytest.mark.parametrize(
+    ("action",), [("applied_then_error",), ("not_dispatched_then_error",)]
+)
+async def test_observer_commit_failure_stops_tool_runner(tmp_path, action):
+    """AC07 / F2: an uncertain identity commit must abort before the next effect."""
+    store = SQLiteRunStore(tmp_path / "runs.sqlite3")
+    await store.initialize()
+    boundary = StoreBoundary(
+        store, action=action, event_type=RunEventType.OPERATION_EXECUTION_IDENTIFIED
+    )
+    tool = ObservedTool()
+    response = ModelResponse(
+        message=AssistantMessage(
+            tool_calls=(ToolCall(id="c0", name="observed", arguments={}),)
+        ),
+        finish_reason=FinishReason.TOOL_CALL,
+    )
+    runtime = AgentRuntime(
+        provider=QueueProvider([response]),
+        tools=ToolRegistry([tool]),
+        policy_engine=AllowPolicyEngine(),
+        run_store=boundary,
+    )
+    run_id = uuid4()
+    with pytest.raises(RunPersistenceError):
+        await runtime.run(agent(allowed_tools=["observed"]), "task", run_id=run_id)
+    assert boundary.fired
+    assert tool.effects == []
+    events = await store.list_events(run_id)
+    assert not any(event.type is RunEventType.TOOL_END for event in events)
+    operation = (await store.get(run_id)).state.execution.active_operation
+    assert operation is not None and operation.kind == "tool"
+    assert current_execution_observer() is None
+
+
+async def test_observer_replaces_identity_and_rejects_unconfirmed_end(tmp_path):
+    store, execution, request = await waiting_case(tmp_path / "runs.sqlite3")
+    await execution.resolve_approval(
+        ApprovalResolution(
+            approval_id=request.approval_id,
+            outcome=ApprovalOutcome.APPROVED,
+            actor_kind="human",
+            actor_id="tester",
+            reason="approved",
+            resolved_at=datetime.now(UTC),
+        )
+    )
+    await execution.begin_tool_execution()
+    operation = execution.state.execution.active_operation
+    assert operation is not None
+    observer = execution.execution_observer(operation.attempt_id)
+    identity = HostProcessIdentity(
+        role="local_command",
+        attempt_id=observer.attempt_id,
+        execution_id=uuid4(),
+        pid=123,
+        create_time=1,
+        host_boot_id="boot",
+        pgid=123,
+        sid=123,
+    )
+    await observer.identified(identity)
+    await observer.identified(identity)
+    operation = execution.state.execution.active_operation
+    assert operation is not None and operation.executions == (identity,)
+    evidence = ExecutionEvidence(
+        execution_id=identity.execution_id,
+        identity=identity,
+        outcome="unknown",
+        started_observed=True,
+        group_ended=False,
+        issuer_ended=True,
+    )
+    with pytest.raises(ManagedExecutionError, match="not confirmed"):
+        await observer.ended(evidence)
+    events = await store.list_events(request.run_id)
+    assert (
+        sum(
+            event.type is RunEventType.OPERATION_EXECUTION_IDENTIFIED
+            for event in events
+        )
+        == 2
+    )
+    assert events[-1].type is RunEventType.OPERATION_EXECUTION_ENDED
+    assert not any(event.type is RunEventType.TOOL_END for event in events)
