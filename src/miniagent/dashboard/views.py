@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 from uuid import UUID
@@ -102,4 +103,16 @@ class MemoryView:
     fields: tuple[FieldView, ...]
     evidence: tuple[EvidenceView, ...]
     groups: tuple[CompactionGroupView, ...]
+    issues: tuple[ReadIssue, ...]
+
+
+@dataclass(frozen=True)
+class PreviewView:
+    artifact_id: UUID
+    fields: tuple[FieldView, ...]
+    text: str | None
+    offset: int
+    next_offset: int | None
+    inline_continuation: bool
+    read_at: datetime
     issues: tuple[ReadIssue, ...]
