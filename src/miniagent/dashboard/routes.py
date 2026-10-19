@@ -1,8 +1,20 @@
+from uuid import UUID
+
 from fastapi import APIRouter, Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from miniagent.dashboard.pages import render_runs
-from miniagent.dashboard.parameters import run_parameters
+from miniagent.dashboard.pages import (
+    render_events,
+    render_run,
+    render_runs,
+    render_snapshot,
+)
+from miniagent.dashboard.parameters import (
+    SnapshotParams,
+    event_parameters,
+    run_parameters,
+)
+from miniagent.dashboard.reads import ReadFailure
 
 router = APIRouter()
 
@@ -26,5 +38,48 @@ async def runs(request: Request) -> Response:
             params,
             fragment=request.headers.get("hx-request") == "true",
         )
+    )
+    return HTMLResponse(page.html, status_code=page.status_code)
+
+
+@router.api_route("/runs/{run_id}", methods=["GET", "HEAD"])
+async def run_detail(request: Request, run_id: UUID) -> Response:
+    params = event_parameters(list(request.query_params.multi_items()))
+    page = await request.app.state.pool.run(
+        lambda: render_run(
+            request.app.state.deps,
+            run_id,
+            params,
+            fragment=request.headers.get("hx-request") == "true",
+        )
+    )
+    return HTMLResponse(page.html, status_code=page.status_code)
+
+
+@router.api_route("/runs/{run_id}/events", methods=["GET", "HEAD"])
+async def events(request: Request, run_id: UUID) -> Response:
+    params = event_parameters(list(request.query_params.multi_items()))
+    page = await request.app.state.pool.run(
+        lambda: render_events(
+            request.app.state.deps,
+            run_id,
+            params,
+            fragment=request.headers.get("hx-request") == "true",
+        )
+    )
+    return HTMLResponse(page.html, status_code=page.status_code)
+
+
+@router.api_route("/runs/{run_id}/snapshots/{version}", methods=["GET", "HEAD"])
+async def snapshot(request: Request, run_id: UUID, version: int) -> Response:
+    pairs = list(request.query_params.multi_items())
+    if len({key for key, _ in pairs}) != len(pairs):
+        raise ReadFailure(422, "parameters_invalid")
+    try:
+        params = SnapshotParams.model_validate(dict(pairs))
+    except ValueError as exc:
+        raise ReadFailure(422, "parameters_invalid") from exc
+    page = await request.app.state.pool.run(
+        lambda: render_snapshot(request.app.state.deps, run_id, version, params)
     )
     return HTMLResponse(page.html, status_code=page.status_code)

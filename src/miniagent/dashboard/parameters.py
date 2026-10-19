@@ -188,6 +188,10 @@ def event_parameters(pairs: list[tuple[str, str]]) -> EventParams:
         },
         multiple="type",
     )
+    values = {key: value for key, value in values.items() if value != ""}
+    types = values["type"]
+    assert isinstance(types, list)
+    values["type"] = [value for value in types if value != ""]
     filter_keys = {"type", "step", "tool_name", "failures_only"}
     filters = {
         ("types" if key == "type" else key): value

@@ -10,7 +10,7 @@ NOW = datetime(2026, 10, 19, tzinfo=UTC)
 
 
 def test_cursor_matches_independent_hmac_vector() -> None:
-    payload = b'{"boundary":{"as_of_sequence":240,"latest_snapshot_version":3,"read_at":"2026-10-19T00:00:00.000000Z","run_id":"00000000-0000-0000-0000-000000000001","run_status":"running"},"expires_at":"2026-10-19T00:30:00.000000Z","issued_at":"2026-10-19T00:00:00.000000Z","purpose":"source","version":1}'
+    payload = b'{"boundary":{"as_of_sequence":240,"latest_snapshot_version":3,"read_at":"2026-10-19T00:00:00.000000Z","run_id":"00000000-0000-0000-0000-000000000001","run_status":"running"},"expires_at":"2026-10-19T00:30:00.000000Z","issued_at":"2026-10-19T00:00:00.000000Z","purpose":"source","return_filters":{"failures_only":false,"step":null,"tool_name":null,"types":[]},"return_grouped":false,"version":1}'
     encoded = base64.urlsafe_b64encode(payload).rstrip(b"=")
     signature = base64.urlsafe_b64encode(
         hmac.digest(KEY, payload, hashlib.sha256)

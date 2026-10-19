@@ -70,6 +70,8 @@ class EventCursor(CursorTimes):
 class SourceCursor(CursorTimes):
     purpose: Literal["source"] = "source"
     boundary: PageBoundary
+    return_filters: EventFilters = EventFilters()
+    return_grouped: bool = False
 
 
 class ManifestCursor(CursorTimes):

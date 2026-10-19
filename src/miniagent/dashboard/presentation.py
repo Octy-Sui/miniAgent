@@ -5,6 +5,7 @@ from jinja2 import Environment, PackageLoader, StrictUndefined, select_autoescap
 
 from miniagent.dashboard.config import LIMITS
 from miniagent.dashboard.cursors import CursorSigner, PageBoundary, SourceCursor
+from miniagent.dashboard.parameters import EventFilters
 from miniagent.dashboard.reads import ReadFailure
 from miniagent.dashboard.views import SourceTarget
 
@@ -20,7 +21,12 @@ def render_page(template: str, context: dict[str, object]) -> str:
 
 
 def source_href(
-    target: SourceTarget, boundary: PageBoundary, signer: CursorSigner
+    target: SourceTarget,
+    boundary: PageBoundary,
+    signer: CursorSigner,
+    *,
+    filters: EventFilters | None = None,
+    grouped: bool = False,
 ) -> str:
     if target.run_id != boundary.run_id:
         raise ReadFailure(422, "source_run_mismatch")
@@ -28,6 +34,8 @@ def source_href(
     token = signer.encode(
         SourceCursor(
             boundary=boundary,
+            return_filters=filters or EventFilters(),
+            return_grouped=grouped,
             issued_at=now,
             expires_at=now + timedelta(seconds=LIMITS.cursor_seconds),
         )

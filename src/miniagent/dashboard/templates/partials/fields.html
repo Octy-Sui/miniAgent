@@ -1,0 +1,1 @@
+<dl>{% for field in fields %}<dt>{{ field.label }}</dt><dd><pre>{{ field.value }}</pre><small>来源：{% if field.href %}<a href="{{ field.href }}">{{ field.source_label }}</a>{% else %}{{ field.source_label }}{% endif %}</small></dd>{% endfor %}</dl>
