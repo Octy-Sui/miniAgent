@@ -3,8 +3,12 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from datetime import datetime
+from decimal import Decimal
+from typing import TYPE_CHECKING, Literal
 from uuid import UUID
+
+from miniagent.runtime.state import RunStatus
 
 
 @dataclass(frozen=True)
@@ -42,12 +46,12 @@ class ReadBudget:
         return True
 
 
-from datetime import datetime
-from decimal import Decimal
-
 if TYPE_CHECKING:
-    from miniagent.dashboard.cursors import RunPosition
-from miniagent.runtime.state import RunStatus
+    from miniagent.dashboard.cursors import PageBoundary, RunPosition
+    from miniagent.models.messages import Message
+    from miniagent.runtime.events import RunEvent
+    from miniagent.runtime.snapshots import RunSnapshot
+    from miniagent.runtime.store_contracts import RunRecord
 
 
 @dataclass(frozen=True)
@@ -81,3 +85,58 @@ class RunListRead:
     counts: dict[str, int]
     next_position: RunPosition | None
     read_at: datetime
+
+
+@dataclass(frozen=True)
+class StoredRun:
+    envelope: RunEnvelope
+    record: RunRecord | None
+    workspace_kind: Literal["local", "docker", "unknown"]
+    issues: tuple[ReadIssue, ...]
+
+
+@dataclass(frozen=True)
+class StoredEvent:
+    event_id: UUID
+    run_id: UUID
+    sequence: int
+    type: str
+    occurred_at: datetime
+    step_number: int | None
+    span_id: str | None
+    parent_span_id: str | None
+    event: RunEvent | None
+    issues: tuple[ReadIssue, ...]
+
+
+@dataclass(frozen=True)
+class EventBatch:
+    items: tuple[StoredEvent, ...]
+    next_sequence: int | None
+
+
+@dataclass(frozen=True)
+class StoredSnapshot:
+    snapshot_id: UUID
+    run_id: UUID
+    version: int
+    event_sequence: int
+    snapshot: RunSnapshot | None
+    issues: tuple[ReadIssue, ...]
+
+
+@dataclass(frozen=True)
+class RunPageRead:
+    run: StoredRun
+    boundary: PageBoundary
+    events: EventBatch
+    evaluation_event: StoredEvent | None = None
+
+
+@dataclass(frozen=True)
+class SnapshotSlice:
+    snapshot: StoredSnapshot
+    start: int
+    end: int
+    message_count: int | None
+    messages: tuple[Message, ...]

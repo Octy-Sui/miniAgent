@@ -4,10 +4,18 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from miniagent.dashboard.config import LIMITS
-from miniagent.dashboard.cursors import RunPosition
-from miniagent.dashboard.parameters import RunFilters
+from miniagent.dashboard.cursors import PageBoundary, RunPosition, utc_now
+from miniagent.dashboard.json_content import ContentError, parse_json
+from miniagent.dashboard.parameters import EventFilters, RunFilters
 from miniagent.dashboard.queries.connection import ConnectionFactory, read_transaction
+from miniagent.dashboard.queries.events import (
+    _EVENT_COLUMNS,
+    _load_event,
+    _read_events,
+)
 from miniagent.dashboard.reads import (
     ReadBudget,
     ReadFailure,
@@ -15,9 +23,20 @@ from miniagent.dashboard.reads import (
     RunEnvelope,
     RunListItem,
     RunListRead,
+    RunPageRead,
+    StoredRun,
 )
+from miniagent.metering.usage import RunUsage
 from miniagent.runtime.state import RunStatus
-from miniagent.storage.codecs import encode_datetime
+from miniagent.runtime.store_contracts import (
+    CorruptStoredDataError,
+    UnsupportedStorageVersionError,
+)
+from miniagent.storage.codecs import (
+    decode_recovery_context,
+    decode_run,
+    encode_datetime,
+)
 
 _STATE_OK = (
     f"json_valid(state_json) AND length(CAST(state_json AS BLOB))<={20 * 1024 * 1024}"
@@ -220,3 +239,126 @@ def _list_item(row: sqlite3.Row, budget: ReadBudget) -> RunListItem:
         cost_usd=cost,
         issues=tuple(issues),
     )
+
+
+def read_run_page(
+    database: Path,
+    run_id: UUID,
+    filters: EventFilters,
+    *,
+    limit: int = 100,
+    budget: ReadBudget,
+    connect: ConnectionFactory = sqlite3.connect,
+) -> RunPageRead:
+
+    with read_transaction(database, budget, connect=connect) as connection:
+        row = connection.execute(
+            "SELECT run_id,schema_version,status,created_at,updated_at,finished_at,last_event_sequence,latest_snapshot_version,length(CAST(state_json AS BLOB)) AS state_bytes,length(CAST(recovery_context_json AS BLOB)) AS recovery_bytes FROM runs WHERE run_id=?",
+            (str(run_id),),
+        ).fetchone()
+        if row is None:
+            raise ReadFailure(404, "run_missing")
+        run = _load_run(connection, row, budget)
+        boundary = PageBoundary(
+            run_id=run_id,
+            as_of_sequence=row["last_event_sequence"],
+            latest_snapshot_version=row["latest_snapshot_version"],
+            run_status=row["status"],
+            read_at=utc_now(),
+        )
+        events = _read_events(
+            connection, boundary, filters, after_sequence=0, limit=limit, budget=budget
+        )
+        evaluation_row = connection.execute(
+            f"SELECT {_EVENT_COLUMNS} FROM run_events WHERE run_id=? AND type='evaluation_completed' AND sequence<=? ORDER BY sequence DESC LIMIT 1",
+            (str(run_id), boundary.as_of_sequence),
+        ).fetchone()
+        evaluation = (
+            _load_event(connection, evaluation_row, budget)
+            if evaluation_row is not None
+            else None
+        )
+        return RunPageRead(run, boundary, events, evaluation)
+
+
+def _load_run(
+    connection: sqlite3.Connection, row: sqlite3.Row, budget: ReadBudget
+) -> StoredRun:
+
+    issues: list[ReadIssue] = []
+    record = None
+    context = None
+    if row["state_bytes"] > LIMITS.state_bytes or not budget.reserve(
+        row["state_bytes"]
+    ):
+        issues.append(ReadIssue("read_limit_exceeded", "Run 正文超出读取上限"))
+    else:
+        body = connection.execute(
+            "SELECT run_id,schema_version,status,created_at,updated_at,finished_at,last_event_sequence,latest_snapshot_version,state_json,NULL AS recovery_context_json FROM runs WHERE run_id=?",
+            (row["run_id"],),
+        ).fetchone()
+        try:
+            raw = parse_json(body["state_json"], budget=budget)
+            issues.extend(_missing_state_fields(raw))
+            del raw
+            record = decode_run(body)
+        except (ContentError, CorruptStoredDataError, UnsupportedStorageVersionError):
+            issues.append(ReadIssue("state_unsupported", "Run 正文无效或版本不支持"))
+    recovery_size = row["recovery_bytes"]
+    if recovery_size is not None:
+        if recovery_size > LIMITS.recovery_bytes or not budget.reserve(recovery_size):
+            issues.append(
+                ReadIssue("read_limit_exceeded", "Workspace 登记超出读取上限")
+            )
+        else:
+            recovery = connection.execute(
+                "SELECT recovery_context_json FROM runs WHERE run_id=?",
+                (row["run_id"],),
+            ).fetchone()[0]
+            try:
+                parse_json(recovery, budget=budget)
+                context = decode_recovery_context(recovery)
+                if str(context.workspace_spec.run_id) != row["run_id"]:
+                    context = None
+                    issues.append(
+                        ReadIssue("recovery_inconsistent", "Workspace 登记归属不一致")
+                    )
+            except (ContentError, ValidationError, UnsupportedStorageVersionError):
+                issues.append(
+                    ReadIssue("recovery_unsupported", "Workspace 登记无效或版本不支持")
+                )
+    if record is not None and context is not None:
+        record = record.model_copy(update={"recovery_context": context})
+    return StoredRun(
+        _envelope(row),
+        record,
+        ("local" if context.workspace_spec.kind == "local" else "docker")
+        if context is not None
+        else "unknown",
+        tuple(issues),
+    )
+
+
+def _missing_state_fields(raw: object) -> tuple[ReadIssue, ...]:
+
+    paths = [
+        *(("usage", key) for key in RunUsage.model_fields),
+        ("execution", "steps_started"),
+        ("execution", "consecutive_failed_steps"),
+        ("definition", "config", "max_steps"),
+        ("definition", "config", "max_consecutive_failures"),
+        ("definition", "config", "context_window_tokens"),
+        ("definition", "agent_spec", "generation", "max_output_tokens"),
+        ("context", "current_version"),
+    ]
+    issues = []
+    for path in paths:
+        value = raw
+        for key in path:
+            if not isinstance(value, dict) or key not in value:
+                issues.append(
+                    ReadIssue("field_not_recorded", "历史字段未记录", field_path=path)
+                )
+                break
+            value = value[key]
+    return tuple(issues)
