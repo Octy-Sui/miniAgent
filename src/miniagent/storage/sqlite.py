@@ -492,7 +492,7 @@ class SQLiteRunStore:
                     ),
                 )
             except sqlite3.IntegrityError as exc:
-                if run_exists(connection, state.identity.run_id):
+                if exc.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY:
                     raise RunAlreadyExistsError(state.identity.run_id) from exc
                 raise
             return self._get_record(connection, state.identity.run_id)

@@ -103,16 +103,11 @@ def stub_cli_run(
     patch_artifact: ArtifactRef | None = None,
     finalization_errors: tuple[FinalizationError, ...] = (),
 ) -> None:
-    async def bootstrap(
+    async def run_with_signals(
         config: BootstrapConfig,
-    ) -> Application:
+    ) -> tuple[ApplicationResult, signal.Signals | None]:
         if configs is not None:
             configs.append(config)
-        return cast(Application, object())
-
-    async def run_with_signals(
-        application: Application,
-    ) -> tuple[ApplicationResult, signal.Signals | None]:
         artifacts = (patch_artifact,) if patch_artifact is not None else ()
         return ApplicationResult(
             run_result=result,
@@ -120,7 +115,6 @@ def stub_cli_run(
             finalization_errors=finalization_errors,
         ), None
 
-    monkeypatch.setattr(cli_main, "bootstrap", bootstrap)
     monkeypatch.setattr(cli_main, "run_with_signals", run_with_signals)
 
 

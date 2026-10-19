@@ -178,9 +178,9 @@ elif "image" in args and "inspect" in args:
         sys.exit(1)
     print(scenario.get("image_id", "sha256:synthetic"))
 elif "container" in args and "create" in args:
-    scenario["containers"] = scenario.get("containers", []) + [{"Id": "agent-container", "Name": "/miniagent-agent", "Image": "sha256:agent"}]
+    scenario["containers"] = scenario.get("containers", []) + [{"Id": scenario.get("container_id", "agent-container"), "Name": "/miniagent-agent", "Image": "sha256:agent"}]
     (root / "docker-scenario.json").write_text(json.dumps(scenario))
-    print("agent-container")
+    print(scenario.get("container_id", "agent-container"))
 elif "container" in args and "start" in args:
     pass
 elif "container" in args and "exec" in args:
@@ -372,6 +372,7 @@ async def evaluation_case(tmp_path, prepared_bundle, docker_cli, harness_executa
 def export_engine():
     """External Engine test double; execute the fixture CLI only after guest permission."""
     executable = None
+    prefix = ()
     commands = {}
 
     class Handler(BaseHTTPRequestHandler):
@@ -443,7 +444,7 @@ def export_engine():
                 assert receive()["type"] == "permit_command"
                 assert executable is not None
                 process = subprocess.Popen(
-                    [str(executable), *command["argv"]],
+                    [str(executable), *prefix, *command["argv"]],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     start_new_session=True,
@@ -492,9 +493,10 @@ def export_engine():
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
-    def configure(path):
-        nonlocal executable
+    def configure(path, command_prefix=()):
+        nonlocal executable, prefix
         executable = path
+        prefix = command_prefix
         return DockerConnection(
             None, f"tcp://127.0.0.1:{server.server_port}", None, False, "export-test"
         )

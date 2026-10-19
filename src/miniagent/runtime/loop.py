@@ -3,6 +3,7 @@
 # Author : octy Sui
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import overload
@@ -143,6 +144,7 @@ class AgentRuntime:
         *,
         run_id: UUID | None = None,
         recovery_context: RunRecoveryContext | None = None,
+        on_record_created: Callable[[RunRecord], None] | None = None,
         interruption_token: None = None,
     ) -> RunResult: ...
 
@@ -154,6 +156,7 @@ class AgentRuntime:
         *,
         run_id: UUID | None = None,
         recovery_context: RunRecoveryContext | None = None,
+        on_record_created: Callable[[RunRecord], None] | None = None,
         interruption_token: InterruptionToken,
     ) -> RunResult | RunSuspension: ...
 
@@ -165,6 +168,7 @@ class AgentRuntime:
         *,
         run_id: UUID | None = None,
         recovery_context: RunRecoveryContext | None = None,
+        on_record_created: Callable[[RunRecord], None] | None = None,
         interruption_token: InterruptionToken | None,
     ) -> RunResult | RunSuspension: ...
 
@@ -175,6 +179,7 @@ class AgentRuntime:
         *,
         run_id: UUID | None = None,
         recovery_context: RunRecoveryContext | None = None,
+        on_record_created: Callable[[RunRecord], None] | None = None,
         interruption_token: InterruptionToken | None = None,
     ) -> RunResult | RunSuspension:
         if (
@@ -222,6 +227,7 @@ class AgentRuntime:
                     recovery_context=recovery_context,
                 )
             ),
+            on_record_created=on_record_created,
         )
         return await self._drive(execution, interruption_token=interruption_token)
 

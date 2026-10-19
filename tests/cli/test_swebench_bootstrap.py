@@ -1,5 +1,4 @@
 import json
-import os
 
 import pytest
 from typer.testing import CliRunner
@@ -14,28 +13,6 @@ from miniagent.evaluation.swebench_data import (
     EvaluationPreparationError,
     SWEbenchTaskContext,
 )
-
-
-@pytest.fixture
-def configured_host(
-    tmp_path, monkeypatch, prepared_bundle, docker_cli, harness_executable
-):
-    (tmp_path / "docker").symlink_to(docker_cli)
-    values = {
-        "OPENAI_API_KEY": "test",
-        "OPENAI_BASE_URL": "https://example.test",
-        "SWEBENCH_DATA_ROOT": str(prepared_bundle),
-        "SWEBENCH_WORK_ROOT": str(tmp_path / "runs"),
-        "SWEBENCH_EXECUTABLE": str(harness_executable),
-        "EVALUATION_DOCKER_EXECUTABLE": str(docker_cli),
-        "ARTIFACT_ROOT": str(tmp_path / "artifacts"),
-        "RUN_DATABASE_PATH": str(tmp_path / "journal.sqlite3"),
-        "LOCAL_WORKSPACE_ROOT": str(tmp_path / "workspaces"),
-        "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
-    }
-    for key, value in values.items():
-        monkeypatch.setenv(key, value)
-    return tmp_path
 
 
 async def test_docker_context_required_before_workspace_creation(configured_host):
@@ -93,7 +70,7 @@ async def test_ready_task_bootstraps_with_global_ready_false_and_override(
     evaluator = application.dependencies.evaluator.evaluator
     assert isinstance(evaluator, SWEbenchEvaluator)
     assert evaluator.prepared.record.instance_id == "django__django-11477"
-    assert evaluator.prepared.actual_image == "custom:local"
+    assert evaluator.prepared.actual_image == "sha256:synthetic"
     assert evaluator.prepared.image_preflight_verified is False
     await application.dependencies.workspace.destroy()
 

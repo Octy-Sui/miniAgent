@@ -33,6 +33,7 @@ from miniagent.runtime.execution import (
     current_evaluation_observer,
     evaluation_scope,
 )
+from miniagent.runtime.interruption import InterruptionRequested, InterruptionToken
 from miniagent.runtime.loop import AgentRuntime
 from miniagent.runtime.recording import RunPersistenceError
 from miniagent.runtime.recovery import (

@@ -11,7 +11,7 @@ import typer
 
 from miniagent.agents.default_agent import DEFAULT_AGENT
 from miniagent.cli.application import Application, ApplicationResult
-from miniagent.cli.bootstrap import BootstrapConfig, bootstrap
+from miniagent.cli.bootstrap import BootstrapConfig, execute_new_run
 from miniagent.cli.console_approval import ConsoleApprovalHandler
 from miniagent.cli.rendering import print_application_result
 from miniagent.environments import WorkspaceKind
@@ -31,7 +31,7 @@ class _ForcedSignalCancellation(Exception):
 
 
 async def run_with_signals(
-    application: Application,
+    application: Application | BootstrapConfig,
 ) -> tuple[ApplicationResult, signal.Signals | None]:
     loop = asyncio.get_running_loop()
     main_task = asyncio.current_task()
@@ -60,7 +60,11 @@ async def run_with_signals(
         registered_signals.append(handled_signal)
 
     try:
-        result = await application.run(cancellation_token)
+        result = (
+            await execute_new_run(application, cancellation_token=cancellation_token)
+            if isinstance(application, BootstrapConfig)
+            else await application.run(cancellation_token)
+        )
         return (
             result,
             received_signal.result() if received_signal.done() else None,
@@ -120,8 +124,7 @@ async def main(
     )
 
     try:
-        application = await bootstrap(config)
-        result, received_signal = await run_with_signals(application)
+        result, received_signal = await run_with_signals(config)
     except EvaluationPreparationError as exc:
         typer.echo(str(exc)[:4096], err=True)
         raise typer.Exit(code=1) from None

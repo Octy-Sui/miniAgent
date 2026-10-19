@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from time import monotonic
 from typing import Literal
@@ -18,6 +19,7 @@ from miniagent.policy import ApprovalHandler, PolicyContext
 from miniagent.runtime import (
     AgentRuntime,
     CancellationToken,
+    InterruptionToken,
     RunRecoveryContext,
     RunResult,
     RunStatus,
@@ -27,6 +29,7 @@ from miniagent.runtime import (
 )
 from miniagent.runtime.interruption import InterruptionRequested
 from miniagent.runtime.recording import RunPersistenceError
+from miniagent.runtime.store_contracts import RunRecord
 from miniagent.tools.registry import ToolRegistry
 
 
@@ -78,7 +81,13 @@ class Application:
             dependencies.workspace, dependencies.artifact_store
         )
 
-    async def run(self, cancellation_token: CancellationToken) -> ApplicationResult:
+    async def run(
+        self,
+        cancellation_token: CancellationToken,
+        *,
+        interruption_token: InterruptionToken | None = None,
+        on_record_created: Callable[[RunRecord], None] | None = None,
+    ) -> ApplicationResult:
         dependencies = self.dependencies
         runtime = AgentRuntime(
             provider=dependencies.provider,
@@ -97,6 +106,8 @@ class Application:
                 dependencies.task,
                 run_id=dependencies.run_id,
                 recovery_context=dependencies.recovery_context,
+                interruption_token=interruption_token,
+                on_record_created=on_record_created,
             )
         except (RunPersistenceError, ManagedExecutionError, InterruptionRequested):
             raise
@@ -108,6 +119,8 @@ class Application:
                 )
             raise
 
+        if isinstance(run_result, RunSuspension):
+            return ApplicationResult(run_result=run_result)
         artifacts, errors = await self._finalize_patch()
         if run_result.status is RunStatus.SUCCEEDED and not errors:
             try:

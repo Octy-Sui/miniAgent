@@ -7,10 +7,16 @@ import pytest
 from miniagent.models.messages import AssistantMessage
 from miniagent.models.protocol import FinishReason, ModelResponse
 from miniagent.policy import ApprovalOutcome, PolicyEffect, PolicyEvaluation, RiskLevel
-from miniagent.runtime import AgentRuntime, CancellationToken, RunResult, RunStatus
+from miniagent.runtime import (
+    AgentRuntime,
+    CancellationToken,
+    InterruptionRequested,
+    InterruptionToken,
+    RunResult,
+    RunStatus,
+)
 from miniagent.runtime.cancellation import await_with_stop
 from miniagent.runtime.events import RunEventType
-from miniagent.runtime.interruption import InterruptionRequested, InterruptionToken
 from miniagent.runtime.result import RunSuspension
 from miniagent.runtime.store_contracts import RunNotFoundError
 from miniagent.storage import SQLiteRunStore

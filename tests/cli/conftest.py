@@ -1,4 +1,6 @@
 import asyncio
+import json
+import os
 import subprocess
 from pathlib import Path
 from uuid import uuid4
@@ -114,3 +116,40 @@ async def delivery_case(submission_case, tmp_path):
         candidate_submission=submission,
     )
     return deps, submission
+
+
+@pytest.fixture
+def configured_host(
+    tmp_path,
+    monkeypatch,
+    prepared_bundle,
+    docker_cli,
+    harness_executable,
+    export_engine,
+):
+    (tmp_path / "docker").symlink_to(docker_cli)
+    connection = export_engine(
+        tmp_path / "docker", ("container", "exec", "--workdir", "/testbed", "a" * 64)
+    )
+    scenario_path = tmp_path / "docker-scenario.json"
+    scenario = json.loads(scenario_path.read_text())
+    scenario["daemon_id"] = connection.daemon_id
+    scenario["container_id"] = "a" * 64
+    for context in scenario["contexts"].values():
+        context["Endpoints"]["docker"]["Host"] = connection.endpoint
+    scenario_path.write_text(json.dumps(scenario))
+    values = {
+        "OPENAI_API_KEY": "test",
+        "OPENAI_BASE_URL": "https://example.test",
+        "SWEBENCH_DATA_ROOT": str(prepared_bundle),
+        "SWEBENCH_WORK_ROOT": str(tmp_path / "runs"),
+        "SWEBENCH_EXECUTABLE": str(harness_executable),
+        "EVALUATION_DOCKER_EXECUTABLE": str(docker_cli),
+        "ARTIFACT_ROOT": str(tmp_path / "artifacts"),
+        "RUN_DATABASE_PATH": str(tmp_path / "journal.sqlite3"),
+        "LOCAL_WORKSPACE_ROOT": str(tmp_path / "workspaces"),
+        "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
+    }
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+    return tmp_path

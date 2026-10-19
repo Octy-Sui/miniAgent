@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
@@ -187,13 +187,15 @@ class RunExecution:
         cls,
         state: RunState,
         journal: RunJournal,
+        *,
+        on_record_created: Callable[[RunRecord], None] | None = None,
     ) -> "RunExecution":
         execution = cls(
             state=state,
             journal=journal,
             trace=RunTraceContext.create(state.identity.run_id),
         )
-        await execution._start()
+        await execution._start(on_record_created=on_record_created)
         return execution
 
     @classmethod
@@ -311,8 +313,12 @@ class RunExecution:
         await self.journal.record_activity(state, [event])
         self.state, self.trace = state, trace
 
-    async def _start(self) -> None:
+    async def _start(
+        self, *, on_record_created: Callable[[RunRecord], None] | None = None
+    ) -> None:
         await self.journal.create(self.state)
+        if on_record_created is not None and self.journal.recorder.record is not None:
+            on_record_created(self.journal.recorder.record.model_copy(deep=True))
         next_state = start_running(prepare(self.state))
         await self.journal.start_run(
             next_state,

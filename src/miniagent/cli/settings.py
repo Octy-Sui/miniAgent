@@ -54,6 +54,18 @@ class Settings(RunLocationSettings):
     )
     swebench_allow_image_pull: bool = False
 
+    @field_validator(
+        "model_limits_file",
+        "model_pricing_file",
+        "local_workspace_root",
+        "artifact_root",
+        "swebench_data_root",
+        "swebench_work_root",
+    )
+    @classmethod
+    def absolute_resource_paths(cls, value: Path) -> Path:
+        return value.expanduser().resolve()
+
     @model_validator(mode="after")
     def validate_evaluation_budgets(self) -> "Settings":
         if self.swebench_process_timeout_seconds <= self.swebench_test_timeout_seconds:
