@@ -1,4 +1,5 @@
 import sqlite3
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from uuid import UUID
@@ -13,6 +14,8 @@ from miniagent.dashboard.reads import (
     ReadBudget,
     ReadFailure,
     ReadIssue,
+    ScopeFacts,
+    ScopeRead,
     StoredEvent,
     ToolFacts,
 )
@@ -228,3 +231,90 @@ def _event_conditions(filters: EventFilters) -> tuple[str, list[object]]:
 (type='approval_resolved' AND json_extract({_PAYLOAD},'$.outcome') IN ('rejected','expired','invalidated'))
 )""")
     return " AND ".join(conditions) or "1", values
+
+
+def read_scope_facts(
+    database: Path,
+    boundary: PageBoundary,
+    span_ids: tuple[str, ...],
+    *,
+    budget: ReadBudget,
+    connect: ConnectionFactory = sqlite3.connect,
+) -> ScopeRead:
+    starts = (
+        "run_started",
+        "step_started",
+        "model_requested",
+        "tool_start",
+        "tool_execution_start",
+        "evaluation_start",
+        "approval_requested",
+    )
+    ends = (
+        "run_finished",
+        "step_completed",
+        "model_responded",
+        "tool_end",
+        "tool_execution_end",
+        "evaluation_completed",
+        "approval_resolved",
+    )
+    roles = (*starts, *ends)
+    scopes: dict[str, ScopeFacts] = {}
+    pending = deque((span_id, 1) for span_id in dict.fromkeys(span_ids))
+    queued = set(span_ids)
+    complete = True
+    with read_transaction(database, budget, connect=connect) as connection:
+        _validate_boundary(connection, boundary)
+        while pending:
+            if len(scopes) >= LIMITS.scopes or budget.monotonic() >= budget.deadline:
+                complete = False
+                break
+            span_id, depth = pending.popleft()
+            if span_id in scopes:
+                continue
+            if depth > LIMITS.parent_depth:
+                complete = False
+                continue
+            predicate = f"run_id=? AND sequence<=? AND span_id=? AND type IN ({','.join('?' for _ in roles)})"
+            values = (str(boundary.run_id), boundary.as_of_sequence, span_id, *roles)
+            counts = dict(
+                connection.execute(
+                    f"SELECT type,count(*) FROM run_events WHERE {predicate} GROUP BY type",
+                    values,
+                )
+            )
+            loaded = []
+            for role in counts:
+                rows = connection.execute(
+                    f"SELECT {_EVENT_COLUMNS} FROM run_events WHERE {predicate} AND type=? ORDER BY sequence LIMIT 2",
+                    (*values, role),
+                ).fetchall()
+                loaded.extend(_load_event(connection, row, budget) for row in rows)
+            scopes[span_id] = ScopeFacts(
+                span_id,
+                tuple(loaded),
+                sum(counts.get(role, 0) for role in starts),
+                sum(counts.get(role, 0) for role in ends),
+                all(item.event is not None for item in loaded),
+            )
+            for parent in dict.fromkeys(
+                item.parent_span_id
+                for item in loaded
+                if item.parent_span_id is not None
+            ):
+                if parent not in queued:
+                    queued.add(parent)
+                    if (
+                        depth >= LIMITS.parent_depth
+                        or len(scopes) + len(pending) >= LIMITS.scopes
+                    ):
+                        complete = False
+                    else:
+                        pending.append((parent, depth + 1))
+    issues = (
+        ()
+        if complete and all(scope.loaded for scope in scopes.values())
+        else (ReadIssue("not_loaded", "部分 scope 未完成加载"),)
+    )
+    return ScopeRead(scopes, complete, issues)

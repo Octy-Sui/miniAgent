@@ -26,3 +26,14 @@ class ToolView:
     completeness: str | None
     exit_code: int | None
     issues: tuple[ReadIssue, ...]
+
+
+@dataclass(frozen=True)
+class SpanView:
+    span_id: str
+    category: str
+    state: str
+    duration_ms: int | None
+    start_event_id: UUID | None
+    end_event_id: UUID | None
+    issues: tuple[ReadIssue, ...]

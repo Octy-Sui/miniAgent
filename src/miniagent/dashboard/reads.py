@@ -147,3 +147,19 @@ class ToolFacts:
     events: tuple[StoredEvent, ...]
     counts: dict[tuple[int, str, str], int]
     issues: tuple[ReadIssue, ...]
+
+
+@dataclass(frozen=True)
+class ScopeFacts:
+    span_id: str
+    events: tuple[StoredEvent, ...]
+    start_count: int
+    end_count: int
+    loaded: bool
+
+
+@dataclass(frozen=True)
+class ScopeRead:
+    scopes: dict[str, ScopeFacts]
+    complete: bool
+    issues: tuple[ReadIssue, ...]
