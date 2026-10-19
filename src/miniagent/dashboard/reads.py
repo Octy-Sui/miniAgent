@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 
@@ -37,3 +40,44 @@ class ReadBudget:
             return False
         self.remaining_bytes -= size
         return True
+
+
+from datetime import datetime
+from decimal import Decimal
+
+if TYPE_CHECKING:
+    from miniagent.dashboard.cursors import RunPosition
+from miniagent.runtime.state import RunStatus
+
+
+@dataclass(frozen=True)
+class RunEnvelope:
+    run_id: UUID
+    schema_version: int
+    status: RunStatus
+    created_at: datetime
+    updated_at: datetime
+    finished_at: datetime | None
+    last_event_sequence: int
+    latest_snapshot_version: int
+
+
+@dataclass(frozen=True)
+class RunListItem:
+    envelope: RunEnvelope
+    task: str | None
+    model: str | None
+    workspace_kind: str
+    reason: str | None
+    active_duration_ms: int | None
+    cost_usd: Decimal | None
+    issues: tuple[ReadIssue, ...]
+
+
+@dataclass(frozen=True)
+class RunListRead:
+    items: tuple[RunListItem, ...]
+    total: int
+    counts: dict[str, int]
+    next_position: RunPosition | None
+    read_at: datetime
