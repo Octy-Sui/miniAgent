@@ -116,7 +116,9 @@ class _File:
         )
 
 
-def parse_diff(text: str, *, budget: ReadBudget) -> DiffView:
+def parse_diff(
+    text: str, *, budget: ReadBudget, recorded_files: tuple[str, ...] | None = None
+) -> DiffView:
     files: list[_File] = []
     current: _File | None = None
     complete = True
@@ -201,5 +203,13 @@ def parse_diff(text: str, *, budget: ReadBudget) -> DiffView:
             (DiffFileView(None, None, "unknown", redact_text(text)),),
             False,
             tuple(issues),
+        )
+    if recorded_files is not None and set(recorded_files) != {
+        file.new if file.new is not None else file.old for file in files
+    }:
+        issues.append(
+            ReadIssue(
+                "files_mismatch", "metadata.files 与完整 diff 推导的文件清单不一致"
+            )
         )
     return DiffView(tuple(file.view() for file in files), True, tuple(issues))

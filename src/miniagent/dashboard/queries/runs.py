@@ -17,6 +17,7 @@ from miniagent.dashboard.queries.events import (
     _read_events,
 )
 from miniagent.dashboard.reads import (
+    EventBatch,
     ReadBudget,
     ReadFailure,
     ReadIssue,
@@ -337,3 +338,40 @@ def _load_run(
         else "unknown",
         tuple(issues),
     )
+
+
+def read_workspace_page(
+    database: Path,
+    run_id: UUID,
+    *,
+    budget: ReadBudget,
+    connect: ConnectionFactory = sqlite3.connect,
+) -> RunPageRead:
+    with read_transaction(database, budget, connect=connect) as connection:
+        row = connection.execute(
+            "SELECT run_id,schema_version,status,created_at,updated_at,finished_at,last_event_sequence,latest_snapshot_version,length(CAST(state_json AS BLOB)) AS state_bytes,length(CAST(recovery_context_json AS BLOB)) AS recovery_bytes FROM runs WHERE run_id=?",
+            (str(run_id),),
+        ).fetchone()
+        if row is None:
+            raise ReadFailure(404, "run_missing")
+        run = _load_run(connection, row, budget)
+        boundary = PageBoundary(
+            run_id=run_id,
+            as_of_sequence=row["last_event_sequence"],
+            latest_snapshot_version=row["latest_snapshot_version"],
+            run_status=row["status"],
+            read_at=utc_now(),
+        )
+        rows = connection.execute(
+            f"SELECT {_EVENT_COLUMNS} FROM run_events WHERE run_id=? AND sequence<=? AND type='evaluation_completed' ORDER BY sequence DESC LIMIT 201",
+            (str(run_id), boundary.as_of_sequence),
+        ).fetchall()
+        events = tuple(
+            _load_event(connection, item, budget) for item in reversed(rows[:200])
+        )
+        return RunPageRead(
+            run,
+            boundary,
+            EventBatch(events, rows[199]["sequence"] if len(rows) > 200 else None),
+            events[-1] if events else None,
+        )

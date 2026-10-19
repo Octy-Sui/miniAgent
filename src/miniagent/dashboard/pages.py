@@ -11,17 +11,29 @@ from miniagent.dashboard.config import LIMITS, DashboardSettings
 from miniagent.dashboard.cursors import (
     CursorSigner,
     EventCursor,
+    ManifestCursor,
     PageBoundary,
+    PreviewCursor,
     RunListCursor,
     SourceCursor,
     filter_digest,
 )
-from miniagent.dashboard.parameters import EventParams, RunListParams, SnapshotParams
+from miniagent.dashboard.evaluation_evidence import adapt_evaluation
+from miniagent.dashboard.parameters import (
+    ArtifactParams,
+    EventFilters,
+    EventParams,
+    RunListParams,
+    SnapshotParams,
+    WorkspaceParams,
+)
 from miniagent.dashboard.presentation import render_page, source_href
+from miniagent.dashboard.previews import project_preview
 from miniagent.dashboard.projections.compaction import (
     project_historical_memory,
     project_memory,
 )
+from miniagent.dashboard.projections.evaluation import project_evaluations
 from miniagent.dashboard.projections.events import (
     project_events,
     project_tools,
@@ -30,6 +42,7 @@ from miniagent.dashboard.projections.events import (
 from miniagent.dashboard.projections.run import format_usd, project_run
 from miniagent.dashboard.projections.snapshots import project_snapshot
 from miniagent.dashboard.projections.spans import project_spans
+from miniagent.dashboard.projections.workspace import choose_patch, parse_diff
 from miniagent.dashboard.queries.connection import ConnectionFactory
 from miniagent.dashboard.queries.events import (
     locate_event,
@@ -38,12 +51,28 @@ from miniagent.dashboard.queries.events import (
     read_scope_facts,
     read_tool_facts,
 )
-from miniagent.dashboard.queries.runs import list_runs, read_run_page
+from miniagent.dashboard.queries.runs import (
+    list_runs,
+    read_run_page,
+    read_workspace_page,
+)
 from miniagent.dashboard.queries.snapshots import read_snapshot
-from miniagent.dashboard.reads import EventBatch, ReadBudget, ReadFailure
-from miniagent.dashboard.redaction import redact_text
+from miniagent.dashboard.reads import (
+    EventBatch,
+    ManifestItem,
+    ManifestPage,
+    ReadBudget,
+    ReadFailure,
+    ReadIssue,
+    VerifiedContent,
+)
+from miniagent.dashboard.redaction import redact_json, redact_text
 from miniagent.dashboard.views import FieldView, MemoryView, SourceTarget
-from miniagent.runtime.events import CompactionCompleted, RunEventType
+from miniagent.runtime.events import (
+    CompactionCompleted,
+    EvaluationCompleted,
+    RunEventType,
+)
 
 
 @dataclass(frozen=True)
@@ -587,3 +616,407 @@ def render_snapshot(
     page = render_page("source.html", context)
     budget.check()
     return RenderedPage(page)
+
+
+def _artifact_href(run_id: UUID, artifact_id: UUID, token: str) -> str:
+    return f"/runs/{run_id}/artifacts/{artifact_id}?" + urlencode({"boundary": token})
+
+
+def _metadata(
+    deps: PageDependencies,
+    run_id: UUID,
+    boundary: PageBoundary,
+    token: str,
+    budget: ReadBudget,
+    *,
+    after: UUID | None = None,
+) -> dict[str, object]:
+    page = deps.reader.list_manifests(run_id, after_id=after, budget=budget)
+    items = []
+    for item in page.items:
+        record = item.record
+        items.append(
+            {
+                "id": str(item.artifact_id),
+                "type": redact_text(record.type) if record else "未解析",
+                "metadata": json.dumps(
+                    redact_json(record.metadata, schema="metadata"),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                if record
+                else "未加载",
+                "sha256": record.sha256 if record else "未加载",
+                "size": record.size_bytes if record else None,
+                "issues": item.issues,
+                "href": _artifact_href(run_id, item.artifact_id, token),
+            }
+        )
+    next_href = None
+    if page.next_id is not None:
+        now = deps.now()
+        cursor = deps.signer.encode(
+            ManifestCursor(
+                boundary=boundary,
+                after_id=page.next_id,
+                issued_at=now,
+                expires_at=now + timedelta(seconds=LIMITS.cursor_seconds),
+            )
+        )
+        next_href = f"/runs/{run_id}/workspace?" + urlencode(
+            {"boundary": token, "cursor": cursor}
+        )
+    return {
+        "items": items,
+        "next_href": next_href,
+        "issues": page.issues,
+        "complete": page.complete,
+        "read_at": page.read_at.isoformat(),
+        "page": page,
+    }
+
+
+def _read_evidence_content(
+    deps: PageDependencies, run_id: UUID, item: ManifestItem, budget: ReadBudget
+) -> VerifiedContent | None:
+    if item.record is None:
+        return None
+    try:
+        return deps.reader.read_content(run_id, item.artifact_id, budget=budget)
+    except ReadFailure as exc:
+        if exc.status_code not in (404, 409):
+            raise
+        return VerifiedContent(
+            item.record,
+            None,
+            deps.now(),
+            (ReadIssue(exc.code, "登记证据无法通过当前内容校验", item.artifact_id),),
+        )
+
+
+def _patch_context(
+    deps: PageDependencies,
+    run_id: UUID,
+    identifier: UUID | None,
+    token: str,
+    boundary: PageBoundary,
+    budget: ReadBudget,
+    contents: dict[UUID, VerifiedContent],
+) -> dict[str, object] | None:
+    if identifier is None:
+        return None
+    content = contents.get(identifier)
+    if content is None:
+        item = deps.reader.read_manifest(run_id, identifier, budget=budget)
+        if item.record is None or item.record.type != "workspace_patch":
+            raise ReadFailure(422, "patch_selection_invalid")
+        content = _read_evidence_content(deps, run_id, item, budget)
+        assert content is not None
+        contents[identifier] = content
+    preview = project_preview(content, budget=budget)
+    parsed = None
+    if content.content is not None:
+        try:
+            text = content.content.decode("utf-8")
+        except UnicodeError:
+            text = None
+        if text is not None:
+            recorded_files = content.record.metadata.get("files")
+            parsed = parse_diff(
+                text,
+                budget=budget,
+                recorded_files=tuple(recorded_files)
+                if isinstance(recorded_files, list)
+                and all(isinstance(path, str) for path in recorded_files)
+                else None,
+            )
+    # Structured file paths are small labels; text is bounded by the same preview mechanism.
+    files = (
+        [
+            {"old": file.old_path, "new": file.new_path, "kind": file.kind}
+            for file in parsed.files
+        ]
+        if parsed
+        else []
+    )
+    return {
+        "id": str(identifier),
+        "files": files,
+        "complete": parsed.complete if parsed else False,
+        "issues": (*content.issues, *(parsed.issues if parsed else ())),
+        "preview": preview.text,
+        "recorded_files": json.dumps(
+            redact_json(content.record.metadata.get("files")), ensure_ascii=False
+        ),
+        "href": _artifact_href(run_id, identifier, token),
+    }
+
+
+def render_workspace(
+    deps: PageDependencies,
+    run_id: UUID,
+    params: WorkspaceParams,
+    *,
+    fragment: bool = False,
+) -> RenderedPage:
+    budget = _budget(deps)
+    if params.boundary is not None:
+        source = _decode_source(deps, run_id, params.boundary)
+        boundary = source.boundary
+        if params.cursor is not None and params.patch is None:
+            cursor = deps.signer.decode(params.cursor, purpose="manifests")
+            if not isinstance(cursor, ManifestCursor) or cursor.boundary != boundary:
+                raise ReadFailure(422, "manifest_cursor_binding")
+            # Validate the old database boundary without reading a mutable Run body.
+            read_events(
+                deps.settings.database,
+                boundary,
+                EventFilters(),
+                limit=1,
+                budget=budget,
+                connect=deps.connect,
+            )
+            metadata = _metadata(
+                deps, run_id, boundary, params.boundary, budget, after=cursor.after_id
+            )
+            metadata.pop("page")
+            context: dict[str, object] = {
+                "run_id": str(run_id),
+                "metadata": metadata,
+                "back_href": f"/runs/{run_id}/workspace",
+                "title": "Artifact 登记分页",
+            }
+            page = render_page(
+                "partials/artifact_metadata.html" if fragment else "workspace.html",
+                {**context, "partial": "metadata"},
+            )
+        elif params.patch is not None and params.cursor is None:
+            read_events(
+                deps.settings.database,
+                boundary,
+                EventFilters(),
+                limit=1,
+                budget=budget,
+                connect=deps.connect,
+            )
+            patch = _patch_context(
+                deps, run_id, params.patch, params.boundary, boundary, budget, {}
+            )
+            page = render_page(
+                "partials/diff.html" if fragment else "workspace.html",
+                {
+                    "patch": patch,
+                    "partial": "patch",
+                    "run_id": str(run_id),
+                    "back_href": f"/runs/{run_id}/workspace",
+                    "title": "所选 Patch",
+                },
+            )
+        else:
+            raise ReadFailure(422, "workspace_navigation_invalid")
+        budget.check()
+        return RenderedPage(page)
+    if params.cursor is not None:
+        raise ReadFailure(422, "boundary_required")
+    read = read_workspace_page(
+        deps.settings.database, run_id, budget=budget, connect=deps.connect
+    )
+    boundary = read.boundary
+    token = _source_token(deps, boundary, EventParams(filters=EventFilters()))
+    metadata = _metadata(deps, run_id, boundary, token, budget)
+    page = metadata.pop("page")
+    assert isinstance(page, ManifestPage)
+    manifests = {item.artifact_id: item for item in page.items}
+    discovery = deps.reader.discover_patches(run_id, budget=budget)
+    manifests.update((item.artifact_id, item) for item in discovery.items)
+    associated = []
+    issues = list(discovery.issues)
+    association_conflict = read.events.next_sequence is not None or any(
+        item.event is None for item in read.events.items
+    )
+    for item in read.events.items:
+        if item.event is None:
+            continue
+        payload = item.event.payload
+        refs = [*item.event.artifacts]
+        if isinstance(payload, EvaluationCompleted) and payload.result is not None:
+            refs.extend(payload.result.artifacts)
+        for ref in refs:
+            budget.check()
+            if ref.artifact_id not in manifests:
+                try:
+                    manifests[ref.artifact_id] = deps.reader.read_manifest(
+                        run_id, ref.artifact_id, budget=budget
+                    )
+                except ReadFailure as exc:
+                    if exc.status_code not in (404, 409):
+                        raise
+                    manifests[ref.artifact_id] = ManifestItem(
+                        ref.artifact_id,
+                        None,
+                        (
+                            ReadIssue(
+                                exc.code,
+                                "评测引用的 Artifact 当前不可读",
+                                ref.artifact_id,
+                            ),
+                        ),
+                    )
+            record = manifests[ref.artifact_id].record
+            if ref.type == "workspace_patch" or (
+                record is not None and record.type == "workspace_patch"
+            ):
+                associated.append(ref.artifact_id)
+                if record is None or any(
+                    value is not None and getattr(record, key) != value
+                    for key, value in ref.model_dump().items()
+                ):
+                    association_conflict = True
+    if association_conflict:
+        issues.append(
+            ReadIssue("evaluation_not_loaded", "评测关联未完成加载；请在详情时间线检查")
+        )
+    choice = choose_patch(
+        discovery, tuple(associated), association_conflict=association_conflict
+    )
+    selected = params.patch or choice.artifact_id
+    if selected is not None and not any(
+        item.artifact_id == selected
+        and item.record is not None
+        and item.record.type == "workspace_patch"
+        for item in discovery.items
+    ):
+        raise ReadFailure(422, "patch_selection_invalid")
+    contents = {}
+    for item in manifests.values():
+        if item.record is not None and (
+            item.record.type
+            in {"evaluation_config", "evaluation_summary", "evaluation_report"}
+            or item.artifact_id == selected
+        ):
+            content = _read_evidence_content(deps, run_id, item, budget)
+            if content is not None:
+                contents[item.artifact_id] = content
+    evaluations = project_evaluations(
+        read.run,
+        boundary,
+        read.events.items,
+        tuple(manifests.values()),
+        adapt_evaluation(contents),
+    )
+    full_context: dict[str, object] = {
+        "partial": None,
+        "run_id": str(run_id),
+        "title": "Workspace",
+        "back_href": f"/runs/{run_id}",
+        "as_of": boundary.as_of_sequence,
+        "snapshot_version": boundary.latest_snapshot_version,
+        "read_at": boundary.read_at.isoformat(),
+        "boundary_token": token,
+        "status": boundary.run_status.value,
+        "issues": (*read.run.issues, *issues),
+        "metadata": metadata,
+        "evaluations": [
+            {
+                "attempt": str(view.attempt_id) if view.attempt_id else "未关联",
+                "fields": _field_rows(
+                    view.fields, deps, boundary, EventParams(filters=EventFilters())
+                ),
+                "issues": view.issues,
+                "artifacts": [
+                    {
+                        "id": str(identifier),
+                        "href": _artifact_href(run_id, identifier, token),
+                    }
+                    for identifier in view.artifact_ids
+                ],
+            }
+            for view in evaluations
+        ],
+        "patch": _patch_context(
+            deps, run_id, selected, token, boundary, budget, contents
+        ),
+        "patch_reason": choice.reason if params.patch is None else "用户显式选择",
+        "patch_options": [
+            {
+                "id": str(item.artifact_id),
+                "selected": item.artifact_id == selected,
+                "metadata": json.dumps(
+                    redact_json(item.record.metadata, schema="metadata"),
+                    ensure_ascii=False,
+                ),
+            }
+            for item in discovery.items
+            if item.record is not None
+        ],
+    }
+    rendered = render_page(
+        "partials/workspace_facts.html" if fragment else "workspace.html", full_context
+    )
+    budget.check()
+    return RenderedPage(rendered)
+
+
+def render_artifact(
+    deps: PageDependencies, run_id: UUID, artifact_id: UUID, params: ArtifactParams
+) -> RenderedPage:
+    budget = _budget(deps)
+    source = _decode_source(deps, run_id, params.boundary)
+    boundary = source.boundary
+    offset = params.offset or 0
+    cursor = None
+    if params.cursor is not None:
+        cursor = deps.signer.decode(params.cursor, purpose="preview")
+        if (
+            not isinstance(cursor, PreviewCursor)
+            or cursor.boundary != boundary
+            or cursor.artifact_id != artifact_id
+            or (params.offset is not None and params.offset != cursor.offset)
+        ):
+            raise ReadFailure(422, "preview_cursor_binding")
+        offset = cursor.offset
+    read_events(
+        deps.settings.database,
+        boundary,
+        EventFilters(),
+        limit=1,
+        budget=budget,
+        connect=deps.connect,
+    )
+    content = deps.reader.read_content(run_id, artifact_id, budget=budget)
+    if cursor is not None and cursor.sha256 != content.record.sha256:
+        raise ReadFailure(422, "preview_cursor_binding")
+    preview = project_preview(content, offset=offset, budget=budget)
+    next_href = None
+    if preview.next_offset is not None:
+        now = deps.now()
+        next_cursor = deps.signer.encode(
+            PreviewCursor(
+                boundary=boundary,
+                artifact_id=artifact_id,
+                sha256=content.record.sha256,
+                offset=preview.next_offset,
+                issued_at=now,
+                expires_at=now + timedelta(seconds=LIMITS.cursor_seconds),
+            )
+        )
+        next_href = f"/runs/{run_id}/artifacts/{artifact_id}?" + urlencode(
+            {"boundary": params.boundary, "cursor": next_cursor}
+        )
+    context: dict[str, object] = {
+        "run_id": str(run_id),
+        "title": "Artifact 预览",
+        "back_href": f"/runs/{run_id}/workspace",
+        "fields": _field_rows(
+            preview.fields, deps, boundary, EventParams(filters=EventFilters())
+        ),
+        "text": preview.text,
+        "offset": preview.offset,
+        "inline_continuation": preview.inline_continuation,
+        "issues": preview.issues,
+        "next_href": next_href,
+        "read_at": preview.read_at.isoformat(),
+    }
+    rendered = render_page("partials/artifact_preview.html", context)
+    budget.check()
+    return RenderedPage(rendered)

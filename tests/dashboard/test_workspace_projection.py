@@ -106,3 +106,14 @@ def test_deadline_preserves_partial_diff() -> None:
     )
     assert not result.complete
     assert "files_mismatch" not in {issue.code for issue in result.issues}
+
+
+def test_diff_compares_original_paths_before_redaction() -> None:
+    text = "diff --git a/token=secret-one b/token=secret-one\n--- a/token=secret-one\n+++ b/token=secret-one\n@@ -1 +1 @@\n-old\n+new\n"
+    parsed = parse_diff(text, budget=budget(), recorded_files=("token=secret-two",))
+    assert parsed.complete
+    assert "files_mismatch" in {issue.code for issue in parsed.issues}
+    assert "secret-one" not in str(parsed)
+    partial = parse_diff(text[:-5], budget=budget(), recorded_files=("other",))
+    assert not partial.complete
+    assert "files_mismatch" not in {issue.code for issue in partial.issues}

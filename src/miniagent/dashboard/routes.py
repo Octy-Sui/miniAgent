@@ -1,16 +1,21 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Request
+from pydantic import BaseModel
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from miniagent.dashboard.pages import (
+    render_artifact,
     render_events,
     render_run,
     render_runs,
     render_snapshot,
+    render_workspace,
 )
 from miniagent.dashboard.parameters import (
+    ArtifactParams,
     SnapshotParams,
+    WorkspaceParams,
     event_parameters,
     run_parameters,
 )
@@ -81,5 +86,38 @@ async def snapshot(request: Request, run_id: UUID, version: int) -> Response:
         raise ReadFailure(422, "parameters_invalid") from exc
     page = await request.app.state.pool.run(
         lambda: render_snapshot(request.app.state.deps, run_id, version, params)
+    )
+    return HTMLResponse(page.html, status_code=page.status_code)
+
+
+def _parameters[T: BaseModel](request: Request, model: type[T]) -> T:
+    pairs = list(request.query_params.multi_items())
+    if len({key for key, _ in pairs}) != len(pairs):
+        raise ReadFailure(422, "parameters_invalid")
+    try:
+        return model.model_validate(dict(pairs))
+    except ValueError as exc:
+        raise ReadFailure(422, "parameters_invalid") from exc
+
+
+@router.api_route("/runs/{run_id}/workspace", methods=["GET", "HEAD"])
+async def workspace(request: Request, run_id: UUID) -> Response:
+    params = _parameters(request, WorkspaceParams)
+    page = await request.app.state.pool.run(
+        lambda: render_workspace(
+            request.app.state.deps,
+            run_id,
+            params,
+            fragment=request.headers.get("hx-request") == "true",
+        )
+    )
+    return HTMLResponse(page.html, status_code=page.status_code)
+
+
+@router.api_route("/runs/{run_id}/artifacts/{artifact_id}", methods=["GET", "HEAD"])
+async def artifact(request: Request, run_id: UUID, artifact_id: UUID) -> Response:
+    params = _parameters(request, ArtifactParams)
+    page = await request.app.state.pool.run(
+        lambda: render_artifact(request.app.state.deps, run_id, artifact_id, params)
     )
     return HTMLResponse(page.html, status_code=page.status_code)
