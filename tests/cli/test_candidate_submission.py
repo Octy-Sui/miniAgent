@@ -93,7 +93,7 @@ async def test_export_failure_is_not_retried(submission_case):
     first = await submission.submit(kind="candidate")
     assert first.error is not None
     assert first.error.code == "PATCH_EXPORT_FAILED"
-    assert await submission.submit(kind="diagnostic") == first
+    assert await submission.submit(kind="candidate") == first
 
 
 async def test_registration_failure_keeps_submission_identity(
@@ -130,7 +130,7 @@ async def test_cancelled_submission_is_not_retried(submission_case):
         assert submission.result.status == "cancelled"
         first = submission.result
         assert first.submission_id is not None
-        assert await submission.submit(kind="diagnostic") == first
+        assert await submission.submit(kind="candidate") == first
     finally:
         executing.cancel()
         with pytest.raises(asyncio.CancelledError):

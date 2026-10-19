@@ -521,6 +521,12 @@ class LocalWorkspaceBackend:
                 raise ManagedExecutionError(
                     "Local command cleanup is unconfirmed"
                 ) from exc
+            if (
+                isinstance(exc, (TimeoutError, asyncio.CancelledError))
+                and identity is not None
+                and observer is not None
+            ):
+                await observer.ended(inspect_host_execution(identity))
             raise
 
         if process.returncode is None:
@@ -737,7 +743,11 @@ class LocalWorkspace:
             self.state = LocalWorkspaceState.ACTIVE
 
     async def export_patch(
-        self, *, timeout_seconds: float = 60.0, cleanup_timeout_seconds: float = 5.0
+        self,
+        *,
+        timeout_seconds: float = 60.0,
+        cleanup_timeout_seconds: float = 5.0,
+        temporary_index_path: str | None = None,
     ) -> Patch:
         if not (
             math.isfinite(timeout_seconds)
@@ -757,7 +767,24 @@ class LocalWorkspace:
                 await self._operation_lock.acquire()
                 acquired = True
                 self._require_active()
-                temporary_index = self.root.parent / f"index-{uuid4().hex}"
+                candidate_index = (
+                    Path(temporary_index_path)
+                    if temporary_index_path is not None
+                    else self.root.parent / f"index-{uuid4().hex}"
+                )
+                if (
+                    not candidate_index.is_absolute()
+                    or ".." in candidate_index.parts
+                    or candidate_index.parent != self.root.parent
+                    or re.fullmatch(r"index-[0-9a-f]{32}", candidate_index.name) is None
+                    or candidate_index.exists()
+                    or candidate_index.is_symlink()
+                ):
+                    raise ValueError(
+                        "Temporary index must be a new owned workspace index"
+                    )
+                self.backend._require_original_path(candidate_index.parent)
+                temporary_index = candidate_index
                 environment = self.spec.environment_values | {
                     "GIT_INDEX_FILE": str(temporary_index)
                 }

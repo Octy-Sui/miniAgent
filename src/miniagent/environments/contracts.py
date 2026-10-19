@@ -95,7 +95,11 @@ class Workspace(Protocol):
     async def restore(self, checkpoint: WorkspaceCheckpoint) -> None: ...
 
     async def export_patch(
-        self, *, timeout_seconds: float = 60.0, cleanup_timeout_seconds: float = 5.0
+        self,
+        *,
+        timeout_seconds: float = 60.0,
+        cleanup_timeout_seconds: float = 5.0,
+        temporary_index_path: str | None = None,
     ) -> Patch: ...
 
     async def destroy(self) -> None: ...

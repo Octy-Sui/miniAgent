@@ -80,7 +80,11 @@ class FinalizationWorkspace:
         raise AssertionError("not used")
 
     async def export_patch(
-        self, *, timeout_seconds: float = 60.0, cleanup_timeout_seconds: float = 5.0
+        self,
+        *,
+        timeout_seconds: float = 60.0,
+        cleanup_timeout_seconds: float = 5.0,
+        temporary_index_path: str | None = None,
     ) -> Patch:
         if self.export_error:
             raise RuntimeError("export failed")

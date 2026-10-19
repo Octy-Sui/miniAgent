@@ -143,9 +143,9 @@ class Application:
         self,
     ) -> tuple[list[ArtifactRef], list[FinalizationError]]:
         errors: list[FinalizationError] = []
-        if self.submission.result.status == "not_attempted":
-            await self.submission.submit(kind="diagnostic")
         submission = self.submission.result
+        if submission.status == "not_attempted":
+            submission = await self.submission.submit(kind="diagnostic")
         if submission.error is not None and submission.status != "empty":
             errors.append(
                 FinalizationError(

@@ -66,7 +66,7 @@ elif "diff" in args:
             run_id=uuid4(), options=DockerOptions(image="synthetic", workdir="/testbed")
         ),
         _workspace_id="test",
-        container_id="agent-container",
+        container_id="a" * 64,
         image_id="image",
         base_revision="actual-base",
     )

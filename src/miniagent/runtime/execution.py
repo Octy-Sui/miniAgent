@@ -178,6 +178,7 @@ class RunExecution:
     journal: RunJournal
     trace: RunTraceContext
     _active_mark: float = field(default_factory=monotonic)
+    _evaluation_attempt_id: UUID | None = None
     _tool_results: dict[int, ToolResult] = field(default_factory=dict)
     _ended_executions: dict[UUID, ExecutionEvidence] = field(default_factory=dict)
     pending_approval_resolution: _PendingApprovalResolution | None = None
@@ -755,6 +756,10 @@ class RunExecution:
         )
 
     async def begin_evaluation(self, candidate_output: str) -> None:
+        if self.state.execution.active_operation is not None:
+            raise ManagedExecutionError(
+                "Prior evaluation operation must be interrupted before restarting"
+            )
         next_state = self.state
         next_trace = deepcopy(self.trace)
         events = []
@@ -791,6 +796,7 @@ class RunExecution:
         else:
             await self.journal.record_activity(next_state, events)
         self.state, self.trace = next_state, next_trace
+        self._evaluation_attempt_id = attempt_id
 
     def evaluation_observer(self) -> EvaluationObserver:
         return _EvaluationObserver(self)
@@ -881,7 +887,12 @@ class RunExecution:
         if self.state.execution.evaluation.result is not None:
             raise ValueError("Evaluation result is already committed")
         operation = self.state.execution.active_operation
-        if operation is None or operation.kind != "evaluation":
+        if operation is not None and operation.kind != "evaluation":
+            raise ManagedExecutionError(
+                "Evaluation result cannot close another active operation"
+            )
+        attempt_id = operation.attempt_id if operation else self._evaluation_attempt_id
+        if attempt_id is None:
             raise ValueError("Evaluation result requires current evaluation attempt")
         output = (
             (
@@ -925,9 +936,7 @@ class RunExecution:
             state,
             [
                 self.trace.evaluation_event(
-                    EvaluationResultRecorded(
-                        attempt_id=operation.attempt_id, result=result
-                    ),
+                    EvaluationResultRecorded(attempt_id=attempt_id, result=result),
                     artifacts=result.artifacts,
                 )
             ],

@@ -1,12 +1,15 @@
 from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlparse
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from miniagent.artifacts import ArtifactRef
 from miniagent.cli.model_limits import ModelLimits
 from miniagent.environments.docker_connection import FrozenDockerConnection
 from miniagent.environments.persistence import EnvironmentReference
+from miniagent.evaluation import EvaluationError
 from miniagent.evaluation.swebench_data import SWEbenchRecord, SWEbenchTaskContext
 from miniagent.metering.pricing import PriceConfig
 from miniagent.policy import digest_json
@@ -190,3 +193,40 @@ def parse_application_definition(
     value = CLIApplicationDefinition.model_validate(envelope.payload)
     _validate_binding(value, definition)
     return value
+
+
+class CandidateSubmissionState(_Definition):
+    schema_version: Literal[1] = 1
+    candidate_sha256: Digest
+    submission_id: UUID
+    status: Literal["not_started", "exporting", "registered", "empty", "failed"]
+    patch_ref: ArtifactRef | None = None
+    patch_sha256: Digest | None = None
+    base_revision: str | None = None
+    export_attempt_id: UUID | None = None
+    temporary_index_path: str | None = None
+    error: EvaluationError | None = None
+
+    @model_validator(mode="after")
+    def validate_progress(self) -> "CandidateSubmissionState":
+        if self.status in ("exporting", "registered", "empty", "failed") and (
+            self.export_attempt_id is None or self.temporary_index_path is None
+        ):
+            raise ValueError(
+                "Started submission requires an attempt and temporary index"
+            )
+        if self.status == "registered":
+            if (
+                self.patch_ref is None
+                or self.patch_sha256 is None
+                or not self.base_revision
+                or self.error is not None
+            ):
+                raise ValueError(
+                    "Registered submission requires exact patch and baseline"
+                )
+        elif self.patch_ref is not None or self.patch_sha256 is not None:
+            raise ValueError("Unregistered submission cannot claim a patch")
+        if self.status in ("empty", "failed") and self.error is None:
+            raise ValueError("Failed submission requires a trusted error")
+        return self

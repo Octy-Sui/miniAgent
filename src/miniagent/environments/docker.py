@@ -940,7 +940,11 @@ class DockerWorkspace:
             self.state = DockerWorkspaceState.ACTIVE
 
     async def export_patch(
-        self, *, timeout_seconds: float = 60.0, cleanup_timeout_seconds: float = 5.0
+        self,
+        *,
+        timeout_seconds: float = 60.0,
+        cleanup_timeout_seconds: float = 5.0,
+        temporary_index_path: str | None = None,
     ) -> Patch:
         if not (
             math.isfinite(timeout_seconds)
@@ -960,7 +964,30 @@ class DockerWorkspace:
                 await self._operation_lock.acquire()
                 acquired = True
                 self._require_active()
-                temporary_index = f"/tmp/miniagent-index-{uuid4().hex}"
+                candidate_index = (
+                    temporary_index_path or f"/tmp/miniagent-index-{uuid4().hex}"
+                )
+                if (
+                    re.fullmatch(r"/tmp/miniagent-index-[0-9a-f]{32}", candidate_index)
+                    is None
+                ):
+                    raise ValueError("Temporary index must be a new owned Docker index")
+                if temporary_index_path is not None:
+                    await self.backend._require_exec_success(
+                        self.container_id,
+                        [
+                            "/bin/sh",
+                            "-c",
+                            'test ! -L /tmp && test ! -e "$1" && test ! -L "$1"',
+                            "miniagent-index-check",
+                            candidate_index,
+                        ],
+                        cwd=self.spec.options.workdir,
+                        action="validate owned temporary index",
+                        timeout_seconds=max(0.0, work_deadline - monotonic()),
+                        cleanup_deadline=deadline,
+                    )
+                temporary_index = candidate_index
                 environment = {"GIT_INDEX_FILE": temporary_index}
                 git = [
                     "git",

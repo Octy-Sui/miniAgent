@@ -10,7 +10,7 @@ from miniagent.environments.managed_execution import (
     ExecutionEvidence,
     ExecutionIdentity,
 )
-from miniagent.evaluation.contracts import EvaluationResult
+from miniagent.evaluation.contracts import EvaluationError, EvaluationResult
 from miniagent.metering.usage import RequestCost
 from miniagent.models.protocol import ModelUsage
 from miniagent.policy import PolicyDecision
@@ -56,6 +56,9 @@ class RunEventType(StrEnum):
     APPROVAL_REQUESTED = "approval_requested"
     APPROVAL_RESOLVED = "approval_resolved"
     APPROVAL_INVALIDATED = "approval_invalidated"
+    CANDIDATE_SUBMISSION_STARTED = "candidate_submission_started"
+    CANDIDATE_SUBMISSION_COMMITTED = "candidate_submission_committed"
+    CANDIDATE_SUBMISSION_FAILED = "candidate_submission_failed"
     EVALUATION_START = "evaluation_start"
     EVALUATION_RESULT_RECORDED = "evaluation_result_recorded"
     EVALUATION_COMPLETED = "evaluation_completed"
@@ -226,6 +229,39 @@ class ApprovalInvalidated(_Payload):
     reason: str
 
 
+class CandidateSubmissionStarted(_Payload):
+    type: Literal[RunEventType.CANDIDATE_SUBMISSION_STARTED] = (
+        RunEventType.CANDIDATE_SUBMISSION_STARTED
+    )
+    attempt_id: UUID
+    submission_id: UUID
+    candidate_sha256: str
+    temporary_index_path: str
+
+
+class CandidateSubmissionCommitted(_Payload):
+    type: Literal[RunEventType.CANDIDATE_SUBMISSION_COMMITTED] = (
+        RunEventType.CANDIDATE_SUBMISSION_COMMITTED
+    )
+    attempt_id: UUID
+    submission_id: UUID
+    candidate_sha256: str
+    status: Literal["registered", "empty"]
+    patch_ref: ArtifactRef | None = None
+    patch_sha256: str | None = None
+    base_revision: str | None = None
+
+
+class CandidateSubmissionFailed(_Payload):
+    type: Literal[RunEventType.CANDIDATE_SUBMISSION_FAILED] = (
+        RunEventType.CANDIDATE_SUBMISSION_FAILED
+    )
+    attempt_id: UUID
+    submission_id: UUID
+    candidate_sha256: str
+    error: EvaluationError
+
+
 class EvaluationStart(_Payload):
     attempt_id: UUID | None = None
     type: Literal[RunEventType.EVALUATION_START] = RunEventType.EVALUATION_START
@@ -339,6 +375,9 @@ type EventPayload = Annotated[
     | ApprovalResolved
     | ApprovalInvalidated
     | EvaluationStart
+    | CandidateSubmissionStarted
+    | CandidateSubmissionCommitted
+    | CandidateSubmissionFailed
     | EvaluationResultRecorded
     | EvaluationCompleted
     | RunFinished,
