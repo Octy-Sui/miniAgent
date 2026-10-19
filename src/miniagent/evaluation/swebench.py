@@ -609,6 +609,9 @@ class SWEbenchEvaluator:
                     _attempt_path(attempt, "stdout.log").open("wb") as stdout,
                     _attempt_path(attempt, "stderr.log").open("wb") as stderr,
                 ):
+                    observer = current_execution_observer()
+                    if observer is not None:
+                        observer.check_permission()
                     process = await asyncio.create_subprocess_exec(
                         *argv,
                         cwd=attempt.directory,

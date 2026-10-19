@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Sequence
 from uuid import UUID, uuid4
 
@@ -65,7 +66,7 @@ class RunRecorder:
                 state,
                 recovery_context=self.recovery_context,
             )
-        except Exception as exc:
+        except (Exception, asyncio.CancelledError) as exc:
             raise RunPersistenceError(
                 run_id=self.run_id,
                 operation="create",
@@ -109,7 +110,7 @@ class RunRecorder:
                     snapshot=snapshot_change,
                 )
             )
-        except Exception as exc:
+        except (Exception, asyncio.CancelledError) as exc:
             raise RunPersistenceError(
                 run_id=self.run_id,
                 operation="commit",

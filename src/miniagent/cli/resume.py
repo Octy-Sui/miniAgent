@@ -60,6 +60,7 @@ from miniagent.evaluation.swebench_docker import (
 )
 from miniagent.policy import ApprovalOutcome, ApprovalResolution
 from miniagent.runtime import CancellationToken, InterruptionToken
+from miniagent.runtime.cancellation import await_with_stop
 from miniagent.runtime.events import (
     ApprovalInvalidated,
     ApprovalResolved,
@@ -72,6 +73,7 @@ from miniagent.runtime.events import (
     ResumeStarted,
 )
 from miniagent.runtime.execution import RunExecution
+from miniagent.runtime.interruption import InterruptionRequested, raise_if_interrupted
 from miniagent.runtime.journal import RunJournal
 from miniagent.runtime.recording import RunPersistenceError, RunRecorder
 from miniagent.runtime.resume import (
@@ -436,8 +438,12 @@ async def resume_application(
     cancellation_token: CancellationToken,
     interruption_token: InterruptionToken | None = None,
 ) -> ApplicationResult | ResumePlan:
-    async with application_execution_scope(config.database, config.run_id):
-        inspected = await _inspect(config)
+    async with application_execution_scope(
+        config.database, config.run_id, interruption_token=interruption_token
+    ):
+        inspected = await await_with_stop(
+            _inspect(config), cancellation_token, interruption_token
+        )
         plan = inspected if isinstance(inspected, ResumeRejection) else inspected.plan
         if isinstance(plan, ResumeRejection):
             raise ResumeRejected(plan)
@@ -457,6 +463,8 @@ async def resume_application(
         journal = RunJournal.attach(
             RunRecorder.attach(store, record), inspected.history.approvals
         )
+        if interruption_token is not None and interruption_token.is_requested:
+            raise InterruptionRequested
         state = begin_resume(
             record.state, attempt_id=uuid4(), source_sequence=record.last_event_sequence
         )
@@ -506,219 +514,242 @@ async def resume_application(
             state, started, approval_resolution=resolution
         )
         execution = RunExecution.attach(committed.record, journal)
-        try:
-            context = record.recovery_context
-            assert context is not None and context.attachment is not None
-            values = {
-                key: os.environ[reference.key]
-                for key, reference in context.workspace_spec.environment_refs.items()
-            }
-            if isinstance(context.attachment, LocalAttachment):
-                assert isinstance(context.workspace_spec.options, LocalOptions)
-                assert isinstance(inspected.backend, LocalWorkspaceBackend)
-                spec = LocalWorkspaceSpec(
-                    run_id=config.run_id,
-                    options=context.workspace_spec.options,
-                    environment_values=values,
-                )
-                workspace = await inspected.backend.attach(spec, context.attachment)
-            else:
-                assert isinstance(context.workspace_spec.options, DockerOptions)
-                assert isinstance(inspected.backend, DockerWorkspaceBackend)
-                spec = DockerWorkspaceSpec(
-                    run_id=config.run_id,
-                    options=context.workspace_spec.options,
-                    environment_values=values,
-                )
-                workspace = await inspected.backend.attach(spec, context.attachment)
-            live_evidence = list(inspected.environment.execution_evidence)
-            for chain in inspected.history.execution_chains:
-                if chain.attempt_id in inspected.history.interrupted_attempt_ids:
-                    continue
-                for identity in chain.identities:
-                    if isinstance(identity, DockerExecIdentity) and not any(
-                        item.identity == identity
-                        and item.outcome == "ended"
-                        and item.group_ended
-                        for item in live_evidence
+
+        async def prepare():
+            try:
+                context = record.recovery_context
+                assert context is not None and context.attachment is not None
+                values = {
+                    key: os.environ[reference.key]
+                    for key, reference in context.workspace_spec.environment_refs.items()
+                }
+                if isinstance(context.attachment, LocalAttachment):
+                    assert isinstance(context.workspace_spec.options, LocalOptions)
+                    assert isinstance(inspected.backend, LocalWorkspaceBackend)
+                    spec = LocalWorkspaceSpec(
+                        run_id=config.run_id,
+                        options=context.workspace_spec.options,
+                        environment_values=values,
+                    )
+                    workspace = await inspected.backend.attach(spec, context.attachment)
+                else:
+                    assert isinstance(context.workspace_spec.options, DockerOptions)
+                    assert isinstance(inspected.backend, DockerWorkspaceBackend)
+                    spec = DockerWorkspaceSpec(
+                        run_id=config.run_id,
+                        options=context.workspace_spec.options,
+                        environment_values=values,
+                    )
+                    workspace = await inspected.backend.attach(
+                        spec, context.attachment, before_start=raise_if_interrupted
+                    )
+                live_evidence = list(inspected.environment.execution_evidence)
+                for chain in inspected.history.execution_chains:
+                    if chain.attempt_id in inspected.history.interrupted_attempt_ids:
+                        continue
+                    for identity in chain.identities:
+                        if isinstance(identity, DockerExecIdentity) and not any(
+                            item.identity == identity
+                            and item.outcome == "ended"
+                            and item.group_ended
+                            for item in live_evidence
+                        ):
+                            evidence = await inspect_guest_execution(
+                                identity, workspace
+                            )
+                            if evidence.outcome != "ended" or not evidence.group_ended:
+                                raise ResumeRejected(
+                                    _rejection(
+                                        config,
+                                        "WORKSPACE_BUSY",
+                                        "Original guest group is not confirmed ended",
+                                    )
+                                )
+                            live_evidence.append(evidence)
+                for evidence in live_evidence:
+                    if (
+                        evidence.outcome == "ended"
+                        and evidence.group_ended
+                        and evidence.issuer_ended
                     ):
-                        evidence = await inspect_guest_execution(identity, workspace)
-                        if evidence.outcome != "ended" or not evidence.group_ended:
+                        operation = execution.state.execution.active_operation
+                        if (
+                            operation is not None
+                            and evidence.identity.attempt_id == operation.attempt_id
+                        ):
+                            await execution.execution_observer(
+                                operation.attempt_id
+                            ).ended(evidence)
+                for chain in inspected.history.execution_chains:
+                    if (
+                        chain.scope != "diagnostic"
+                        or chain.attempt_id in inspected.history.interrupted_attempt_ids
+                    ):
+                        continue
+                    proof = {
+                        item.execution_id: item
+                        for item in (*chain.evidence, *live_evidence)
+                    }
+                    closed = []
+                    for identity in chain.identities:
+                        evidence = proof.get(identity.execution_id)
+                        if (
+                            evidence is None
+                            or evidence.identity != identity
+                            or evidence.outcome != "ended"
+                            or not evidence.group_ended
+                            or not evidence.issuer_ended
+                        ):
                             raise ResumeRejected(
                                 _rejection(
                                     config,
                                     "WORKSPACE_BUSY",
-                                    "Original guest group is not confirmed ended",
+                                    "Old diagnostic execution end is unconfirmed",
                                 )
                             )
-                        live_evidence.append(evidence)
-            for evidence in live_evidence:
-                if (
-                    evidence.outcome == "ended"
-                    and evidence.group_ended
-                    and evidence.issuer_ended
-                ):
-                    operation = execution.state.execution.active_operation
-                    if (
-                        operation is not None
-                        and evidence.identity.attempt_id == operation.attempt_id
-                    ):
-                        await execution.execution_observer(operation.attempt_id).ended(
-                            evidence
-                        )
-            for chain in inspected.history.execution_chains:
-                if (
-                    chain.scope != "diagnostic"
-                    or chain.attempt_id in inspected.history.interrupted_attempt_ids
-                ):
-                    continue
-                proof = {
-                    item.execution_id: item
-                    for item in (*chain.evidence, *live_evidence)
-                }
-                closed = []
-                for identity in chain.identities:
-                    evidence = proof.get(identity.execution_id)
-                    if (
-                        evidence is None
-                        or evidence.identity != identity
-                        or evidence.outcome != "ended"
-                        or not evidence.group_ended
-                        or not evidence.issuer_ended
-                    ):
-                        raise ResumeRejected(
-                            _rejection(
-                                config,
-                                "WORKSPACE_BUSY",
-                                "Old diagnostic execution end is unconfirmed",
+                        if evidence not in chain.evidence:
+                            closed.append(
+                                NewRunEvent(
+                                    run_id=config.run_id,
+                                    payload=DiagnosticFinalizationExecutionEnded(
+                                        attempt_id=chain.attempt_id, evidence=evidence
+                                    ),
+                                )
                             )
+                    closed.append(
+                        NewRunEvent(
+                            run_id=config.run_id,
+                            payload=DiagnosticFinalizationInterrupted(
+                                attempt_id=chain.attempt_id,
+                                reason="Verified old diagnostic chain closed for resume",
+                                execution_ended=True,
+                            ),
                         )
-                    if evidence not in chain.evidence:
-                        closed.append(
+                    )
+                    await journal.record_activity(execution.state, closed)
+                if inspected.evaluation is not None:
+                    assert isinstance(
+                        inspected.definition.evaluator, SWEbenchDefinition
+                    )
+                    await cleanup_attempt_resources(
+                        inspected.evaluation,
+                        deadline=monotonic()
+                        + inspected.definition.evaluator.cleanup_timeout_seconds,
+                    )
+                assert journal.recorder.record is not None
+                application = rehydrate_application(
+                    journal.recorder.record,
+                    workspace,
+                    inspected.definition,
+                    run_store=store,
+                )
+                endpoint = urlsplit(
+                    os.environ[inspected.definition.provider.endpoint_ref.key]
+                )
+                host = endpoint.hostname or ""
+                if ":" in host:
+                    host = f"[{host}]"
+                if endpoint.port is not None:
+                    host += f":{endpoint.port}"
+                endpoint_identity = urlunsplit(
+                    (endpoint.scheme, host, endpoint.path, "", "")
+                )
+                original_endpoint = inspected.definition.provider.endpoint_identity
+                if endpoint_identity != original_endpoint:
+                    await journal.record_activity(
+                        execution.state,
+                        [
                             NewRunEvent(
                                 run_id=config.run_id,
-                                payload=DiagnosticFinalizationExecutionEnded(
-                                    attempt_id=chain.attempt_id, evidence=evidence
+                                payload=ProviderIdentityChanged(
+                                    original_endpoint_identity=original_endpoint,
+                                    current_endpoint_identity=endpoint_identity,
                                 ),
                             )
-                        )
-                closed.append(
-                    NewRunEvent(
-                        run_id=config.run_id,
-                        payload=DiagnosticFinalizationInterrupted(
-                            attempt_id=chain.attempt_id,
-                            reason="Verified old diagnostic chain closed for resume",
-                            execution_ended=True,
-                        ),
+                        ],
                     )
+                for stored in inspected.history.approvals:
+                    approval = stored.approval
+                    if (
+                        approval.resolution is not None
+                        and approval.resolution.outcome is ApprovalOutcome.APPROVED
+                        and stored.authorization_invalidated_event_id is None
+                    ):
+                        await journal.invalidate_approval(
+                            execution.state,
+                            [
+                                NewRunEvent(
+                                    run_id=config.run_id,
+                                    payload=ApprovalInvalidated(
+                                        approval_id=approval.request.approval_id,
+                                        reason="Resume requires current policy and fresh authorization",
+                                    ),
+                                )
+                            ],
+                            approval.request.approval_id,
+                        )
+                if plan.close_operations:
+                    operation = execution.state.execution.active_operation
+                    assert operation is not None
+                    await execution.interrupt_operation(
+                        unconfirmed=operation.kind in ("model", "summary")
+                    )
+                completed = await journal.complete_resume(
+                    complete_resume(execution.state),
+                    [
+                        NewRunEvent(
+                            run_id=config.run_id,
+                            payload=ResumeCompleted(
+                                resume_attempt_id=session.attempt_id,
+                                source_sequence=session.source_sequence,
+                                business_status=session.business_status,
+                                phase=session.phase_at_start,
+                            ),
+                        )
+                    ],
                 )
-                await journal.record_activity(execution.state, closed)
-            if inspected.evaluation is not None:
-                assert isinstance(inspected.definition.evaluator, SWEbenchDefinition)
-                await cleanup_attempt_resources(
-                    inspected.evaluation,
-                    deadline=monotonic()
-                    + inspected.definition.evaluator.cleanup_timeout_seconds,
-                )
-            assert journal.recorder.record is not None
-            application = rehydrate_application(
-                journal.recorder.record,
-                workspace,
-                inspected.definition,
-                run_store=store,
-            )
-            endpoint = urlsplit(
-                os.environ[inspected.definition.provider.endpoint_ref.key]
-            )
-            host = endpoint.hostname or ""
-            if ":" in host:
-                host = f"[{host}]"
-            if endpoint.port is not None:
-                host += f":{endpoint.port}"
-            endpoint_identity = urlunsplit(
-                (endpoint.scheme, host, endpoint.path, "", "")
-            )
-            original_endpoint = inspected.definition.provider.endpoint_identity
-            if endpoint_identity != original_endpoint:
+            except (RunPersistenceError, InterruptionRequested):
+                raise
+            except Exception as exc:
+                code = getattr(exc, "code", "WORKSPACE_UNAVAILABLE")
                 await journal.record_activity(
                     execution.state,
                     [
                         NewRunEvent(
                             run_id=config.run_id,
-                            payload=ProviderIdentityChanged(
-                                original_endpoint_identity=original_endpoint,
-                                current_endpoint_identity=endpoint_identity,
+                            payload=ResumeFailed(
+                                resume_attempt_id=session.attempt_id,
+                                source_sequence=session.source_sequence,
+                                business_status=session.business_status,
+                                phase=session.phase_at_start,
+                                code=code,
+                                message="Recovery preparation failed; original workspace retained",
                             ),
                         )
                     ],
                 )
-            for stored in inspected.history.approvals:
-                approval = stored.approval
-                if (
-                    approval.resolution is not None
-                    and approval.resolution.outcome is ApprovalOutcome.APPROVED
-                    and stored.authorization_invalidated_event_id is None
-                ):
-                    await journal.invalidate_approval(
-                        execution.state,
-                        [
-                            NewRunEvent(
-                                run_id=config.run_id,
-                                payload=ApprovalInvalidated(
-                                    approval_id=approval.request.approval_id,
-                                    reason="Resume requires current policy and fresh authorization",
-                                ),
-                            )
-                        ],
-                        approval.request.approval_id,
+                raise ResumeRejected(
+                    _rejection(
+                        config,
+                        code,
+                        "Recovery preparation failed; original workspace retained",
                     )
-            if plan.close_operations:
-                operation = execution.state.execution.active_operation
-                assert operation is not None
-                await execution.interrupt_operation(
-                    unconfirmed=operation.kind in ("model", "summary")
-                )
-            completed = await journal.complete_resume(
-                complete_resume(execution.state),
-                [
-                    NewRunEvent(
-                        run_id=config.run_id,
-                        payload=ResumeCompleted(
-                            resume_attempt_id=session.attempt_id,
-                            source_sequence=session.source_sequence,
-                            business_status=session.business_status,
-                            phase=session.phase_at_start,
-                        ),
-                    )
-                ],
+                ) from exc
+            return application, completed
+
+        try:
+            application, completed = await await_with_stop(
+                prepare(), cancellation_token, interruption_token
             )
-        except RunPersistenceError:
-            raise
-        except Exception as exc:
-            code = getattr(exc, "code", "WORKSPACE_UNAVAILABLE")
-            await journal.record_activity(
-                execution.state,
-                [
-                    NewRunEvent(
-                        run_id=config.run_id,
-                        payload=ResumeFailed(
-                            resume_attempt_id=session.attempt_id,
-                            source_sequence=session.source_sequence,
-                            business_status=session.business_status,
-                            phase=session.phase_at_start,
-                            code=code,
-                            message="Recovery preparation failed; original workspace retained",
-                        ),
-                    )
-                ],
+        except InterruptionRequested:
+            assert (
+                interruption_token is not None
+                and interruption_token.deadline is not None
             )
-            raise ResumeRejected(
-                _rejection(
-                    config,
-                    code,
-                    "Recovery preparation failed; original workspace retained",
-                )
-            ) from exc
+            suspended = await execution.suspend(
+                interruption_token.interruption, deadline=interruption_token.deadline
+            )
+            return ApplicationResult(run_result=suspended)
         return await application.resume(
             completed.record, cancellation_token, interruption_token=interruption_token
         )

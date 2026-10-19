@@ -198,6 +198,7 @@ async def run_docker_exec_output(
     remote = None
     try:
         await observer.identified(helper.identity, permission="create_exec")
+        observer.check_permission()
         await helper.send("permit_create")
         created = await helper.receive()
         if created.type != "exec_created" or not isinstance(
@@ -217,6 +218,7 @@ async def run_docker_exec_output(
             started_observed=False,
         )
         await observer.identified(remote, permission="start_exec")
+        observer.check_permission()
         await helper.send("permit_start")
         stdout, stderr = bytearray(), bytearray()
         truncated = {1: False, 2: False}
@@ -284,6 +286,7 @@ async def run_docker_exec_output(
                         )
                         remote = remote.model_copy(update={"guest": guest})
                         await observer.identified(remote)
+                        observer.check_permission()
                         await write_guest(
                             encode_guest_frame(
                                 attempt_id, remote.execution_id, "permit_command", {}

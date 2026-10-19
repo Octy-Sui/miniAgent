@@ -10,72 +10,18 @@ from typing import Annotated
 import typer
 
 from miniagent.agents.default_agent import DEFAULT_AGENT
-from miniagent.cli.application import Application, ApplicationResult
 from miniagent.cli.bootstrap import BootstrapConfig, execute_new_run
 from miniagent.cli.console_approval import ConsoleApprovalHandler
 from miniagent.cli.rendering import print_application_result
+from miniagent.cli.signals import _ForcedSignalCancellation, run_with_signals
 from miniagent.environments import WorkspaceKind
 from miniagent.evaluation.swebench_data import (
     EvaluationPreparationError,
     SWEbenchTaskContext,
 )
 from miniagent.models.config import ModelTarget
-from miniagent.runtime import CancellationToken
 
 app = typer.Typer()
-
-
-class _ForcedSignalCancellation(Exception):
-    def __init__(self, received_signal: signal.Signals) -> None:
-        self.received_signal = received_signal
-
-
-async def run_with_signals(
-    application: Application | BootstrapConfig,
-) -> tuple[ApplicationResult, signal.Signals | None]:
-    loop = asyncio.get_running_loop()
-    main_task = asyncio.current_task()
-    cancellation_token = CancellationToken()
-    received_signal: asyncio.Future[signal.Signals] = loop.create_future()
-
-    def handle_signal(current_signal: signal.Signals) -> None:
-        if received_signal.done():
-            if main_task is not None:
-                main_task.cancel()
-            return
-
-        received_signal.set_result(current_signal)
-        cancellation_token.cancel()
-
-    registered_signals: list[signal.Signals] = []
-    for handled_signal in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(
-                handled_signal,
-                handle_signal,
-                handled_signal,
-            )
-        except NotImplementedError:
-            continue
-        registered_signals.append(handled_signal)
-
-    try:
-        result = (
-            await execute_new_run(application, cancellation_token=cancellation_token)
-            if isinstance(application, BootstrapConfig)
-            else await application.run(cancellation_token)
-        )
-        return (
-            result,
-            received_signal.result() if received_signal.done() else None,
-        )
-    except asyncio.CancelledError as exc:
-        if received_signal.done():
-            raise _ForcedSignalCancellation(received_signal.result()) from exc
-        raise
-    finally:
-        for registered_signal in registered_signals:
-            loop.remove_signal_handler(registered_signal)
 
 
 def _signal_exit_code(received_signal: signal.Signals) -> int:
@@ -124,7 +70,11 @@ async def main(
     )
 
     try:
-        result, received_signal = await run_with_signals(config)
+        result, received_signal = await run_with_signals(
+            lambda cancellation, interruption: execute_new_run(
+                config, cancellation_token=cancellation, interruption_token=interruption
+            )
+        )
     except EvaluationPreparationError as exc:
         typer.echo(str(exc)[:4096], err=True)
         raise typer.Exit(code=1) from None

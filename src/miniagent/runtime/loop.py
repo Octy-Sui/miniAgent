@@ -218,7 +218,7 @@ class AgentRuntime:
                 )
             }
         )
-        execution = await RunExecution.start(
+        starting = RunExecution.start(
             state,
             RunJournal(
                 RunRecorder(
@@ -228,6 +228,9 @@ class AgentRuntime:
                 )
             ),
             on_record_created=on_record_created,
+        )
+        execution = await await_with_stop(
+            starting, CancellationToken(), interruption_token
         )
         return await self._drive(execution, interruption_token=interruption_token)
 

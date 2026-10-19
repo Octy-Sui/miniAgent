@@ -442,6 +442,9 @@ class LocalWorkspaceBackend:
         cleanup_deadline: float | None = None,
     ) -> LocalCommandResult:
         started_at = monotonic()
+        observer = current_execution_observer()
+        if observer is not None:
+            observer.check_permission()
         process = await asyncio.create_subprocess_exec(
             *argv,
             cwd=cwd,
@@ -483,7 +486,6 @@ class LocalWorkspaceBackend:
                 max(0.0, remaining - min(0.1, remaining / 4)),
             )
 
-        observer = current_execution_observer()
         identity = None
         try:
             try:

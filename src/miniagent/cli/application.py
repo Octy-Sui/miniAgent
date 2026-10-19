@@ -9,10 +9,13 @@ from pydantic import BaseModel, ConfigDict
 
 from miniagent.agents import AgentSpec
 from miniagent.artifacts import ArtifactNotFoundError, ArtifactRef, ArtifactStore
-from miniagent.cli.candidate_submission import CandidateSubmission
+from miniagent.cli.candidate_submission import CandidateSubmission, SubmissionResult
 from miniagent.cli.diagnostic_finalization import finalize_diagnostic
 from miniagent.environments import Workspace
-from miniagent.environments.managed_execution import ManagedExecutionError
+from miniagent.environments.managed_execution import (
+    ManagedExecutionError,
+    cleanup_deadline_scope,
+)
 from miniagent.evaluation import Evaluator, PassThroughEvaluator
 from miniagent.metering.pricing import PriceConfig
 from miniagent.models.protocol import ModelProvider
@@ -28,7 +31,8 @@ from miniagent.runtime import (
     RuntimeConfig,
     RuntimeStore,
 )
-from miniagent.runtime.interruption import InterruptionRequested
+from miniagent.runtime.cancellation import await_with_stop
+from miniagent.runtime.interruption import InterruptionRequested, interruption_scope
 from miniagent.runtime.recording import RunPersistenceError, RunRecorder
 from miniagent.runtime.store_contracts import RunRecord
 from miniagent.tools.registry import ToolRegistry
@@ -89,11 +93,17 @@ class Application:
         interruption_token: InterruptionToken | None = None,
         on_record_created: Callable[[RunRecord], None] | None = None,
     ) -> ApplicationResult:
-        return await self._execute(
-            cancellation_token,
-            interruption_token=interruption_token,
-            on_record_created=on_record_created,
-        )
+        with (
+            interruption_scope(interruption_token),
+            cleanup_deadline_scope(
+                lambda: interruption_token.deadline if interruption_token else None
+            ),
+        ):
+            return await self._execute(
+                cancellation_token,
+                interruption_token=interruption_token,
+                on_record_created=on_record_created,
+            )
 
     async def resume(
         self,
@@ -102,9 +112,15 @@ class Application:
         *,
         interruption_token: InterruptionToken | None = None,
     ) -> ApplicationResult:
-        return await self._execute(
-            cancellation_token, interruption_token=interruption_token, record=record
-        )
+        with (
+            interruption_scope(interruption_token),
+            cleanup_deadline_scope(
+                lambda: interruption_token.deadline if interruption_token else None
+            ),
+        ):
+            return await self._execute(
+                cancellation_token, interruption_token=interruption_token, record=record
+            )
 
     async def _execute(
         self,
@@ -150,9 +166,31 @@ class Application:
                 )
             raise
 
-        artifacts, errors = await self._finalize_patch(
-            deadline=interruption_token.deadline if interruption_token else None
-        )
+        if interruption_token is not None and not interruption_token.is_requested:
+            try:
+                artifacts, errors = await await_with_stop(
+                    self._finalize_patch(), CancellationToken(), interruption_token
+                )
+            except InterruptionRequested:
+                artifacts, errors = await self._finalize_patch(
+                    deadline=interruption_token.deadline, allow_export=False
+                )
+                errors.append(
+                    FinalizationError(
+                        stage="patch_export",
+                        code="FINALIZATION_INTERRUPTED",
+                        message="Finalization interrupted; original workspace retained",
+                    )
+                )
+                return ApplicationResult(
+                    run_result=run_result,
+                    artifacts=tuple(artifacts),
+                    finalization_errors=tuple(errors),
+                )
+        else:
+            artifacts, errors = await self._finalize_patch(
+                deadline=interruption_token.deadline if interruption_token else None
+            )
         if isinstance(run_result, RunSuspension):
             return ApplicationResult(
                 run_result=run_result,
@@ -180,10 +218,13 @@ class Application:
         self,
         *,
         deadline: float | None = None,
+        allow_export: bool = True,
     ) -> tuple[list[ArtifactRef], list[FinalizationError]]:
         errors: list[FinalizationError] = []
         submission = self.submission.result
-        if submission.status == "not_attempted":
+        if not allow_export and submission.status == "not_attempted":
+            submission = SubmissionResult()
+        elif submission.status == "not_attempted":
             record = await self.dependencies.run_store.get(self.dependencies.run_id)
             submission = await finalize_diagnostic(
                 recorder=RunRecorder.attach(self.dependencies.run_store, record),

@@ -51,6 +51,7 @@ from miniagent.environments.docker_connection import (
     DockerConnection,
     FrozenDockerConnection,
 )
+from miniagent.environments.managed_execution import current_cleanup_deadline
 from miniagent.environments.persistence import (
     EnvironmentReference,
     persist_workspace_spec,
@@ -83,6 +84,8 @@ from miniagent.runtime import (
     RuntimeConfig,
     RuntimeStore,
 )
+from miniagent.runtime.cancellation import await_with_stop
+from miniagent.runtime.interruption import InterruptionRequested
 from miniagent.runtime.recording import RunPersistenceError
 from miniagent.runtime.state import RunDefinition
 from miniagent.runtime.store_contracts import (
@@ -418,7 +421,12 @@ async def bootstrap(config: BootstrapConfig) -> Application:
         )
     except BaseException as exc:
         try:
-            async with asyncio.timeout(10):
+            deadline = current_cleanup_deadline()
+            async with asyncio.timeout_at(
+                min(asyncio.get_running_loop().time() + 10, deadline)
+                if deadline is not None
+                else asyncio.get_running_loop().time() + 10
+            ):
                 await instance.destroy()
         except Exception as cleanup_error:  # noqa: BLE001
             exc.add_note(f"Workspace cleanup also failed: {cleanup_error}")
@@ -443,7 +451,9 @@ async def execute_new_run(
 ) -> ApplicationResult:
     location = RunLocationSettings()
     run_id = config.run_id or uuid4()
-    async with application_execution_scope(location.run_database_path, run_id):
+    async with application_execution_scope(
+        location.run_database_path, run_id, interruption_token=interruption_token
+    ):
         if location.run_database_path.exists():
             try:
                 await SQLiteRunStore(location.run_database_path, read_only=True).get(
@@ -453,7 +463,11 @@ async def execute_new_run(
                 pass
             else:
                 raise RunAlreadyExistsError(run_id)
-        application = await bootstrap(replace(config, run_id=run_id))
+        application = await await_with_stop(
+            bootstrap(replace(config, run_id=run_id)),
+            cancellation_token,
+            interruption_token,
+        )
 
         def publish(record: RunRecord) -> None:
             typer.echo(f"Run: {record.state.identity.run_id}")
@@ -467,13 +481,39 @@ async def execute_new_run(
                 interruption_token=interruption_token,
                 on_record_created=publish,
             )
+        except InterruptionRequested as exc:
+            missing = not location.run_database_path.exists()
+            if not missing:
+                try:
+                    await SQLiteRunStore(
+                        location.run_database_path, read_only=True
+                    ).get(run_id)
+                except RunNotFoundError:
+                    missing = True
+            if missing:
+                deadline = interruption_token.deadline if interruption_token else None
+                try:
+                    async with asyncio.timeout_at(deadline):
+                        await application.dependencies.workspace.destroy()
+                except Exception as cleanup_error:  # noqa: BLE001 -- preserve the controlling interruption.
+                    exc.add_note(
+                        f"Unpublished workspace cleanup failed: {type(cleanup_error).__name__}"
+                    )
+            raise
         except RunPersistenceError as exc:
-            if exc.operation == "create" and isinstance(exc.__cause__, sqlite3.Error):
+            if exc.operation == "create" and isinstance(
+                exc.__cause__, (sqlite3.Error, asyncio.CancelledError)
+            ):
                 store = SQLiteRunStore(location.run_database_path, read_only=True)
                 try:
                     await store.get(run_id)
                 except RunNotFoundError:
-                    async with asyncio.timeout(10):
+                    deadline = current_cleanup_deadline()
+                    async with asyncio.timeout_at(
+                        min(asyncio.get_running_loop().time() + 10, deadline)
+                        if deadline is not None
+                        else asyncio.get_running_loop().time() + 10
+                    ):
                         await application.dependencies.workspace.destroy()
             raise
 

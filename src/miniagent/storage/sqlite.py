@@ -10,6 +10,7 @@ from time import monotonic, sleep
 from typing import TypeVar
 from uuid import UUID, uuid4
 
+from miniagent.environments.managed_execution import current_cleanup_deadline
 from miniagent.policy import ApprovalOutcome, ApprovalResolution, PolicyRequest
 from miniagent.runtime.events import (
     ApprovalInvalidated,
@@ -340,7 +341,12 @@ class SQLiteRunStore:
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
-            await asyncio.shield(task)
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+            task.result()
             raise
 
     def _require_writable(self) -> None:
@@ -364,16 +370,31 @@ class SQLiteRunStore:
 
     def _connect(self, *, initializing: bool = False) -> sqlite3.Connection:
         mode = "ro" if self.read_only else ("rwc" if initializing else "rw")
+        deadline = current_cleanup_deadline()
+        if deadline is not None and deadline <= monotonic():
+            raise TimeoutError("SQLite operation deadline exhausted before connection")
+        busy_timeout = self.busy_timeout_ms
+        if deadline is not None:
+            busy_timeout = min(
+                busy_timeout, max(0, int((deadline - monotonic()) * 1000))
+            )
         connection = sqlite3.connect(
             self.path.as_uri() + f"?mode={mode}",
             uri=True,
             isolation_level=None,
-            timeout=self.busy_timeout_ms / 1_000,
+            timeout=busy_timeout / 1_000,
         )
         try:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
-            connection.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
+            connection.execute(f"PRAGMA busy_timeout = {busy_timeout}")
+            connection.set_progress_handler(
+                lambda: int(
+                    (remaining := current_cleanup_deadline()) is not None
+                    and monotonic() >= remaining
+                ),
+                1000,
+            )
             if not initializing:
                 self._inspect_schema(connection)
             if self.read_only:

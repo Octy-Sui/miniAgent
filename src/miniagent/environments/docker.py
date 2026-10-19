@@ -8,6 +8,7 @@ import math
 import os
 import posixpath
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -225,7 +226,11 @@ class DockerWorkspaceBackend:
         )
 
     async def attach(
-        self, spec: DockerWorkspaceSpec, attachment: DockerAttachment
+        self,
+        spec: DockerWorkspaceSpec,
+        attachment: DockerAttachment,
+        *,
+        before_start: Callable[[], None] | None = None,
     ) -> "DockerWorkspace":
         facts = await self.inspect_attachment(attachment)
         if (
@@ -246,6 +251,8 @@ class DockerWorkspaceBackend:
         if facts.errors:
             raise WorkspaceAttachmentError(facts)
         if facts.container_status == "exited":
+            if before_start is not None:
+                before_start()
             await self._start_container(attachment.container_id)
         try:
             await self._validate_workdir(attachment.container_id, spec)

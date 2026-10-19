@@ -104,13 +104,14 @@ async def await_with_stop[T](
         for task in (cancellation, interruption):
             with suppress(asyncio.CancelledError):
                 await task
-        if not interruption_token.is_requested and not operation.done():
-            with suppress(asyncio.CancelledError):
-                await operation
+        if not operation.done():
+            operation.cancel()
+            while not operation.done():
+                try:
+                    await asyncio.shield(operation)
+                except asyncio.CancelledError:
+                    if operation.done():
+                        break
         if operation.done():
             with suppress(asyncio.CancelledError):
                 operation.exception()
-        else:
-            operation.add_done_callback(
-                lambda task: None if task.cancelled() else task.exception()
-            )

@@ -141,6 +141,9 @@ async def test_identity_commit_failure_reaps_owned_group_and_propagates(
     )
 
     class FailingObserver:
+        def check_permission(self):
+            pass
+
         attempt_id = uuid4()
         identity = None
 

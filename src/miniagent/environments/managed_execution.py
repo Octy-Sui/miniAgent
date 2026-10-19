@@ -65,6 +65,8 @@ class ManagedExecutionError(RuntimeError):
 
 
 class ExecutionObserver(Protocol):
+    def check_permission(self) -> None: ...
+
     @property
     def attempt_id(self) -> UUID: ...
 
@@ -101,6 +103,9 @@ class MemoryExecutionObserver:
     attempt_id: UUID = field(default_factory=uuid4)
     identities: dict[UUID, ExecutionIdentity] = field(default_factory=dict)
     evidence: dict[UUID, ExecutionEvidence] = field(default_factory=dict)
+
+    def check_permission(self) -> None:
+        pass
 
     async def identified(
         self,

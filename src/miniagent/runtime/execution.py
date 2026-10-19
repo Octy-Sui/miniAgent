@@ -55,7 +55,7 @@ from miniagent.runtime.events import (
     ToolExecutionStarted,
     ToolStarted,
 )
-from miniagent.runtime.interruption import InterruptionRequested
+from miniagent.runtime.interruption import InterruptionRequested, raise_if_interrupted
 from miniagent.runtime.journal import RunJournal
 from miniagent.runtime.progress import (
     ComponentEnvelope,
@@ -1365,6 +1365,9 @@ class _OperationObserver:
     execution: RunExecution
     attempt_id: UUID
 
+    def check_permission(self) -> None:
+        raise_if_interrupted()
+
     def _operation(self) -> OperationRef:
         operation = self.execution.state.execution.active_operation
         if operation is None or operation.attempt_id != self.attempt_id:
@@ -1377,6 +1380,7 @@ class _OperationObserver:
         *,
         permission: Literal["observe", "create_exec", "start_exec"] = "observe",
     ) -> None:
+        raise_if_interrupted()
         operation = self._operation()
         if identity.attempt_id != self.attempt_id:
             raise ManagedExecutionError("Execution identity belongs to another attempt")

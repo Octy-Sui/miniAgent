@@ -13,6 +13,7 @@ from miniagent.environments.managed_execution import (
     HostProcessIdentity,
     ManagedExecutionError,
     MemoryExecutionObserver,
+    current_cleanup_deadline,
 )
 from miniagent.environments.process import inspect_host_execution
 from miniagent.evaluation import EvaluationError
@@ -28,6 +29,10 @@ from miniagent.runtime.events import (
     EventPayload,
     NewRunEvent,
 )
+from miniagent.runtime.interruption import (
+    InterruptionRequested,
+    current_interruption_token,
+)
 from miniagent.runtime.progress import ComponentEnvelope, EvaluationProgress
 from miniagent.runtime.recording import RunRecorder
 from miniagent.runtime.resume import history_facts
@@ -39,9 +44,21 @@ class _DiagnosticObserver:
     deadline: float
     memory: MemoryExecutionObserver | None = None
     progress: EvaluationProgress = field(default_factory=EvaluationProgress)
+    interrupted_at_start: bool = field(init=False)
+
+    def __post_init__(self) -> None:
+        token = current_interruption_token()
+        self.interrupted_at_start = token is not None and token.is_requested
+
+    def check_permission(self) -> None:
+        token = current_interruption_token()
+        if token is not None and token.is_requested and not self.interrupted_at_start:
+            raise InterruptionRequested
 
     async def _append(self, payload: EventPayload) -> None:
-        if monotonic() >= self.deadline:
+        if monotonic() >= min(
+            self.deadline, current_cleanup_deadline() or float("inf")
+        ):
             raise ManagedExecutionError("Diagnostic commit deadline exhausted")
         record = self.recorder.record
         assert record is not None
@@ -120,6 +137,7 @@ class _DiagnosticObserver:
         *,
         permission: Literal["observe", "create_exec", "start_exec"] = "observe",
     ) -> None:
+        self.check_permission()
         assert self.memory is not None
         if identity.attempt_id != self.memory.attempt_id:
             raise ManagedExecutionError(

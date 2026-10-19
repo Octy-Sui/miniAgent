@@ -62,6 +62,8 @@ async def _run_command(
     readers = []
     identity = None
     observer = current_execution_observer()
+    if observer is not None:
+        observer.check_permission()
     try:
         async with asyncio.timeout_at(deadline - reserve):
             process = await asyncio.create_subprocess_exec(

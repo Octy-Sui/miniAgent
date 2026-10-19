@@ -169,6 +169,9 @@ def engine():
 
 
 class Observer:
+    def check_permission(self):
+        pass
+
     def __init__(self, engine, fail=None):
         self.attempt_id = uuid4()
         self.engine = engine
@@ -603,3 +606,26 @@ async def test_docker_exec_completes_only_after_helper_exec_and_group_end(engine
         isinstance(fact, DockerExecIdentity) and permission == "ended"
         for fact, permission, _ in observer.facts
     )
+
+
+async def test_interruption_between_start_commit_and_permission_sends_no_start_rpc(
+    engine,
+):
+    from miniagent.runtime.interruption import InterruptionRequested
+
+    class StopAfterCommit(Observer):
+        def check_permission(self):
+            if any(permission == "start_exec" for _, permission, _ in self.facts):
+                raise InterruptionRequested
+
+    observer = StopAfterCommit(engine)
+    with pytest.raises(InterruptionRequested):
+        await run_docker_exec(
+            Command(argv=["printf", "must-not-start"]),
+            connection=engine.connection,
+            container_id="a" * 64,
+            observer=observer,
+            attempt_id=observer.attempt_id,
+            deadline=monotonic() + 5,
+        )
+    assert not any(path.endswith("/start") for path, _time, _body in engine.calls)

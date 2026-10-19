@@ -3,7 +3,7 @@ import signal
 from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, cast
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -12,7 +12,6 @@ from typer.testing import CliRunner
 from miniagent.artifacts import ArtifactRef
 from miniagent.cli import main as cli_main
 from miniagent.cli.application import (
-    Application,
     ApplicationResult,
     FinalizationError,
 )
@@ -25,6 +24,7 @@ from miniagent.cli.main import (
 )
 from miniagent.runtime import (
     CancellationToken,
+    InterruptionToken,
     RunResult,
     RunStatus,
     RunUsage,
@@ -103,9 +103,9 @@ def stub_cli_run(
     patch_artifact: ArtifactRef | None = None,
     finalization_errors: tuple[FinalizationError, ...] = (),
 ) -> None:
-    async def run_with_signals(
-        config: BootstrapConfig,
-    ) -> tuple[ApplicationResult, signal.Signals | None]:
+    async def execute(
+        config: BootstrapConfig, *, cancellation_token, interruption_token
+    ):
         if configs is not None:
             configs.append(config)
         artifacts = (patch_artifact,) if patch_artifact is not None else ()
@@ -113,9 +113,9 @@ def stub_cli_run(
             run_result=result,
             artifacts=artifacts,
             finalization_errors=finalization_errors,
-        ), None
+        )
 
-    monkeypatch.setattr(cli_main, "run_with_signals", run_with_signals)
+    monkeypatch.setattr(cli_main, "execute_new_run", execute)
 
 
 async def test_first_signal_requests_graceful_cancellation(
@@ -123,15 +123,14 @@ async def test_first_signal_requests_graceful_cancellation(
 ) -> None:
     expected_result = successful_result()
 
-    class WaitingAgent:
-        async def run(
-            self,
-            cancellation_token: CancellationToken,
-        ) -> ApplicationResult:
-            await cancellation_token.wait()
-            return ApplicationResult(run_result=expected_result)
+    async def operation(
+        cancellation_token: CancellationToken, interruption_token: InterruptionToken
+    ):
+        await interruption_token.wait()
+        assert not cancellation_token.is_cancelled
+        return ApplicationResult(run_result=expected_result)
 
-    run = asyncio.create_task(run_with_signals(cast(Application, WaitingAgent())))
+    run = asyncio.create_task(run_with_signals(operation))
     await asyncio.sleep(0)
     signal_loop.send(signal.SIGINT)
 
@@ -147,16 +146,14 @@ async def test_second_signal_forces_task_cancellation(
 ) -> None:
     started = asyncio.Event()
 
-    class BlockingAgent:
-        async def run(
-            self,
-            cancellation_token: CancellationToken,
-        ) -> ApplicationResult:
-            started.set()
-            await asyncio.Event().wait()
-            raise AssertionError("unreachable")
+    async def operation(
+        cancellation_token: CancellationToken, interruption_token: InterruptionToken
+    ):
+        started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
 
-    run = asyncio.create_task(run_with_signals(cast(Application, BlockingAgent())))
+    run = asyncio.create_task(run_with_signals(operation))
     await started.wait()
     signal_loop.send(signal.SIGTERM)
     signal_loop.send(signal.SIGTERM)
