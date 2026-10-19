@@ -262,3 +262,274 @@ def memory_example() -> tuple[StoredRun, PageBoundary, CompactionRead]:
         ),
         CompactionRead(tuple(events), snapshots, {}, (), (), ()),
     )
+
+
+import json
+from dataclasses import dataclass, replace
+from datetime import timedelta
+
+from miniagent.artifacts.contracts import ArtifactRecord
+from miniagent.dashboard.reads import ManifestItem, VerifiedContent
+from miniagent.environments.config import DockerOptions
+from miniagent.environments.persistence import PersistedDockerWorkspaceSpec
+from miniagent.evaluation.contracts import EvaluationResult
+from miniagent.runtime.events import EvaluationCompleted
+from miniagent.runtime.recovery import RunRecoveryContext
+from miniagent.runtime.result import TerminationReason
+from miniagent.runtime.state import RunStatus
+
+
+@dataclass(frozen=True)
+class EvaluationExample:
+    run: StoredRun
+    boundary: PageBoundary
+    events: tuple[StoredEvent, ...]
+    manifests: tuple[ManifestItem, ...]
+    contents: dict[UUID, VerifiedContent]
+
+
+def report_document() -> dict:
+    return {
+        "org__repo-1": {
+            "patch_exists": True,
+            "patch_is_None": False,
+            "patch_successfully_applied": True,
+            "resolved": True,
+            "infra_failure": False,
+            "tests_status": {
+                "FAIL_TO_PASS": {
+                    "success": ["tests/test_a.py::test_one"],
+                    "failure": [],
+                },
+                "PASS_TO_PASS": {
+                    "success": ["tests/test_b.py::test_two"],
+                    "failure": [],
+                },
+            },
+        }
+    }
+
+
+def evaluation_example(root: Path = Path("/fixture")) -> EvaluationExample:
+    root = root.resolve()
+    now = datetime(2026, 10, 19, tzinfo=UTC)
+    run_id, attempt, submission = UUID(int=1), UUID(int=101), UUID(int=102)
+    contents = {}
+
+    def artifact(number: int, kind: str, body: bytes, metadata: dict) -> ArtifactRecord:
+        digest = sha256(body).hexdigest()
+        record = ArtifactRecord(
+            artifact_id=UUID(int=number),
+            run_id=run_id,
+            type=kind,
+            name="changes.patch" if kind == "workspace_patch" else f"{kind}.json",
+            media_type="application/json"
+            if kind in ("evaluation_config", "evaluation_summary", "evaluation_report")
+            else "text/x-diff"
+            if kind == "workspace_patch"
+            else "text/plain",
+            uri=(root / "content" / digest[:2] / digest).as_uri(),
+            size_bytes=len(body),
+            sha256=digest,
+            metadata=metadata,
+        )
+        contents[record.artifact_id] = VerifiedContent(record, body, now, ())
+        return record
+
+    patch = artifact(
+        103,
+        "workspace_patch",
+        b"diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n",
+        {
+            "submission_id": str(submission),
+            "kind": "candidate",
+            "stage": "submission",
+            "files": ["a.py"],
+            "base_revision": "abc123",
+        },
+    )
+    identity = {
+        "run_id": str(run_id),
+        "attempt_id": str(attempt),
+        "instance_id": "org__repo-1",
+        "submission_id": str(submission),
+        "patch_artifact_id": str(patch.artifact_id),
+        "patch_sha256": patch.sha256,
+    }
+    metadata = {
+        "attempt_id": str(attempt),
+        "instance_id": "org__repo-1",
+        "stage": "evaluation",
+    }
+    config = {
+        **identity,
+        "model_name": "test",
+        "model_key": "model-test",
+        "patch_ref": patch.reference().model_dump(mode="json"),
+        "predictions_sha256": "a" * 64,
+        "manifest_sha256": "b" * 64,
+        "tasks_sha256": "c" * 64,
+        "record_sha256": "d" * 64,
+        "harness_version": "5.0.2",
+        "default_image": "test-image",
+        "actual_image": "test-image",
+        "image_preflight_verified": True,
+        "base_revision": "abc123",
+    }
+    artifact(104, "evaluation_config", json.dumps(config).encode(), metadata)
+    artifact(
+        105,
+        "evaluation_summary",
+        json.dumps(
+            {
+                **identity,
+                "scope": "evaluation_evidence_snapshot",
+                "terminal_status_source": "Run",
+                "verdict": "report_resolved",
+                "error": None,
+                "message": "",
+                "diagnostics": [],
+                "unregistered_files": [],
+                "containers": [],
+            }
+        ).encode(),
+        metadata,
+    )
+    artifact(106, "evaluation_report", json.dumps(report_document()).encode(), metadata)
+    for number, kind in enumerate(
+        (
+            "evaluation_stdout",
+            "evaluation_stderr",
+            "evaluation_test_output",
+            "evaluation_instance_log",
+        ),
+        107,
+    ):
+        artifact(number, kind, b"visible recorded log\n", metadata)
+    state = create_run_state(
+        run_id=run_id,
+        task="inspect persisted evidence",
+        agent_spec=AgentSpec(
+            name="test",
+            system_prompt="test",
+            model=ModelTarget(provider="test", model="test"),
+        ),
+        config=RuntimeConfig(),
+        created_at=now,
+    )
+    finished = now + timedelta(seconds=20)
+    state = state.model_copy(
+        update={
+            "lifecycle": state.lifecycle.model_copy(
+                update={
+                    "status": RunStatus.SUCCEEDED,
+                    "started_at": now,
+                    "updated_at": finished,
+                    "finished_at": finished,
+                    "termination_reason": TerminationReason.TASK_VERIFIED,
+                    "candidate_output": "candidate",
+                    "final_output": "done",
+                }
+            ),
+            "execution": state.execution.model_copy(update={"phase": None}),
+        }
+    )
+    state = type(state).model_validate(state.model_dump())
+    context = RunRecoveryContext(
+        workspace_id="destroyed-workspace",
+        workspace_spec=PersistedDockerWorkspaceSpec(
+            run_id=run_id, options=DockerOptions(image="test-image")
+        ),
+    )
+    record = RunRecord(
+        state=state,
+        last_event_sequence=5,
+        latest_snapshot_version=0,
+        recovery_context=context,
+    )
+    envelope = RunEnvelope(
+        run_id, 3, RunStatus.SUCCEEDED, now, finished, finished, 5, 0
+    )
+    boundary = PageBoundary(
+        run_id=run_id,
+        as_of_sequence=5,
+        latest_snapshot_version=0,
+        run_status="succeeded",
+        read_at=finished,
+    )
+    refs = [content.record.reference() for content in contents.values()]
+    event = RunEvent(
+        run_id=run_id,
+        event_id=UUID(int=120),
+        sequence=5,
+        occurred_at=finished,
+        payload=EvaluationCompleted(
+            passed=True,
+            result=EvaluationResult(passed=True, output="done", artifacts=refs),
+        ),
+        artifacts=refs,
+    )
+    stored = StoredEvent(
+        event.event_id,
+        run_id,
+        5,
+        str(event.type),
+        finished,
+        None,
+        None,
+        None,
+        event,
+        (),
+    )
+    return EvaluationExample(
+        StoredRun(envelope, record, "docker", ()),
+        boundary,
+        (stored,),
+        tuple(ManifestItem(key, value.record, ()) for key, value in contents.items()),
+        contents,
+    )
+
+
+def change_evaluation_content(
+    example: EvaluationExample, number: int, document: dict
+) -> EvaluationExample:
+    artifact_id = UUID(int=number)
+    body = json.dumps(document).encode()
+    original = example.contents[artifact_id]
+    digest = sha256(body).hexdigest()
+    content_uri = original.record.uri.rsplit("/", 2)[0] + f"/{digest[:2]}/{digest}"
+    record = original.record.model_copy(
+        update={"sha256": digest, "size_bytes": len(body), "uri": content_uri}
+    )
+    contents = {
+        **example.contents,
+        artifact_id: VerifiedContent(record, body, original.read_at, ()),
+    }
+    manifests = tuple(
+        ManifestItem(item.artifact_id, record, item.issues)
+        if item.artifact_id == artifact_id
+        else item
+        for item in example.manifests
+    )
+    events = []
+    for item in example.events:
+        assert item.event is not None and isinstance(
+            item.event.payload, EvaluationCompleted
+        )
+        refs = [
+            record.reference() if ref.artifact_id == artifact_id else ref
+            for ref in item.event.artifacts
+        ]
+        result = item.event.payload.result
+        if result is not None:
+            result = result.model_copy(update={"artifacts": refs})
+        event = item.event.model_copy(
+            update={
+                "artifacts": refs,
+                "payload": item.event.payload.model_copy(update={"result": result}),
+            }
+        )
+        events.append(replace(item, event=event))
+    return replace(
+        example, contents=contents, manifests=manifests, events=tuple(events)
+    )
