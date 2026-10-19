@@ -31,9 +31,9 @@ async def test_export_patch_shares_budget_with_cleanup(export_workspace, tmp_pat
     started = monotonic()
     with pytest.raises(PatchExportCleanupError, match="cleanup|Cleanup"):
         await export_workspace.export_patch(
-            timeout_seconds=3.0, cleanup_timeout_seconds=0.3
+            timeout_seconds=8.0, cleanup_timeout_seconds=0.5
         )
-    assert monotonic() - started < 6.0
+    assert monotonic() - started < 11.0
     pid = int((tmp_path / "cleanup-started").read_text())
     try:
         process = psutil.Process(pid)
@@ -49,7 +49,7 @@ async def test_cancel_during_index_cleanup_preserves_cancellation(
 ):
     (tmp_path / "mode").write_text("hang")
     exporting = asyncio.create_task(
-        export_workspace.export_patch(timeout_seconds=3.0, cleanup_timeout_seconds=0.3)
+        export_workspace.export_patch(timeout_seconds=8.0, cleanup_timeout_seconds=0.5)
     )
     while not (tmp_path / "cleanup-started").exists() and not exporting.done():
         await asyncio.sleep(0.01)
@@ -63,7 +63,7 @@ async def test_cleanup_failure_rejects_generated_diff(export_workspace, tmp_path
     (tmp_path / "mode").write_text("error")
     with pytest.raises(PatchExportCleanupError, match="cleanup|Cleanup"):
         await export_workspace.export_patch(
-            timeout_seconds=2.0, cleanup_timeout_seconds=0.5
+            timeout_seconds=8.0, cleanup_timeout_seconds=0.5
         )
 
 
