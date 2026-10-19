@@ -88,6 +88,31 @@ class Application:
         interruption_token: InterruptionToken | None = None,
         on_record_created: Callable[[RunRecord], None] | None = None,
     ) -> ApplicationResult:
+        return await self._execute(
+            cancellation_token,
+            interruption_token=interruption_token,
+            on_record_created=on_record_created,
+        )
+
+    async def resume(
+        self,
+        record: RunRecord,
+        cancellation_token: CancellationToken,
+        *,
+        interruption_token: InterruptionToken | None = None,
+    ) -> ApplicationResult:
+        return await self._execute(
+            cancellation_token, interruption_token=interruption_token, record=record
+        )
+
+    async def _execute(
+        self,
+        cancellation_token: CancellationToken,
+        *,
+        interruption_token: InterruptionToken | None = None,
+        on_record_created: Callable[[RunRecord], None] | None = None,
+        record: RunRecord | None = None,
+    ) -> ApplicationResult:
         dependencies = self.dependencies
         runtime = AgentRuntime(
             provider=dependencies.provider,
@@ -101,14 +126,19 @@ class Application:
             evaluator=dependencies.evaluator,
         )
         try:
-            run_result = await runtime.run(
-                dependencies.agent,
-                dependencies.task,
-                run_id=dependencies.run_id,
-                recovery_context=dependencies.recovery_context,
-                interruption_token=interruption_token,
-                on_record_created=on_record_created,
-            )
+            if record is None:
+                run_result = await runtime.run(
+                    dependencies.agent,
+                    dependencies.task,
+                    run_id=dependencies.run_id,
+                    recovery_context=dependencies.recovery_context,
+                    interruption_token=interruption_token,
+                    on_record_created=on_record_created,
+                )
+            else:
+                run_result = await runtime.resume(
+                    record, interruption_token=interruption_token
+                )
         except (RunPersistenceError, ManagedExecutionError, InterruptionRequested):
             raise
         except BaseException as exc:

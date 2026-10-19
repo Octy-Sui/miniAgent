@@ -4,13 +4,19 @@ import socket
 import struct
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from time import monotonic
 from typing import Literal
 from uuid import UUID, uuid4
 
 from pydantic import JsonValue
 
-from miniagent.environments.contracts import Command, ExecutionResult, ExecutionStatus
+from miniagent.environments.contracts import (
+    Command,
+    ExecutionResult,
+    ExecutionStatus,
+    Workspace,
+)
 from miniagent.environments.docker_connection import DockerConnection
 from miniagent.environments.docker_exec_helper import (
     MAX_FRAME_BYTES,
@@ -452,3 +458,30 @@ async def inspect_docker_execution(
     finally:
         helper.deadline = deadline
         await helper.close()
+
+
+async def inspect_guest_execution(
+    identity: DockerExecIdentity, workspace: Workspace
+) -> ExecutionEvidence:
+    from miniagent.environments import docker_supervisor
+
+    outcome: Literal["ended", "active", "unknown"] = "unknown"
+    if identity.guest is not None and identity.started_observed:
+        source = Path(docker_supervisor.__file__).read_text()
+        program = f"namespace={{'__name__':'guest_inspection'}};exec({source!r},namespace);print(namespace['inspect_guest_group']({identity.guest.model_dump()!r}))"
+        result = await workspace.execute(
+            Command(argv=["python", "-c", program], timeout_seconds=10)
+        )
+        if result.status is ExecutionStatus.SUCCESS and result.stdout.strip() in (
+            "True",
+            "False",
+        ):
+            outcome = "active" if result.stdout.strip() == "True" else "ended"
+    return ExecutionEvidence(
+        execution_id=identity.execution_id,
+        identity=identity,
+        outcome=outcome,
+        started_observed=identity.started_observed,
+        group_ended=outcome == "ended",
+        issuer_ended=True,
+    )

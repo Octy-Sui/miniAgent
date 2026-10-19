@@ -372,3 +372,10 @@ def plan_resume(
         cleanup_requirements=cleanup,
         readiness="requires_live_checks" if attachment.live_checks else "ready",
     )
+
+
+class ResumeRejected(RuntimeError):
+    def __init__(self, rejection: ResumeRejection) -> None:
+        self.rejection = rejection
+        self.code = rejection.code
+        super().__init__(f"{rejection.code}: {rejection.message}")

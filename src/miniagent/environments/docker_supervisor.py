@@ -168,6 +168,38 @@ def _group_active(identity: dict) -> bool:
     return False
 
 
+def inspect_guest_group(identity: dict) -> bool:
+    if (
+        Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        != identity["boot_id"]
+    ):
+        raise ValueError("Guest boot identity changed")
+    try:
+        _, pgid, sid, ticks = _stat(identity["pid"])
+    except FileNotFoundError:
+        pass
+    else:
+        if (pgid, sid, ticks) != (
+            identity["pgid"],
+            identity["sid"],
+            identity["start_ticks"],
+        ):
+            raise ValueError("Guest command birth identity changed")
+    for item in Path("/proc").iterdir():
+        if not item.name.isdigit():
+            continue
+        try:
+            state, group, session, birth = _stat(int(item.name))
+        except FileNotFoundError:
+            continue
+        if group == identity["pgid"] and session == identity["sid"]:
+            if birth < identity["start_ticks"]:
+                raise ValueError("Guest group membership is ambiguous")
+            if state != "Z":
+                return True
+    return False
+
+
 def _child(
     command: dict, gate: int, ready: int, input_fd: int, output_fd: int, error_fd: int
 ) -> None:

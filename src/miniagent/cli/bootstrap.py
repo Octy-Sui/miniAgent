@@ -81,6 +81,7 @@ from miniagent.runtime import (
     InterruptionToken,
     RunRecoveryContext,
     RuntimeConfig,
+    RuntimeStore,
 )
 from miniagent.runtime.recording import RunPersistenceError
 from miniagent.runtime.state import RunDefinition
@@ -475,3 +476,138 @@ async def execute_new_run(
                     async with asyncio.timeout(10):
                         await application.dependencies.workspace.destroy()
             raise
+
+
+class ApplicationRehydrationError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(message)
+
+
+def rehydrate_application(
+    record: RunRecord,
+    workspace: Workspace,
+    definition: CLIApplicationDefinition,
+    *,
+    run_store: RuntimeStore,
+) -> Application:
+    from miniagent.evaluation.swebench_data import PreparedTask
+
+    context = record.recovery_context
+    assert context is not None
+    provider = definition.provider
+    if provider.protocol_version != "qwen-chat-completions-v1":
+        raise ApplicationRehydrationError(
+            "MODEL_CONFIG_MISMATCH", "Provider protocol differs"
+        )
+    api_key = os.environ.get(provider.api_key_ref.key)
+    endpoint = os.environ.get(provider.endpoint_ref.key)
+    if not api_key or not endpoint:
+        raise ApplicationRehydrationError(
+            "ENVIRONMENT_REFERENCE_MISSING",
+            "Provider credentials or endpoint unavailable",
+        )
+    values: dict[str, object] = {
+        "openai_api_key": api_key,
+        "openai_base_url": endpoint,
+        "artifact_root": definition.artifact_root,
+        "model_limits_file": definition.model_limits_file,
+        "candidate_submission_timeout_seconds": definition.candidate_submission_timeout_seconds,
+        "patch_export_cleanup_timeout_seconds": definition.patch_export_cleanup_timeout_seconds,
+        "artifact_collection_timeout_seconds": definition.artifact_collection_timeout_seconds,
+    }
+    frozen = definition.evaluator
+    if isinstance(frozen, SWEbenchDefinition):
+        values.update(
+            swebench_data_root=frozen.data_root,
+            swebench_work_root=frozen.work_root,
+            swebench_executable=str(frozen.harness_executable),
+            evaluation_docker_executable=str(frozen.docker_executable),
+            swebench_test_timeout_seconds=frozen.test_timeout_seconds,
+            swebench_process_timeout_seconds=frozen.process_timeout_seconds,
+            swebench_cleanup_timeout_seconds=frozen.cleanup_timeout_seconds,
+            swebench_artifact_timeout_seconds=frozen.artifact_timeout_seconds,
+            swebench_allow_image_pull=False,
+        )
+    settings = Settings.model_construct(_fields_set=set(values), **values)
+    artifacts = FileArtifactStore(definition.artifact_root)
+    tools = build_tools(workspace)
+    state = record.state
+    if (
+        tuple(tools.definitions(state.definition.agent_spec.allowed_tools))
+        != state.definition.tool_definitions
+        or tuple(
+            tools.contract_metadata(name)
+            for name in state.definition.agent_spec.allowed_tools
+        )
+        != state.definition.tool_contract_metadata
+    ):
+        raise ApplicationRehydrationError(
+            "TOOL_CONTRACT_MISMATCH", "Current tool contract differs"
+        )
+    submission = CandidateSubmission(
+        workspace,
+        artifacts,
+        timeout_seconds=definition.candidate_submission_timeout_seconds,
+        cleanup_timeout_seconds=definition.patch_export_cleanup_timeout_seconds,
+    )
+    evaluator = PassThroughEvaluator()
+    if isinstance(frozen, SWEbenchDefinition):
+        from miniagent.environments.docker_connection import bind_docker_connection
+
+        evaluator = WorkspaceCandidateEvaluator(
+            submission,
+            SWEbenchEvaluator(
+                artifact_store=artifacts,
+                prepared=PreparedTask(
+                    record=frozen.record,
+                    manifest_sha256=frozen.manifest_sha256,
+                    tasks_sha256=frozen.tasks_sha256,
+                    record_sha256=frozen.record_sha256,
+                    harness_version=frozen.harness_version,
+                    default_image=frozen.original_image_name,
+                    actual_image=frozen.image_content_id,
+                    image_preflight_verified=True,
+                ),
+                settings=settings,
+                model_name=state.definition.agent_spec.model.model,
+                executable=frozen.harness_executable,
+                docker_executable=frozen.docker_executable,
+                connection=bind_docker_connection(
+                    frozen.evaluation_connection, dict(os.environ)
+                ),
+                environment=dict(os.environ),
+            ),
+        )
+    return Application(
+        ApplicationDependencies(
+            agent=state.definition.agent_spec,
+            task=state.identity.task,
+            run_id=state.identity.run_id,
+            provider=build_provider(state.definition.agent_spec, settings),
+            tools=tools,
+            workspace=workspace,
+            artifact_store=artifacts,
+            pricing=definition.pricing,
+            policy_context=PolicyContext(
+                workspace_id=workspace.workspace_id,
+                workspace_kind=context.workspace_spec.kind.value,
+                revision=digest_json(
+                    {
+                        "kind": context.workspace_spec.kind.value,
+                        "workspace_id": workspace.workspace_id,
+                        "docker_image": context.workspace_spec.options.image
+                        if isinstance(context.workspace_spec.options, DockerOptions)
+                        else None,
+                    }
+                ),
+            ),
+            approval_handler=None,
+            run_store=run_store,
+            recovery_context=context,
+            config=state.definition.config,
+            evaluator=evaluator,
+            candidate_submission=submission,
+            artifact_collection_timeout_seconds=definition.artifact_collection_timeout_seconds,
+        )
+    )

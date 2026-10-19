@@ -153,3 +153,13 @@ def configured_host(
     for key, value in values.items():
         monkeypatch.setenv(key, value)
     return tmp_path
+
+
+@pytest.fixture
+async def resume_case(tmp_path, monkeypatch):
+    from tests.cli.test_bootstrap import configure_settings, create_source_repository
+    from tests.cli.test_resume import retained
+
+    configure_settings(tmp_path, monkeypatch)
+    source = create_source_repository(tmp_path / "source")
+    return await retained(source, monkeypatch)

@@ -43,6 +43,7 @@ class RunEventType(StrEnum):
     RESUME_STARTED = "resume_started"
     RESUME_COMPLETED = "resume_completed"
     RESUME_FAILED = "resume_failed"
+    PROVIDER_IDENTITY_CHANGED = "provider_identity_changed"
     RUN_STARTED = "run_started"
     STEP_STARTED = "step_started"
     STEP_COMPLETED = "step_completed"
@@ -102,6 +103,14 @@ class ResumeFailed(_ResumePayload):
     type: Literal[RunEventType.RESUME_FAILED] = RunEventType.RESUME_FAILED
     code: str
     message: str
+
+
+class ProviderIdentityChanged(_Payload):
+    type: Literal[RunEventType.PROVIDER_IDENTITY_CHANGED] = (
+        RunEventType.PROVIDER_IDENTITY_CHANGED
+    )
+    original_endpoint_identity: str
+    current_endpoint_identity: str
 
 
 class StepStarted(_Payload):
@@ -381,6 +390,7 @@ type EventPayload = Annotated[
     | ResumeStarted
     | ResumeCompleted
     | ResumeFailed
+    | ProviderIdentityChanged
     | StepStarted
     | StepCompleted
     | TerminationDecided
