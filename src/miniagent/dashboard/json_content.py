@@ -2,16 +2,14 @@ from __future__ import annotations
 
 import json
 import math
-from typing import TYPE_CHECKING, NoReturn, Protocol, cast
+from typing import TYPE_CHECKING, NoReturn, cast
 
 from pydantic import JsonValue
 
 from miniagent.dashboard.config import LIMITS
 
 if TYPE_CHECKING:
-
-    class ReadBudget(Protocol):
-        def check(self) -> None: ...
+    from miniagent.dashboard.reads import ReadBudget
 
 
 class ContentError(ValueError):
