@@ -12,6 +12,11 @@ from miniagent.environments.managed_execution import (
 )
 from miniagent.policy.approvals import ApprovalOutcome
 from miniagent.runtime.events import (
+    DiagnosticFinalizationCompleted,
+    DiagnosticFinalizationExecutionEnded,
+    DiagnosticFinalizationExecutionIdentified,
+    DiagnosticFinalizationInterrupted,
+    DiagnosticFinalizationStarted,
     OperationExecutionEnded,
     OperationExecutionIdentified,
     OperationInterrupted,
@@ -103,14 +108,24 @@ def history_facts(
     ended: dict[UUID, dict[UUID, ExecutionEvidence]] = {}
     permissions: dict[UUID, set[str]] = {}
     interrupted = set()
+    diagnostic_attempts = set()
     for event in events:
         payload = event.payload
-        if isinstance(payload, OperationExecutionIdentified):
+        if isinstance(payload, DiagnosticFinalizationStarted):
+            diagnostic_attempts.add(payload.attempt_id)
+            identities.setdefault(payload.attempt_id, {})
+            permissions.setdefault(payload.attempt_id, set())
+        if isinstance(
+            payload,
+            (OperationExecutionIdentified, DiagnosticFinalizationExecutionIdentified),
+        ):
             identities.setdefault(payload.attempt_id, {})[
                 payload.identity.execution_id
             ] = payload.identity
             permissions.setdefault(payload.attempt_id, set()).add(payload.permission)
-        elif isinstance(payload, OperationExecutionEnded):
+        elif isinstance(
+            payload, (OperationExecutionEnded, DiagnosticFinalizationExecutionEnded)
+        ):
             if (
                 identities.get(payload.attempt_id, {}).get(
                     payload.evidence.execution_id
@@ -123,6 +138,23 @@ def history_facts(
             )
         elif isinstance(payload, OperationInterrupted):
             interrupted.add(payload.attempt_id)
+        elif (
+            isinstance(payload, DiagnosticFinalizationCompleted)
+            or isinstance(payload, DiagnosticFinalizationInterrupted)
+            and payload.execution_ended
+        ):
+            known = identities.get(payload.attempt_id, {})
+            proof = ended.get(payload.attempt_id, {})
+            if any(
+                identity.execution_id not in proof
+                or proof[identity.execution_id].identity != identity
+                or proof[identity.execution_id].outcome != "ended"
+                or not proof[identity.execution_id].group_ended
+                or not proof[identity.execution_id].issuer_ended
+                for identity in known.values()
+            ):
+                errors.append("Diagnostic completion lacks whole-group end facts")
+            interrupted.add(payload.attempt_id)
     chains = tuple(
         ExecutionChainFact(
             attempt_id=attempt,
@@ -131,7 +163,7 @@ def history_facts(
             start_permission_committed="start_exec" in permissions[attempt],
             command_permission_committed="observe" in permissions[attempt],
             evidence=tuple(ended.get(attempt, {}).values()),
-            scope="business",
+            scope="diagnostic" if attempt in diagnostic_attempts else "business",
         )
         for attempt, items in identities.items()
     )

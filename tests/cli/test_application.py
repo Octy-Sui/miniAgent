@@ -48,7 +48,19 @@ class CancellingProvider(ModelProvider):
 
 class FinalizationWorkspace:
     def describe_attachment(self):
-        raise AssertionError("Attachment metadata is not used by this test")
+        from miniagent.environments.attachment import LocalAttachment
+
+        directory = Path("/private/tmp") / self.run_id.hex / self.workspace_id
+        return LocalAttachment(
+            run_id=self.run_id,
+            workspace_id=self.workspace_id,
+            base_revision="base",
+            root=directory.parent.parent,
+            workspace_dir=directory,
+            repository_root=directory / "repo",
+            marker_run_id=self.run_id,
+            marker_workspace_id=self.workspace_id,
+        )
 
     def __init__(
         self,

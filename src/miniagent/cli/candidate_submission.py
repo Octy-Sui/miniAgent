@@ -90,6 +90,8 @@ class CandidateSubmission:
         observer_getter: Callable[
             [], EvaluationObserver | None
         ] = current_evaluation_observer,
+        diagnostic_observer_getter: Callable[[], EvaluationObserver | None]
+        | None = None,
     ) -> None:
         if not (
             math.isfinite(timeout_seconds)
@@ -102,6 +104,7 @@ class CandidateSubmission:
         self.timeout_seconds = timeout_seconds
         self.cleanup_timeout_seconds = cleanup_timeout_seconds
         self.observer_getter = observer_getter
+        self.diagnostic_observer_getter = diagnostic_observer_getter
         self._results = {
             "candidate": SubmissionResult(),
             "diagnostic": SubmissionResult(),
@@ -139,7 +142,13 @@ class CandidateSubmission:
     ) -> SubmissionResult:
         deadline = monotonic() + self.timeout_seconds
         started = False
-        observer = self.observer_getter() if kind == "candidate" else None
+        observer = (
+            self.observer_getter()
+            if kind == "candidate"
+            else self.diagnostic_observer_getter()
+            if self.diagnostic_observer_getter
+            else None
+        )
         state = None
         stage = "export"
         try:
@@ -193,7 +202,11 @@ class CandidateSubmission:
                         return result
                 elif previous.status != "not_attempted":
                     return previous
-                if observer is not None and candidate_text is None:
+                if (
+                    observer is not None
+                    and kind == "candidate"
+                    and candidate_text is None
+                ):
                     raise ValueError(
                         "Persistent candidate submission requires candidate text"
                     )

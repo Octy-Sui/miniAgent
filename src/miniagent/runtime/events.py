@@ -43,6 +43,13 @@ class RunEventType(StrEnum):
     RESUME_STARTED = "resume_started"
     RESUME_COMPLETED = "resume_completed"
     RESUME_FAILED = "resume_failed"
+    DIAGNOSTIC_FINALIZATION_STARTED = "diagnostic_finalization_started"
+    DIAGNOSTIC_FINALIZATION_EXECUTION_IDENTIFIED = (
+        "diagnostic_finalization_execution_identified"
+    )
+    DIAGNOSTIC_FINALIZATION_EXECUTION_ENDED = "diagnostic_finalization_execution_ended"
+    DIAGNOSTIC_FINALIZATION_COMPLETED = "diagnostic_finalization_completed"
+    DIAGNOSTIC_FINALIZATION_INTERRUPTED = "diagnostic_finalization_interrupted"
     PROVIDER_IDENTITY_CHANGED = "provider_identity_changed"
     RUN_STARTED = "run_started"
     STEP_STARTED = "step_started"
@@ -240,6 +247,54 @@ class ApprovalInvalidated(_Payload):
     reason: str
 
 
+class DiagnosticFinalizationStarted(_Payload):
+    type: Literal[RunEventType.DIAGNOSTIC_FINALIZATION_STARTED] = (
+        RunEventType.DIAGNOSTIC_FINALIZATION_STARTED
+    )
+    kind: Literal["diagnostic"] = "diagnostic"
+    attempt_id: UUID
+    submission_id: UUID
+    temporary_index_path: str
+
+
+class DiagnosticFinalizationExecutionIdentified(_Payload):
+    type: Literal[RunEventType.DIAGNOSTIC_FINALIZATION_EXECUTION_IDENTIFIED] = (
+        RunEventType.DIAGNOSTIC_FINALIZATION_EXECUTION_IDENTIFIED
+    )
+    attempt_id: UUID
+    identity: ExecutionIdentity
+    permission: Literal["observe", "create_exec", "start_exec"] = "observe"
+
+
+class DiagnosticFinalizationExecutionEnded(_Payload):
+    type: Literal[RunEventType.DIAGNOSTIC_FINALIZATION_EXECUTION_ENDED] = (
+        RunEventType.DIAGNOSTIC_FINALIZATION_EXECUTION_ENDED
+    )
+    attempt_id: UUID
+    evidence: ExecutionEvidence
+
+
+class DiagnosticFinalizationCompleted(_Payload):
+    type: Literal[RunEventType.DIAGNOSTIC_FINALIZATION_COMPLETED] = (
+        RunEventType.DIAGNOSTIC_FINALIZATION_COMPLETED
+    )
+    attempt_id: UUID
+    submission_id: UUID
+    status: Literal["registered", "empty", "failed"]
+    patch_ref: ArtifactRef | None = None
+    patch_sha256: str | None = None
+    error: EvaluationError | None = None
+
+
+class DiagnosticFinalizationInterrupted(_Payload):
+    type: Literal[RunEventType.DIAGNOSTIC_FINALIZATION_INTERRUPTED] = (
+        RunEventType.DIAGNOSTIC_FINALIZATION_INTERRUPTED
+    )
+    attempt_id: UUID
+    reason: str
+    execution_ended: bool = False
+
+
 class CandidateSubmissionStarted(_Payload):
     type: Literal[RunEventType.CANDIDATE_SUBMISSION_STARTED] = (
         RunEventType.CANDIDATE_SUBMISSION_STARTED
@@ -408,6 +463,11 @@ type EventPayload = Annotated[
     | ApprovalResolved
     | ApprovalInvalidated
     | EvaluationStart
+    | DiagnosticFinalizationStarted
+    | DiagnosticFinalizationExecutionIdentified
+    | DiagnosticFinalizationExecutionEnded
+    | DiagnosticFinalizationCompleted
+    | DiagnosticFinalizationInterrupted
     | CandidateSubmissionStarted
     | CandidateSubmissionCommitted
     | CandidateSubmissionFailed

@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 from miniagent.agents import AgentSpec
 from miniagent.artifacts import ArtifactNotFoundError, ArtifactRef, ArtifactStore
 from miniagent.cli.candidate_submission import CandidateSubmission
+from miniagent.cli.diagnostic_finalization import finalize_diagnostic
 from miniagent.environments import Workspace
 from miniagent.environments.managed_execution import ManagedExecutionError
 from miniagent.evaluation import Evaluator, PassThroughEvaluator
@@ -28,7 +29,7 @@ from miniagent.runtime import (
     RuntimeStore,
 )
 from miniagent.runtime.interruption import InterruptionRequested
-from miniagent.runtime.recording import RunPersistenceError
+from miniagent.runtime.recording import RunPersistenceError, RunRecorder
 from miniagent.runtime.store_contracts import RunRecord
 from miniagent.tools.registry import ToolRegistry
 
@@ -149,9 +150,15 @@ class Application:
                 )
             raise
 
+        artifacts, errors = await self._finalize_patch(
+            deadline=interruption_token.deadline if interruption_token else None
+        )
         if isinstance(run_result, RunSuspension):
-            return ApplicationResult(run_result=run_result)
-        artifacts, errors = await self._finalize_patch()
+            return ApplicationResult(
+                run_result=run_result,
+                artifacts=tuple(artifacts),
+                finalization_errors=tuple(errors),
+            )
         if run_result.status is RunStatus.SUCCEEDED and not errors:
             try:
                 await dependencies.workspace.destroy()
@@ -171,11 +178,22 @@ class Application:
 
     async def _finalize_patch(
         self,
+        *,
+        deadline: float | None = None,
     ) -> tuple[list[ArtifactRef], list[FinalizationError]]:
         errors: list[FinalizationError] = []
         submission = self.submission.result
         if submission.status == "not_attempted":
-            submission = await self.submission.submit(kind="diagnostic")
+            record = await self.dependencies.run_store.get(self.dependencies.run_id)
+            submission = await finalize_diagnostic(
+                recorder=RunRecorder.attach(self.dependencies.run_store, record),
+                workspace=self.dependencies.workspace,
+                artifact_store=self.dependencies.artifact_store,
+                deadline=min(monotonic() + self.submission.timeout_seconds, deadline)
+                if deadline is not None
+                else monotonic() + self.submission.timeout_seconds,
+                cleanup_timeout_seconds=self.submission.cleanup_timeout_seconds,
+            )
         if submission.error is not None and submission.status != "empty":
             errors.append(
                 FinalizationError(
@@ -194,7 +212,14 @@ class Application:
                     message=diagnostic,
                 )
             )
-        deadline = monotonic() + self.dependencies.artifact_collection_timeout_seconds
+        deadline = (
+            min(
+                monotonic() + self.dependencies.artifact_collection_timeout_seconds,
+                deadline,
+            )
+            if deadline is not None
+            else monotonic() + self.dependencies.artifact_collection_timeout_seconds
+        )
         try:
             async with asyncio.timeout_at(deadline):
                 records = await self.dependencies.artifact_store.list_for_run(
@@ -210,6 +235,8 @@ class Application:
                     f"{submission.patch_ref.artifact_id}"
                 )
             return list(refs.values()), errors
+        except (RunPersistenceError, ManagedExecutionError, InterruptionRequested):
+            raise
         except Exception as exc:  # noqa: BLE001
             errors.append(
                 FinalizationError(
@@ -225,6 +252,12 @@ class Application:
                             submission.patch_ref
                         )
                     return [record.reference()], errors
+                except (
+                    RunPersistenceError,
+                    ManagedExecutionError,
+                    InterruptionRequested,
+                ):
+                    raise
                 except Exception as patch_error:  # noqa: BLE001
                     errors.append(
                         FinalizationError(

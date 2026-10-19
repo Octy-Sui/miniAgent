@@ -63,6 +63,8 @@ from miniagent.runtime import CancellationToken, InterruptionToken
 from miniagent.runtime.events import (
     ApprovalInvalidated,
     ApprovalResolved,
+    DiagnosticFinalizationExecutionEnded,
+    DiagnosticFinalizationInterrupted,
     NewRunEvent,
     ProviderIdentityChanged,
     ResumeCompleted,
@@ -564,6 +566,53 @@ async def resume_application(
                         await execution.execution_observer(operation.attempt_id).ended(
                             evidence
                         )
+            for chain in inspected.history.execution_chains:
+                if (
+                    chain.scope != "diagnostic"
+                    or chain.attempt_id in inspected.history.interrupted_attempt_ids
+                ):
+                    continue
+                proof = {
+                    item.execution_id: item
+                    for item in (*chain.evidence, *live_evidence)
+                }
+                closed = []
+                for identity in chain.identities:
+                    evidence = proof.get(identity.execution_id)
+                    if (
+                        evidence is None
+                        or evidence.identity != identity
+                        or evidence.outcome != "ended"
+                        or not evidence.group_ended
+                        or not evidence.issuer_ended
+                    ):
+                        raise ResumeRejected(
+                            _rejection(
+                                config,
+                                "WORKSPACE_BUSY",
+                                "Old diagnostic execution end is unconfirmed",
+                            )
+                        )
+                    if evidence not in chain.evidence:
+                        closed.append(
+                            NewRunEvent(
+                                run_id=config.run_id,
+                                payload=DiagnosticFinalizationExecutionEnded(
+                                    attempt_id=chain.attempt_id, evidence=evidence
+                                ),
+                            )
+                        )
+                closed.append(
+                    NewRunEvent(
+                        run_id=config.run_id,
+                        payload=DiagnosticFinalizationInterrupted(
+                            attempt_id=chain.attempt_id,
+                            reason="Verified old diagnostic chain closed for resume",
+                            execution_ended=True,
+                        ),
+                    )
+                )
+                await journal.record_activity(execution.state, closed)
             if inspected.evaluation is not None:
                 assert isinstance(inspected.definition.evaluator, SWEbenchDefinition)
                 await cleanup_attempt_resources(
