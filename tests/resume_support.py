@@ -80,6 +80,7 @@ class StoreBoundary:
         operation: Literal["create", "commit"] = "commit",
         event_type: RunEventType | None = None,
         channel: Connection | None = None,
+        permission: str | None = None,
     ) -> None:
         if action not in {
             "pause_after_commit",
@@ -92,6 +93,7 @@ class StoreBoundary:
         self.operation = operation
         self.event_type = event_type
         self.channel = channel
+        self.permission = permission
         self.fired = False
 
     async def _invoke[T: (RunRecord, CommitResult)](
@@ -108,7 +110,15 @@ class StoreBoundary:
                 self.event_type is None
                 or (
                     isinstance(value, RunCommit)
-                    and any(event.type == self.event_type for event in value.events)
+                    and any(
+                        event.type == self.event_type
+                        and (
+                            self.permission is None
+                            or getattr(event.payload, "permission", None)
+                            == self.permission
+                        )
+                        for event in value.events
+                    )
                 )
             )
         )
