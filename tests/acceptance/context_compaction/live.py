@@ -155,6 +155,7 @@ async def execute(directory: Path, run_id: str) -> None:
         config=config,
         pricing=dependencies.pricing,
         policy_context=dependencies.policy_context,
+        approval_handler=dependencies.approval_handler,
         run_store=dependencies.run_store,
     )
     state = create_run_state(

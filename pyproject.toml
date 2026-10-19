@@ -27,6 +27,7 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = ["resume_local: real Local resume acceptance", "resume_docker: real Docker resume acceptance"]
 
 [project.scripts]
 miniagent = "miniagent.cli.main:entrypoint"

@@ -1,5 +1,7 @@
 import asyncio
 import getpass
+import os
+import sys
 from datetime import UTC, datetime
 
 import orjson
@@ -14,6 +16,38 @@ from miniagent.policy import (
 
 
 class ConsoleApprovalHandler:
+    def __init__(self) -> None:
+        self._input = b""
+
+    async def _confirm(self) -> bool:
+        loop = asyncio.get_running_loop()
+        descriptor = sys.stdin.fileno()
+        while True:
+            typer.echo("Allow this tool call? [y/N]: ", nl=False)
+            while b"\n" not in self._input:
+                readable = loop.create_future()
+
+                def ready(readable: asyncio.Future[None] = readable) -> None:
+                    if not readable.done():
+                        readable.set_result(None)
+
+                loop.add_reader(descriptor, ready)
+                try:
+                    await readable
+                    data = os.read(descriptor, 4096)
+                finally:
+                    loop.remove_reader(descriptor)
+                if not data:
+                    return False
+                self._input += data
+            line, self._input = self._input.split(b"\n", 1)
+            answer = line.strip().lower()
+            if answer in (b"y", b"yes"):
+                return True
+            if answer in (b"", b"n", b"no"):
+                return False
+            typer.echo("Please enter y or n.")
+
     async def resolve(
         self,
         request: ApprovalRequest,
@@ -30,11 +64,7 @@ class ConsoleApprovalHandler:
             ).decode(),
             err=True,
         )
-        approved = await asyncio.to_thread(
-            typer.confirm,
-            "Allow this tool call?",
-            default=False,
-        )
+        approved = await self._confirm()
         return ApprovalResolution(
             approval_id=request.approval_id,
             outcome=(

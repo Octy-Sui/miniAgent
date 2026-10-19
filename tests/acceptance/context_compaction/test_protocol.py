@@ -1,3 +1,5 @@
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -326,19 +328,16 @@ async def test_live_runner_executes_approved_local_write_with_real_composition(
         )
 
     monkeypatch.setattr("miniagent.providers.qwen.AsyncOpenAI", sdk_client)
-    approvals = []
-
-    def human_confirmation(*args, **kwargs):
-        approvals.append(True)
-        return True
-
-    monkeypatch.setattr("typer.confirm", human_confirmation)
-    await execute(directory, "compacted-1")
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"y\n")
+    os.close(write_fd)
+    with os.fdopen(read_fd) as console_input:
+        monkeypatch.setattr(sys, "stdin", console_input)
+        await execute(directory, "compacted-1")
     folder = directory / "runs" / "compacted-1"
     result = json.loads((folder / "result.json").read_text())
     assert result["completed"]
     assert result["task_result"]["passed"]
-    assert approvals == [True]
     assert counter == 2
     assert len((folder / "wire.jsonl").read_text().splitlines()) == 4
     assert "approved" in (folder / "approval-trace.jsonl").read_text()

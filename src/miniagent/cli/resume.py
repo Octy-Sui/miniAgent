@@ -14,6 +14,7 @@ from miniagent.cli.candidate_submission import (
     CandidateArtifactInvalid,
     validate_candidate_artifact,
 )
+from miniagent.cli.console_approval import ConsoleApprovalHandler
 from miniagent.cli.execution_scope import application_execution_scope
 from miniagent.cli.run_definition import (
     CandidateSubmissionState,
@@ -642,6 +643,7 @@ async def resume_application(
                     workspace,
                     inspected.definition,
                     run_store=store,
+                    approval_handler=ConsoleApprovalHandler(),
                 )
                 endpoint = urlsplit(
                     os.environ[inspected.definition.provider.endpoint_ref.key]

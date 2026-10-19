@@ -530,6 +530,7 @@ def rehydrate_application(
     definition: CLIApplicationDefinition,
     *,
     run_store: RuntimeStore,
+    approval_handler: ApprovalHandler | None = None,
 ) -> Application:
     from miniagent.evaluation.swebench_data import PreparedTask
 
@@ -642,7 +643,7 @@ def rehydrate_application(
                     }
                 ),
             ),
-            approval_handler=None,
+            approval_handler=approval_handler,
             run_store=run_store,
             recovery_context=context,
             config=state.definition.config,
