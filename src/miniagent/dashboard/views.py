@@ -37,3 +37,33 @@ class SpanView:
     start_event_id: UUID | None
     end_event_id: UUID | None
     issues: tuple[ReadIssue, ...]
+
+
+@dataclass(frozen=True)
+class SourceTarget:
+    run_id: UUID
+    event_id: UUID | None = None
+    snapshot_version: int | None = None
+    start: int | None = None
+    end: int | None = None
+
+
+@dataclass(frozen=True)
+class FieldView:
+    key: str
+    label: str
+    value: str
+    source_label: str
+    source: SourceTarget | None = None
+
+
+@dataclass(frozen=True)
+class RunView:
+    run_id: UUID
+    status: str
+    terminal: bool
+    identity: tuple[FieldView, ...]
+    result: tuple[FieldView, ...]
+    usage: tuple[FieldView, ...]
+    budgets: tuple[FieldView, ...]
+    issues: tuple[ReadIssue, ...]
