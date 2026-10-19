@@ -36,6 +36,7 @@ markers = ["resume_local: real Local resume acceptance", "resume_docker: real Do
 
 [project.scripts]
 miniagent = "miniagent.cli.main:entrypoint"
+miniagent-dashboard = "miniagent.dashboard.cli:entry"
 
 [build-system]
 requires = ["uv_build>=0.12.8,<0.13.0"]

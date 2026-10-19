@@ -29,6 +29,7 @@ async def home() -> Response:
     return RedirectResponse("/runs", status_code=307)
 
 
+@router.api_route("/healthz", methods=["GET", "HEAD"])
 @router.api_route("/health", methods=["GET", "HEAD"])
 async def health() -> Response:
     return JSONResponse({"status": "ok"})
