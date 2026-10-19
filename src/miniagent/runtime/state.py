@@ -8,6 +8,16 @@ from miniagent.agents import AgentSpec
 from miniagent.metering.usage import RunUsage
 from miniagent.models.messages import Message
 from miniagent.runtime.config import RuntimeConfig
+from miniagent.runtime.progress import (
+    CurrentStep,
+    EvaluationProgress,
+    ExecutionPhase,
+    OperationRef,
+    RecoverySession,
+    RequestProgress,
+    ResponseDisposition,
+    SuspensionMetadata,
+)
 from miniagent.runtime.result import RunError, RunResult, TerminationReason
 from miniagent.tools.contracts import ToolCall, ToolDefinition
 
@@ -18,6 +28,7 @@ class RunStatus(StrEnum):
     RUNNING = "running"
     WAITING_APPROVAL = "waiting_approval"
     RECOVERING = "recovering"
+    SUSPENDED = "suspended"
     EVALUATING = "evaluating"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
@@ -95,6 +106,12 @@ class ToolBatch(_StatePart):
 
 
 class ExecutionProgress(_StatePart):
+    phase: ExecutionPhase | None = ExecutionPhase.PREPARE
+    current_step: CurrentStep | None = None
+    request_progress: RequestProgress = Field(default_factory=RequestProgress)
+    active_operation: OperationRef | None = None
+    response_disposition: ResponseDisposition | None = None
+    evaluation: EvaluationProgress = Field(default_factory=EvaluationProgress)
     cursor: RunCursor | None = None
     steps_started: int = Field(default=0, ge=0)
     consecutive_failed_steps: int = Field(default=0, ge=0)
@@ -113,6 +130,9 @@ class ApprovalProgress(_StatePart):
 
 
 class RecoveryProgress(_StatePart):
+    resume_attempts: int = Field(default=0, ge=0)
+    suspension: SuspensionMetadata | None = None
+    session: RecoverySession | None = None
     checkpoint_id: str | None = None
     attempts: int = Field(default=0, ge=0)
 
@@ -172,15 +192,81 @@ def validate_state(state: RunState) -> None:
     execution = state.execution
     is_terminal = lifecycle.status in TERMINAL_STATUSES
 
-    if lifecycle.status is RunStatus.RUNNING and execution.cursor is None:
-        raise ValueError("Running state requires a cursor")
-    if lifecycle.status is not RunStatus.RUNNING and execution.cursor is not None:
+    if is_terminal:
+        if execution.phase is not None:
+            raise ValueError("Terminal state cannot have an execution phase")
+        if execution.active_operation is not None:
+            raise ValueError("Terminal state cannot have an active operation")
+        if execution.current_step is not None or execution.tool_batch is not None:
+            raise ValueError("Terminal state cannot have current_step or tool batch")
+    elif execution.phase is None:
+        raise ValueError("Non-terminal state requires an execution phase")
+    if lifecycle.status is RunStatus.RUNNING:
+        expected_cursor = (
+            RunCursor.EXECUTE_TOOL_CALLS
+            if execution.phase
+            in (ExecutionPhase.EXECUTE_TOOLS, ExecutionPhase.COMPLETE_STEP)
+            else RunCursor.REQUEST_MODEL
+        )
+        if execution.cursor is not expected_cursor:
+            raise ValueError("Running cursor must match execution phase")
+    elif execution.cursor is not None:
         raise ValueError("Only running state may have a cursor")
-    if (
-        execution.cursor is RunCursor.EXECUTE_TOOL_CALLS
-        and execution.tool_batch is None
+    batch = execution.tool_batch
+    if execution.phase in (ExecutionPhase.EXECUTE_TOOLS, ExecutionPhase.COMPLETE_STEP):
+        if batch is None or execution.current_step is None:
+            raise ValueError("Tool phase requires tool batch and current_step")
+        if execution.phase is ExecutionPhase.EXECUTE_TOOLS and batch.next_index >= len(
+            batch.calls
+        ):
+            raise ValueError("execute_tools cursor must point to an unfinished call")
+        if execution.phase is ExecutionPhase.COMPLETE_STEP and batch.next_index != len(
+            batch.calls
+        ):
+            raise ValueError("complete_step requires a completed batch")
+    elif batch is not None:
+        raise ValueError("Tool batch requires a tool execution phase")
+    step = execution.current_step
+    if step is not None:
+        if step.step_number != execution.steps_started:
+            raise ValueError("current_step must match steps_started")
+        if any(
+            completed.step_number == step.step_number
+            for completed in state.conversation.completed_steps
+        ):
+            raise ValueError("Completed Step cannot retain current_step")
+    operation = execution.active_operation
+    if operation is not None:
+        if operation.kind in ("tool", "model") and (
+            step is None or operation.step_number != step.step_number
+        ):
+            raise ValueError("Active operation must match current_step")
+        if operation.kind == "tool" and (
+            batch is None
+            or batch.next_index >= len(batch.calls)
+            or operation.call_index != batch.next_index
+            or operation.tool_call_id != batch.calls[batch.next_index].id
+        ):
+            raise ValueError("Tool operation must match current batch call")
+    disposition = execution.response_disposition
+    if execution.phase is ExecutionPhase.TERMINATE and (
+        disposition is None or disposition.kind != "terminate"
     ):
-        raise ValueError("Tool execution cursor requires a tool batch")
+        raise ValueError("terminate phase requires a termination decision")
+    if execution.phase is ExecutionPhase.EVALUATE_CANDIDATE:
+        if disposition is None or disposition.kind != "candidate":
+            raise ValueError("Candidate phase requires original candidate text")
+        if lifecycle.candidate_output != disposition.text:
+            raise ValueError("Candidate text must match lifecycle candidate_output")
+    if (
+        execution.request_progress.summary_retry_used
+        > state.definition.config.compaction_max_retries
+    ):
+        raise ValueError("summary_retry_used exceeds frozen compaction_max_retries")
+    if lifecycle.status is RunStatus.SUSPENDED and state.recovery.suspension is None:
+        raise ValueError("Suspended state requires suspension business source")
+    if lifecycle.status is RunStatus.RECOVERING and state.recovery.session is None:
+        raise ValueError("Recovering state requires recovery session business source")
     if lifecycle.status is RunStatus.WAITING_APPROVAL:
         if state.approval.pending is None:
             raise ValueError("Waiting approval state requires a pending approval")

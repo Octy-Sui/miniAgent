@@ -39,6 +39,7 @@ from miniagent.runtime.events import (
     ToolStarted,
 )
 from miniagent.runtime.journal import RunJournal
+from miniagent.runtime.progress import CurrentStep
 from miniagent.runtime.result import RunError, RunResult, TerminationReason
 from miniagent.runtime.state import ConversationState, RunState, RunStatus
 from miniagent.runtime.termination import tool_step_failed
@@ -227,6 +228,25 @@ class RunExecution:
         next_trace = deepcopy(self.trace)
         next_trace.begin_step(next_state.execution.steps_started)
         step_started = next_trace.step_event(StepStarted())
+        record = self.journal.recorder.record
+        next_state = RunState.model_validate(
+            next_state.model_copy(
+                update={
+                    "execution": next_state.execution.model_copy(
+                        update={
+                            "current_step": CurrentStep(
+                                step_number=next_state.execution.steps_started,
+                                message_start=len(self.state.conversation.messages),
+                                started_event_id=step_started.event_id,
+                                started_sequence=record.last_event_sequence + 1
+                                if record
+                                else 1,
+                            ),
+                        }
+                    ),
+                }
+            ).model_dump(mode="python")
+        )
         next_trace.begin_model()
         model_requested = next_trace.model_event(
             ModelRequested(provider=provider, model=model)
