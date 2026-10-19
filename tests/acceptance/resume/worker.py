@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -51,6 +52,20 @@ async def receive(channel):
 async def run(args, channel) -> int:
     root = args.root
     database = root / "runs.sqlite3"
+    manifest = None
+    if args.unresolved_manifest:
+        from tests.acceptance.resume.fixtures import load_unresolved_manifest
+
+        manifest = load_unresolved_manifest(
+            Path(args.unresolved_manifest), before=datetime.now(UTC)
+        )
+        os.environ.update(
+            SWEBENCH_DATA_ROOT=str(manifest.data_root),
+            SWEBENCH_WORK_ROOT=str(root / "harness"),
+            SWEBENCH_EXECUTABLE=manifest.harness_executable,
+            SWEBENCH_ALLOW_IMAGE_PULL="false",
+        )
+
     source = root / "source"
     if args.action == "new" and not source.exists():
         source.mkdir()
@@ -98,6 +113,28 @@ async def run(args, channel) -> int:
                     finish_reason=FinishReason.STOP,
                     usage=ModelUsage(
                         input_tokens=40, output_tokens=10, total_tokens=50
+                    ),
+                )
+            if manifest is not None:
+                encoded = base64.b64encode(manifest.patch_path.read_bytes()).decode()
+                program = f"import base64,subprocess; subprocess.run(['git','apply','-'],input=base64.b64decode('{encoded}'),check=True)"
+                import shlex
+
+                return ModelResponse(
+                    message=AssistantMessage(
+                        tool_calls=(
+                            ToolCall(
+                                id="c2",
+                                name="shell",
+                                arguments={
+                                    "command": "python -c " + shlex.quote(program)
+                                },
+                            ),
+                        )
+                    ),
+                    finish_reason=FinishReason.TOOL_CALL,
+                    usage=ModelUsage(
+                        input_tokens=100, output_tokens=20, total_tokens=120
                     ),
                 )
             calls = []
@@ -160,24 +197,43 @@ async def run(args, channel) -> int:
         async def create(self, state, **kwargs):
             context = kwargs["recovery_context"]
             attachment = context.attachment
-            (root / "origin.json").write_text(
-                json.dumps(
-                    {
-                        "run_id": str(state.identity.run_id),
-                        "created_at": state.identity.created_at.isoformat(),
-                        "workspace_id": attachment.workspace_id,
-                        "repository_root": str(attachment.repository_root),
-                        "index_sha256": hashlib.sha256(
-                            (attachment.repository_root / ".git" / "index").read_bytes()
-                        ).hexdigest(),
-                        "time": monotonic(),
-                    }
+            metadata = {
+                "run_id": str(state.identity.run_id),
+                "created_at": state.identity.created_at.isoformat(),
+                "workspace_id": attachment.workspace_id,
+                "time": monotonic(),
+            }
+            if attachment.kind == "local":
+                metadata.update(
+                    repository_root=str(attachment.repository_root),
+                    index_sha256=hashlib.sha256(
+                        (attachment.repository_root / ".git" / "index").read_bytes()
+                    ).hexdigest(),
                 )
-            )
+            else:
+                metadata.update(
+                    container_id=attachment.container_id,
+                    daemon_id=attachment.connection.daemon_id,
+                )
+            (root / "origin.json").write_text(json.dumps(metadata))
             return await super().create(state, **kwargs)
 
         async def commit(self, change):
             result = await super().commit(change)
+            if args.gate_harness and any(
+                getattr(getattr(event.payload, "identity", None), "role", None)
+                == "harness"
+                for event in change.events
+            ):
+                channel.send(
+                    {
+                        "boundary": "harness",
+                        "sequence": result.record.last_event_sequence,
+                        "time": monotonic(),
+                    }
+                )
+                assert await receive(channel) == "continue"
+
             log(
                 "commits.jsonl",
                 {
@@ -231,10 +287,48 @@ async def run(args, channel) -> int:
                 )
             await asyncio.Event().wait()
         if args.action == "new":
+            from miniagent.environments.config import WorkspaceKind
+            from miniagent.evaluation.swebench_data import (
+                SWEbenchTaskContext,
+                load_prepared_task,
+            )
+
+            if manifest is not None:
+                prepared = load_prepared_task(
+                    manifest.data_root,
+                    SWEbenchTaskContext(
+                        instance_id=manifest.instance_id,
+                        evaluation_image=manifest.image_id,
+                    ),
+                )
+                assert prepared.record_sha256 == manifest.task_record_sha256
+                assert prepared.record.fail_to_pass == manifest.fail_to_pass
+                assert prepared.record.pass_to_pass == manifest.pass_to_pass
+                from miniagent.environments.docker_connection import (
+                    resolve_docker_connection,
+                )
+
+                connection = await resolve_docker_connection(
+                    Path("docker"), dict(os.environ)
+                )
+                assert connection.daemon_id == manifest.daemon_id
+
             return await execute_new_run(
                 BootstrapConfig(
                     agent=DEFAULT_AGENT,
-                    task="append c0, c1, c2 once, then resume-local-ok",
+                    task=manifest.task
+                    if manifest
+                    else "append c0, c1, c2 once, then resume-local-ok",
+                    workspace_kind=WorkspaceKind.DOCKER
+                    if manifest
+                    else WorkspaceKind.LOCAL,
+                    docker_image=manifest.image_id if manifest else None,
+                    swebench_task=SWEbenchTaskContext(
+                        instance_id=manifest.instance_id,
+                        evaluation_image=manifest.image_id,
+                    )
+                    if manifest
+                    else None,
                     source_dir=source,
                     approval_handler=ConsoleApprovalHandler()
                     if args.console_approval
@@ -294,6 +388,8 @@ def main():
     parser.add_argument(
         "--first-status", choices=("success", "error", "timeout"), default="success"
     )
+    parser.add_argument("--unresolved-manifest")
+    parser.add_argument("--gate-harness", action="store_true")
     parser.add_argument("--fault-event")
     parser.add_argument("--fault-action", default="pause_after_commit")
     args = parser.parse_args()

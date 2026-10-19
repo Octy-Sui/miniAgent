@@ -1,0 +1,146 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "selection": {
+      "const": "development",
+      "title": "Selection",
+      "type": "string"
+    },
+    "instance_id": {
+      "minLength": 1,
+      "title": "Instance Id",
+      "type": "string"
+    },
+    "task": {
+      "minLength": 1,
+      "title": "Task",
+      "type": "string"
+    },
+    "data_root": {
+      "format": "path",
+      "title": "Data Root",
+      "type": "string"
+    },
+    "task_record_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Task Record Sha256",
+      "type": "string"
+    },
+    "harness_version": {
+      "const": "5.0.2",
+      "title": "Harness Version",
+      "type": "string"
+    },
+    "harness_executable": {
+      "minLength": 1,
+      "title": "Harness Executable",
+      "type": "string"
+    },
+    "image_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Image Id",
+      "type": "string"
+    },
+    "daemon_id": {
+      "minLength": 1,
+      "title": "Daemon Id",
+      "type": "string"
+    },
+    "patch_path": {
+      "format": "path",
+      "title": "Patch Path",
+      "type": "string"
+    },
+    "patch_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Patch Sha256",
+      "type": "string"
+    },
+    "report_path": {
+      "format": "path",
+      "title": "Report Path",
+      "type": "string"
+    },
+    "report_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Report Sha256",
+      "type": "string"
+    },
+    "confirmed_by": {
+      "minLength": 1,
+      "title": "Confirmed By",
+      "type": "string"
+    },
+    "confirmed_at": {
+      "format": "date-time",
+      "title": "Confirmed At",
+      "type": "string"
+    },
+    "evidence_origin": {
+      "const": "independent_prior_run",
+      "title": "Evidence Origin",
+      "type": "string"
+    },
+    "prior_run_id": {
+      "minLength": 1,
+      "title": "Prior Run Id",
+      "type": "string"
+    },
+    "required_failures": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Required Failures",
+      "type": "array"
+    },
+    "fail_to_pass": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Fail To Pass",
+      "type": "array"
+    },
+    "pass_to_pass": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Pass To Pass",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "selection",
+    "instance_id",
+    "task",
+    "data_root",
+    "task_record_sha256",
+    "harness_version",
+    "harness_executable",
+    "image_id",
+    "daemon_id",
+    "patch_path",
+    "patch_sha256",
+    "report_path",
+    "report_sha256",
+    "confirmed_by",
+    "confirmed_at",
+    "evidence_origin",
+    "prior_run_id",
+    "required_failures",
+    "fail_to_pass",
+    "pass_to_pass"
+  ],
+  "title": "UnresolvedManifest",
+  "type": "object"
+}
