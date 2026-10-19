@@ -46,7 +46,7 @@ from miniagent.runtime.context import (
     should_compact,
     validate_summary,
 )
-from miniagent.runtime.events import CompactionAttempt
+from miniagent.runtime.events import CompactionAttempt, CompactionRequested
 from miniagent.runtime.execution import (
     ContinueRun,
     EvaluateCandidate,
@@ -295,10 +295,40 @@ class AgentRuntime:
         self, execution: RunExecution, *, force: bool = False
     ) -> ModelRequest | RunTermination:
         old_request = self._build_request(execution.state)
+        progress = execution.state.execution.request_progress
+        original = None
+        store = execution.journal.recorder.store
+        if progress.source_version is not None and store is not None:
+            requests = [
+                event.payload
+                for event in await store.list_events(execution.state.identity.run_id)
+                if isinstance(event.payload, CompactionRequested)
+                and event.payload.source_snapshot_version == progress.source_version
+            ]
+            if not requests or any(
+                item.covered_messages != requests[0].covered_messages
+                or item.hard_trigger != requests[0].hard_trigger
+                for item in requests
+            ):
+                raise ValueError(
+                    "Original compaction request is missing or inconsistent"
+                )
+            original = requests[0]
         try:
             plan = select_compaction_prefix(
-                execution.state, old_request, self.estimator, force=force
+                execution.state,
+                old_request,
+                self.estimator,
+                force=force or original is not None,
+                covered_messages=original.covered_messages if original else None,
             )
+            if plan is not None and original is not None:
+                plan = replace(
+                    plan,
+                    hard_trigger=force
+                    or original.hard_trigger
+                    or plan.T > plan.budget.B,
+                )
         except ContextCapacityError as exc:
             await execution.fail_compaction("CONTEXT_CAPACITY_EXCEEDED", str(exc))
             return self._context_failure("CONTEXT_CAPACITY_EXCEEDED", str(exc))
@@ -308,10 +338,19 @@ class AgentRuntime:
         recorder = execution.journal.recorder
         if recorder.store is not None and recorder.record is not None:
             source = await recorder.store.load_version(
-                execution.state.identity.run_id, recorder.record.latest_snapshot_version
+                execution.state.identity.run_id,
+                execution.state.execution.request_progress.source_version
+                or recorder.record.latest_snapshot_version,
             )
             if source is None:
                 raise ValueError("compaction source Snapshot is unavailable")
+            if (
+                source.state.conversation != execution.state.conversation
+                or source.state.context != execution.state.context
+            ):
+                raise ValueError(
+                    "Compaction source history differs from original source"
+                )
             plan = replace(
                 plan,
                 source_snapshot_version=source.version,
@@ -327,7 +366,7 @@ class AgentRuntime:
                 if plan.hard_trigger
                 else old_request
             )
-        if not should_compact(
+        if original is None and not should_compact(
             plan,
             summary_request_tokens=summary_tokens,
             remaining_steps=execution.state.definition.config.max_steps
@@ -338,10 +377,20 @@ class AgentRuntime:
         response = None
         failure = "summary generation failed"
         config = execution.state.definition.config
-        for number in range(1, config.compaction_max_retries + 2):
+        progress = execution.state.execution.request_progress
+        number = progress.summary_retry_used + (2 if progress.retry_pending else 1)
+        while number <= config.compaction_max_retries + 1:
+            if (
+                progress.last_failure is not None
+                and not progress.last_failure.retryable
+            ):
+                failure = progress.last_failure.message
+                break
             if self.cancellation_token.is_cancelled:
                 raise CancellationRequested
-            await execution.begin_compaction_attempt(plan, number)
+            await execution.begin_compaction_attempt(
+                plan, number, branch="forced_compaction" if force else "boundary"
+            )
             try:
                 response = await await_with_cancellation(
                     asyncio.wait_for(
@@ -364,13 +413,21 @@ class AgentRuntime:
                     attempt=number, error_code=type(exc).__name__
                 )
                 attempts.append(attempt)
-                await execution.record_compaction_attempt(attempt)
-                response = None
-                if (
+                retryable = (
                     isinstance(exc, TimeoutError)
                     or isinstance(exc, ModelProviderError)
                     and exc.retryable
-                ):
+                )
+                await execution.record_compaction_attempt(
+                    attempt,
+                    failure=RunError(
+                        code=type(exc).__name__, message=failure, retryable=retryable
+                    ),
+                )
+                response = None
+                if retryable:
+                    number += 1
+                    progress = execution.state.execution.request_progress
                     continue
                 break
             cost = None
@@ -390,7 +447,16 @@ class AgentRuntime:
                 error_code=response.error.code if response.error else None,
             )
             attempts.append(attempt)
-            await execution.record_compaction_attempt(attempt)
+            await execution.record_compaction_attempt(
+                attempt,
+                failure=RunError(
+                    code=response.error.code,
+                    message=response.error.message,
+                    retryable=response.error.retryable,
+                )
+                if response.error
+                else None,
+            )
             if self.cancellation_token.is_cancelled:
                 await execution.fail_compaction(
                     "COMPACTION_FAILED", "compaction cancelled", tuple(attempts)
@@ -401,6 +467,8 @@ class AgentRuntime:
                 retryable = response.error.retryable
                 response = None
                 if retryable:
+                    number += 1
+                    progress = execution.state.execution.request_progress
                     continue
             break
         if response is None:
@@ -473,9 +541,19 @@ class AgentRuntime:
                 raise ValueError(
                     "Prior model attempt must be interrupted before continuation"
                 )
-            request = self._build_request(execution.state)
-            await execution.begin_model_retry()
-        for business_attempt in range(2):
+            progress = execution.state.execution.request_progress
+            if progress.branch == "forced_compaction":
+                request = await self._prepare_request(execution, force=True)
+                if isinstance(request, RunTermination):
+                    return TerminateRun(request)
+                await execution.begin_model_retry(context_retry=True)
+            else:
+                request = self._build_request(execution.state)
+                await execution.begin_model_retry(
+                    context_retry=progress.branch == "business"
+                    and progress.retry_pending
+                )
+        while True:
             try:
                 response = await await_with_cancellation(
                     self.provider.generate(request), self.cancellation_token
@@ -484,7 +562,7 @@ class AgentRuntime:
                 raise
             except ModelContextLimitError as exc:
                 await execution.record_model_failure("CONTEXT_CAPACITY_EXCEEDED")
-                if business_attempt == 1:
+                if execution.state.execution.request_progress.business_retry_used >= 1:
                     return TerminateRun(
                         self._context_failure("CONTEXT_CAPACITY_EXCEEDED", str(exc))
                     )
@@ -502,7 +580,7 @@ class AgentRuntime:
                 if self.cancellation_token.is_cancelled:
                     raise CancellationRequested
                 request = retry_request
-                await execution.begin_model_retry()
+                await execution.begin_model_retry(context_retry=True)
                 continue
             except Exception as exc:  # noqa: BLE001
                 await execution.interrupt_operation(unconfirmed=True)

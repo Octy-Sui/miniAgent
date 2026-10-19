@@ -142,6 +142,31 @@ class RunJournal:
                 "context": ContextProgress(current_version=version),
             }
         )
+        progress = state.execution.request_progress
+        step = state.execution.current_step
+        candidate = candidate.model_copy(
+            update={
+                "execution": state.execution.model_copy(
+                    update={
+                        "current_step": step.model_copy(
+                            update={"message_start": len(conversation.messages)}
+                        )
+                        if step
+                        else None,
+                        "request_progress": progress.model_copy(
+                            update={
+                                "branch": "business"
+                                if progress.branch == "forced_compaction"
+                                else "boundary",
+                                "retry_pending": progress.branch == "forced_compaction",
+                                "source_version": None,
+                                "last_failure": None,
+                            }
+                        ),
+                    }
+                )
+            }
+        )
         content = conversation.messages[2].content
         assert content is not None
         budget = plan.budget

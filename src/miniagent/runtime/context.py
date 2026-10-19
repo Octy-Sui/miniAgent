@@ -98,6 +98,7 @@ def select_compaction_prefix(
     estimator: PromptTokenEstimator,
     *,
     force: bool = False,
+    covered_messages: tuple[int, int] | None = None,
 ) -> CompactionPlan | None:
     budget = ContextBudget.for_state(state)
     tokens = estimator.estimate(request)
@@ -151,14 +152,20 @@ def select_compaction_prefix(
     selected = None
     for count in range(1, len(steps) - keep + 1):
         end = steps[count - 1].message_end
+        if covered_messages is not None and covered_messages != (2, end):
+            continue
         retained = request.model_copy(
             update={"messages": (*request.messages[:2], *request.messages[end:])}
         )
         retained_tokens = estimator.estimate(retained)
         selected = (count, end, retained_tokens)
-        if retained_tokens + budget.summary_reserve <= target:
+        if (
+            covered_messages is not None
+            or retained_tokens + budget.summary_reserve <= target
+        ):
             break
-    assert selected is not None
+    if selected is None:
+        raise ContextCapacityError("Original compaction prefix is unavailable")
     count, end, retained_tokens = selected
     if retained_tokens > budget.B:
         raise ContextCapacityError(

@@ -238,6 +238,7 @@ class CompactionAttempt(_Payload):
 
 
 class CompactionRequested(_Payload):
+    hard_trigger: bool = False
     type: Literal[RunEventType.COMPACTION_REQUESTED] = RunEventType.COMPACTION_REQUESTED
     provider: str
     model: str

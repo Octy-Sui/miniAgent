@@ -53,6 +53,7 @@ from miniagent.runtime.progress import (
     CurrentStep,
     ExecutionPhase,
     OperationRef,
+    RequestProgress,
     ResponseDisposition,
     TerminateDisposition,
     TerminationDecision,
@@ -230,6 +231,18 @@ class RunExecution:
                 ),
             }
         )
+        if operation.kind == "summary":
+            state = state.model_copy(
+                update={
+                    "execution": state.execution.model_copy(
+                        update={
+                            "request_progress": state.execution.request_progress.model_copy(
+                                update={"retry_pending": True}
+                            )
+                        }
+                    )
+                }
+            )
         if trace.has_model:
             trace.end_model()
         await self.journal.record_activity(state, [event])
@@ -253,18 +266,40 @@ class RunExecution:
         )
 
     async def begin_compaction_attempt(
-        self, plan: CompactionPlan, attempt: int
+        self,
+        plan: CompactionPlan,
+        attempt: int,
+        *,
+        branch: Literal["boundary", "forced_compaction"] = "boundary",
     ) -> None:
+        progress = self.state.execution.request_progress
+        used = progress.summary_retry_used + int(progress.retry_pending)
+        if used > self.state.definition.config.compaction_max_retries:
+            raise ValueError("Summary retry balance exhausted")
+        progress = progress.model_copy(
+            update={
+                "branch": branch,
+                "summary_retry_used": used,
+                "retry_pending": False,
+                "source_version": progress.source_version
+                or plan.source_snapshot_version,
+                "last_failure": None,
+            }
+        )
         state = self.state.model_copy(
             update={
                 "usage": self.state.usage.model_copy(
                     update={"model_requests": self.state.usage.model_requests + 1}
-                )
+                ),
+                "execution": self.state.execution.model_copy(
+                    update={"request_progress": progress}
+                ),
             }
         )
         target = state.definition.agent_spec.model
         event = self.trace.run_event(
             CompactionRequested(
+                hard_trigger=plan.hard_trigger,
                 provider=target.provider,
                 model=target.model,
                 attempt=attempt,
@@ -272,11 +307,56 @@ class RunExecution:
                 covered_messages=plan.covered_messages,
             )
         )
+        record = self.journal.recorder.record
+        state = state.model_copy(
+            update={
+                "execution": state.execution.model_copy(
+                    update={
+                        "active_operation": OperationRef(
+                            kind="summary",
+                            attempt_id=uuid4(),
+                            started_event_id=event.event_id,
+                            started_sequence=record.last_event_sequence + 1
+                            if record
+                            else 1,
+                            step_number=state.execution.current_step.step_number
+                            if state.execution.current_step
+                            else None,
+                        )
+                    }
+                )
+            }
+        )
         await self.journal.record_activity(state, [event])
         self.state = state
 
-    async def record_compaction_attempt(self, attempt: CompactionAttempt) -> None:
+    async def record_compaction_attempt(
+        self, attempt: CompactionAttempt, *, failure: RunError | None = None
+    ) -> None:
         state = self.state
+        state = state.model_copy(
+            update={
+                "execution": state.execution.model_copy(
+                    update={
+                        "active_operation": None,
+                        "request_progress": state.execution.request_progress.model_copy(
+                            update={"retry_pending": True, "last_failure": failure}
+                        ),
+                    }
+                )
+            }
+        )
+        if attempt.usage is None:
+            state = state.model_copy(
+                update={
+                    "usage": state.usage.model_copy(
+                        update={
+                            "unconfirmed_model_requests": state.usage.unconfirmed_model_requests
+                            + 1
+                        }
+                    )
+                }
+            )
         if attempt.usage is not None:
             state = state.model_copy(
                 update={
@@ -326,6 +406,13 @@ class RunExecution:
 
     async def begin_step(self, *, provider: str, model: str) -> None:
         next_state = advance_step(self.state)
+        next_state = next_state.model_copy(
+            update={
+                "execution": next_state.execution.model_copy(
+                    update={"request_progress": RequestProgress(branch="business")}
+                )
+            }
+        )
         next_trace = deepcopy(self.trace)
         next_trace.begin_step(next_state.execution.steps_started)
         step_started = next_trace.step_event(StepStarted())
@@ -402,10 +489,25 @@ class RunExecution:
                 ),
             }
         )
+        if (
+            code == "CONTEXT_CAPACITY_EXCEEDED"
+            and state.execution.request_progress.business_retry_used == 0
+        ):
+            state = state.model_copy(
+                update={
+                    "execution": state.execution.model_copy(
+                        update={
+                            "request_progress": RequestProgress(
+                                branch="forced_compaction"
+                            )
+                        }
+                    )
+                }
+            )
         await self.journal.record_activity(state, [event])
         self.state, self.trace = state, trace
 
-    async def begin_model_retry(self) -> None:
+    async def begin_model_retry(self, *, context_retry: bool = False) -> None:
         trace = deepcopy(self.trace)
         trace.begin_model()
         target = self.state.definition.agent_spec.model
@@ -443,6 +545,25 @@ class RunExecution:
                 )
             }
         )
+        if context_retry:
+            progress = state.execution.request_progress
+            if progress.business_retry_used >= 1:
+                raise ValueError("Business context retry balance exhausted")
+            state = state.model_copy(
+                update={
+                    "execution": state.execution.model_copy(
+                        update={
+                            "request_progress": progress.model_copy(
+                                update={
+                                    "branch": "business",
+                                    "business_retry_used": 1,
+                                    "retry_pending": False,
+                                }
+                            )
+                        }
+                    )
+                }
+            )
         await self.journal.record_activity(state, [event])
         self.state = state
         self.trace = trace
