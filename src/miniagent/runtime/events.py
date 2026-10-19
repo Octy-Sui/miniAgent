@@ -246,7 +246,7 @@ type EventPayload = Annotated[
 class NewRunEvent(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     run_id: UUID
     event_id: UUID = Field(default_factory=uuid4)
     payload: EventPayload

@@ -1,6 +1,7 @@
 import asyncio
 import sqlite3
 from collections.abc import Awaitable, Callable
+from contextlib import closing
 from datetime import UTC, datetime
 from hashlib import sha256
 from importlib.resources import files
@@ -82,7 +83,7 @@ from miniagent.storage.queries.snapshots import (
     select_snapshot_version,
 )
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _T = TypeVar("_T")
 
 
@@ -95,16 +96,19 @@ class SQLiteRunStore:
         self,
         path: Path,
         *,
+        read_only: bool = False,
         busy_timeout_ms: int = 5_000,
         clock: Callable[[], datetime] = _now,
     ) -> None:
         if busy_timeout_ms < 0:
             raise ValueError("busy_timeout_ms must be non-negative")
-        self.path = path
+        self.path = path.expanduser().resolve()
+        self.read_only = read_only
         self.busy_timeout_ms = busy_timeout_ms
         self._clock = clock
 
     async def initialize(self) -> None:
+        self._require_writable()
         await self._in_thread(self._initialize_sync)
 
     def create(
@@ -113,6 +117,7 @@ class SQLiteRunStore:
         *,
         recovery_context: RunRecoveryContext | None = None,
     ) -> Awaitable[RunRecord]:
+        self._require_writable()
         frozen_state = RunState.model_validate_json(state.model_dump_json())
         frozen_context = (
             RunRecoveryContext.model_validate_json(recovery_context.model_dump_json())
@@ -130,6 +135,7 @@ class SQLiteRunStore:
         return await self._in_thread(lambda: self._get_sync(run_id))
 
     def commit(self, change: RunCommit) -> Awaitable[CommitResult]:
+        self._require_writable()
         frozen = RunCommit.model_validate_json(change.model_dump_json())
         return self._in_thread(lambda: self._commit_sync(frozen))
 
@@ -139,6 +145,7 @@ class SQLiteRunStore:
         *,
         expected_sequence: int,
     ) -> Awaitable[RunEvent]:
+        self._require_writable()
         frozen = NewRunEvent.model_validate_json(event.model_dump_json())
         return self._in_thread(
             lambda: self._append_sync(frozen, expected_sequence=expected_sequence)
@@ -172,6 +179,7 @@ class SQLiteRunStore:
         *,
         expected_version: int,
     ) -> Awaitable[RunSnapshot]:
+        self._require_writable()
         frozen = NewRunSnapshot.model_validate_json(snapshot.model_dump_json())
         return self._in_thread(
             lambda: self._save_snapshot_sync(
@@ -182,7 +190,7 @@ class SQLiteRunStore:
 
     async def load_version(self, run_id: UUID, version: int) -> RunSnapshot | None:
         def load() -> RunSnapshot | None:
-            with self._connect() as connection:
+            with closing(self._connect()) as connection:
                 row = select_snapshot_version(connection, run_id, version)
                 return decode_snapshot(row) if row is not None else None
 
@@ -205,21 +213,52 @@ class SQLiteRunStore:
             await asyncio.shield(task)
             raise
 
-    def _connect(self) -> sqlite3.Connection:
+    def _require_writable(self) -> None:
+        if self.read_only:
+            raise PermissionError("Run store is read-only")
+
+    async def inspect_schema(self) -> None:
+        def inspect() -> None:
+            with closing(self._connect()):
+                pass
+
+        await self._in_thread(inspect)
+
+    @staticmethod
+    def _inspect_schema(connection: sqlite3.Connection) -> None:
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version != _SCHEMA_VERSION:
+            raise UnsupportedStorageVersionError(
+                f"Database schema version {version} is unsupported; expected {_SCHEMA_VERSION}"
+            )
+
+    def _connect(self, *, initializing: bool = False) -> sqlite3.Connection:
+        mode = "ro" if self.read_only else ("rwc" if initializing else "rw")
         connection = sqlite3.connect(
-            self.path,
+            self.path.as_uri() + f"?mode={mode}",
+            uri=True,
             isolation_level=None,
             timeout=self.busy_timeout_ms / 1_000,
         )
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
-        connection.execute("PRAGMA synchronous = FULL")
-        return connection
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
+            if not initializing:
+                self._inspect_schema(connection)
+            if self.read_only:
+                connection.execute("PRAGMA query_only = ON")
+            else:
+                connection.execute("PRAGMA synchronous = FULL")
+            return connection
+        except BaseException:
+            connection.close()
+            raise
 
     def _initialize_sync(self) -> None:
+        self._require_writable()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as connection:
+        with closing(self._connect(initializing=True)) as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 version = int(connection.execute("PRAGMA user_version").fetchone()[0])
@@ -229,6 +268,15 @@ class SQLiteRunStore:
                         f"expected {_SCHEMA_VERSION}"
                     )
                 if version == 0:
+                    if (
+                        connection.execute(
+                            "SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1"
+                        ).fetchone()
+                        is not None
+                    ):
+                        raise UnsupportedStorageVersionError(
+                            "Database schema version 0 is nonempty and unsupported"
+                        )
                     schema = (
                         files("miniagent.storage.migrations")
                         .joinpath("001_initial.sql")
@@ -271,7 +319,8 @@ class SQLiteRunStore:
                 sleep(min(0.05, max(0.0, deadline - monotonic())))
 
     def _transaction(self, operation: Callable[[sqlite3.Connection], _T]) -> _T:
-        with self._connect() as connection:
+        self._require_writable()
+        with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 result = operation(connection)
@@ -321,7 +370,7 @@ class SQLiteRunStore:
         return self._transaction(create)
 
     def _get_sync(self, run_id: UUID) -> RunRecord:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             return self._get_record(connection, run_id)
 
     def _get_record(
@@ -832,7 +881,7 @@ class SQLiteRunStore:
         after_sequence: int,
         limit: int | None,
     ) -> list[RunEvent]:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             self._require_run(connection, run_id)
             rows = select_events(
                 connection,
@@ -907,7 +956,7 @@ class SQLiteRunStore:
         )
 
     def _load_latest_sync(self, run_id: UUID) -> RunSnapshot | None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             self._require_run(connection, run_id)
             row = select_latest_snapshot(connection, run_id)
             return decode_snapshot(row) if row is not None else None
@@ -923,7 +972,7 @@ class SQLiteRunStore:
         return int(row["latest_snapshot_version"])
 
     def _get_approval_sync(self, approval_id: UUID) -> StoredApproval:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             return self._get_approval(connection, approval_id)
 
     def _get_approval(
@@ -950,7 +999,7 @@ class SQLiteRunStore:
         return decode_approval(row)
 
     def _list_pending_approvals_sync(self) -> list[StoredApproval]:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             return [
                 decode_approval(row) for row in select_pending_approvals(connection)
             ]

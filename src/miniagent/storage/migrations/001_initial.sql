@@ -3,7 +3,7 @@ CREATE TABLE runs (
     schema_version INTEGER NOT NULL CHECK (schema_version >= 1),
     status TEXT NOT NULL CHECK (status IN (
         'created', 'preparing', 'running', 'waiting_approval',
-        'recovering', 'evaluating', 'succeeded', 'failed', 'cancelled'
+        'recovering', 'suspended', 'evaluating', 'succeeded', 'failed', 'cancelled'
     )),
     state_json TEXT NOT NULL CHECK (json_valid(state_json)),
     recovery_context_json TEXT CHECK (
@@ -116,4 +116,4 @@ BEGIN
     SELECT RAISE(ABORT, 'run snapshots are immutable');
 END;
 
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;

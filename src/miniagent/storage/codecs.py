@@ -18,7 +18,7 @@ from miniagent.runtime.store_contracts import (
 
 _ARTIFACTS_ADAPTER = TypeAdapter(list[ArtifactRef])
 _EVENT_PAYLOAD_ADAPTER = TypeAdapter(EventPayload)
-_SUPPORTED_VERSIONS = {"run": 2, "event": 2, "snapshot": 2, "approval": 1}
+_SUPPORTED_VERSIONS = {"run": 3, "event": 3, "snapshot": 3, "approval": 1}
 
 
 def encode_datetime(value: datetime) -> str:
@@ -95,7 +95,13 @@ def decode_event(row: sqlite3.Row) -> RunEvent:
 def decode_snapshot(row: sqlite3.Row) -> RunSnapshot:
     require_supported_version("snapshot", row["schema_version"])
     try:
-        envelope = NewRunSnapshot.model_validate_json(row["snapshot_json"])
+        raw = json.loads(row["snapshot_json"])
+        if not isinstance(raw, dict):
+            raise CorruptStoredDataError("Snapshot envelope must be an object")
+        require_supported_version("snapshot", raw.get("schema_version"))
+        if raw.get("recovery_context") is not None:
+            decode_recovery_context(json.dumps(raw["recovery_context"]))
+        envelope = NewRunSnapshot.model_validate(raw)
         if (
             str(envelope.run_id) != row["run_id"]
             or envelope.event_sequence != row["event_sequence"]
@@ -159,6 +165,15 @@ def decode_recovery_context(value: str) -> RunRecoveryContext:
         raise UnsupportedStorageVersionError(
             f"Stored recovery context schema version {version!r} is unsupported; "
             "expected 2"
+        )
+    application = raw.get("application")
+    if application is not None and (
+        not isinstance(application, dict)
+        or application.get("schema_version") != 1
+        or application.get("kind") != "cli_application"
+    ):
+        raise UnsupportedStorageVersionError(
+            "Stored application schema version or kind is unsupported; expected cli_application v1"
         )
     return RunRecoveryContext.model_validate(raw)
 

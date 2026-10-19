@@ -960,7 +960,7 @@ async def test_concurrent_initialization_serializes_migration(tmp_path: Path) ->
     await asyncio.gather(*(store.initialize() for store in stores))
 
     with sqlite3.connect(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert (
             connection.execute(
@@ -970,7 +970,7 @@ async def test_concurrent_initialization_serializes_migration(tmp_path: Path) ->
         )
 
 
-@pytest.mark.parametrize("version", [1, 3])
+@pytest.mark.parametrize("version", [2, 4])
 async def test_unsupported_database_schema_is_rejected(
     tmp_path: Path,
     version: int,
@@ -979,7 +979,7 @@ async def test_unsupported_database_schema_is_rejected(
     with sqlite3.connect(path) as connection:
         connection.execute(f"PRAGMA user_version = {version}")
 
-    with pytest.raises(UnsupportedStorageVersionError, match="expected 2"):
+    with pytest.raises(UnsupportedStorageVersionError, match="expected 3"):
         await SQLiteRunStore(path).initialize()
 
 

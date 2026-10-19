@@ -22,7 +22,7 @@ class SnapshotVersionConflictError(RuntimeError):
 class NewRunSnapshot(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     run_id: UUID
     event_sequence: int = Field(ge=0)
     state: RunState
