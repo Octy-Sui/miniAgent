@@ -48,6 +48,7 @@ class ReadBudget:
 
 
 if TYPE_CHECKING:
+    from miniagent.artifacts.contracts import ArtifactRecord
     from miniagent.dashboard.cursors import PageBoundary, RunPosition
     from miniagent.models.messages import Message
     from miniagent.runtime.events import RunEvent
@@ -214,3 +215,26 @@ def _missing_state_fields(raw: object) -> tuple[ReadIssue, ...]:
                 break
             value = value[key]
     return tuple(issues)
+
+
+@dataclass(frozen=True)
+class ManifestItem:
+    artifact_id: UUID
+    record: ArtifactRecord | None
+    issues: tuple[ReadIssue, ...]
+
+
+@dataclass(frozen=True)
+class ManifestPage:
+    items: tuple[ManifestItem, ...]
+    next_id: UUID | None
+    read_at: datetime
+    complete: bool
+    issues: tuple[ReadIssue, ...] = ()
+
+
+@dataclass(frozen=True)
+class PatchDiscovery:
+    items: tuple[ManifestItem, ...]
+    complete: bool
+    issues: tuple[ReadIssue, ...]
