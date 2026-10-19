@@ -14,6 +14,7 @@ from miniagent.dashboard.reads import (
     ReadFailure,
     ReadIssue,
     StoredEvent,
+    ToolFacts,
 )
 from miniagent.runtime.store_contracts import (
     CorruptStoredDataError,
@@ -84,11 +85,16 @@ def _read_events(
 ) -> EventBatch:
     if not 1 <= limit <= 200 or not 0 <= after_sequence <= boundary.as_of_sequence:
         raise ReadFailure(422, "event_range_invalid")
-    if filters != EventFilters():
-        raise ReadFailure(422, "filters_not_supported")
+    conditions, values = _event_conditions(filters)
     rows = connection.execute(
-        f"SELECT {_EVENT_COLUMNS} FROM run_events WHERE run_id=? AND sequence>? AND sequence<=? ORDER BY sequence LIMIT ?",
-        (str(boundary.run_id), after_sequence, boundary.as_of_sequence, limit + 1),
+        f"SELECT {_EVENT_COLUMNS} FROM run_events WHERE run_id=? AND sequence>? AND sequence<=? AND {conditions} ORDER BY sequence LIMIT ?",
+        (
+            str(boundary.run_id),
+            after_sequence,
+            boundary.as_of_sequence,
+            *values,
+            limit + 1,
+        ),
     ).fetchall()
     items = tuple(_load_event(connection, row, budget) for row in rows[:limit])
     return EventBatch(items, items[-1].sequence if len(rows) > limit else None)
@@ -149,3 +155,76 @@ def locate_event(
             ),
             None,
         )
+
+
+def read_tool_facts(
+    database: Path,
+    boundary: PageBoundary,
+    keys: tuple[tuple[int, str], ...],
+    *,
+    budget: ReadBudget,
+    connect: ConnectionFactory = sqlite3.connect,
+) -> ToolFacts:
+    if len(keys) > 200:
+        raise ReadFailure(422, "tool_keys_invalid")
+    events: list[StoredEvent] = []
+    counts: dict[tuple[int, str, str], int] = {}
+    issues: list[ReadIssue] = []
+    with read_transaction(database, budget, connect=connect) as connection:
+        _validate_boundary(connection, boundary)
+        for step, call_id in dict.fromkeys(keys):
+            budget.check()
+            predicate = f"run_id=? AND sequence<=? AND step_number=? AND type IN ('tool_start','tool_end','tool_execution_start','tool_execution_end') AND json_extract({_PAYLOAD},'$.tool_call_id')=?"
+            values = (str(boundary.run_id), boundary.as_of_sequence, step, call_id)
+            for role, count in connection.execute(
+                f"SELECT type,count(*) FROM run_events WHERE {predicate} GROUP BY type",
+                values,
+            ):
+                counts[(step, call_id, role)] = count
+                rows = connection.execute(
+                    f"SELECT {_EVENT_COLUMNS} FROM run_events WHERE {predicate} AND type=? ORDER BY sequence LIMIT 2",
+                    (*values, role),
+                ).fetchall()
+                events.extend(_load_event(connection, row, budget) for row in rows)
+    if any(event.event is None for event in events):
+        issues.append(ReadIssue("not_loaded", "部分工具事实未完成读取"))
+    return ToolFacts(tuple(events), counts, tuple(issues))
+
+
+_PAYLOAD = "CASE WHEN json_valid(payload_json) AND length(CAST(payload_json AS BLOB))<=1048576 THEN payload_json ELSE '{}' END"
+_TOOL_TYPES = (
+    "tool_start",
+    "tool_end",
+    "tool_execution_start",
+    "tool_execution_end",
+    "policy_decided",
+    "approval_requested",
+    "approval_resolved",
+)
+
+
+def _event_conditions(filters: EventFilters) -> tuple[str, list[object]]:
+    conditions = []
+    values: list[object] = []
+    if filters.types:
+        conditions.append("type IN (" + ",".join("?" for _ in filters.types) + ")")
+        values.extend(filters.types)
+    if filters.step is not None:
+        conditions.append("step_number=?")
+        values.append(filters.step)
+    if filters.tool_name is not None:
+        conditions.append(
+            f"type IN ({','.join('?' for _ in _TOOL_TYPES)}) AND json_extract({_PAYLOAD},'$.tool_name')=?"
+        )
+        values.extend((*_TOOL_TYPES, filters.tool_name))
+    if filters.failures_only:
+        conditions.append(f"""(
+(type='model_responded' AND json_type({_PAYLOAD},'$.error_code')='text' AND json_extract({_PAYLOAD},'$.error_code')!='') OR
+(type IN ('tool_end','tool_execution_end') AND json_extract({_PAYLOAD},'$.status') IN ('error','timeout','denied')) OR
+(type='step_completed' AND json_type({_PAYLOAD},'$.failed')='true') OR
+(type='evaluation_completed' AND json_type({_PAYLOAD},'$.passed')='false') OR
+(type='run_finished' AND json_extract({_PAYLOAD},'$.status')='failed') OR
+(type IN ('compaction_failed','approval_invalidated')) OR
+(type='approval_resolved' AND json_extract({_PAYLOAD},'$.outcome') IN ('rejected','expired','invalidated'))
+)""")
+    return " AND ".join(conditions) or "1", values

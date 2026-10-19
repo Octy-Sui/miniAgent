@@ -140,3 +140,10 @@ class SnapshotSlice:
     end: int
     message_count: int | None
     messages: tuple[Message, ...]
+
+
+@dataclass(frozen=True)
+class ToolFacts:
+    events: tuple[StoredEvent, ...]
+    counts: dict[tuple[int, str, str], int]
+    issues: tuple[ReadIssue, ...]
