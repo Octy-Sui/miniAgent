@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import JsonValue
@@ -66,4 +68,38 @@ class RunView:
     result: tuple[FieldView, ...]
     usage: tuple[FieldView, ...]
     budgets: tuple[FieldView, ...]
+    issues: tuple[ReadIssue, ...]
+
+
+@dataclass(frozen=True)
+class EvidenceView:
+    claim: str
+    state: Literal["verified", "inconsistent", "not_loaded"]
+    source_label: str
+    source: SourceTarget | None
+    issues: tuple[ReadIssue, ...]
+
+
+@dataclass(frozen=True)
+class CompactionAttemptView:
+    attempt: int
+    cost_usd: Decimal | None
+    fields: tuple[FieldView, ...]
+    issues: tuple[ReadIssue, ...]
+
+
+@dataclass(frozen=True)
+class CompactionGroupView:
+    first_requested_sequence: int | None
+    attempts: tuple[CompactionAttemptView, ...]
+    total_cost_usd: Decimal | None
+    issues: tuple[ReadIssue, ...]
+
+
+@dataclass(frozen=True)
+class MemoryView:
+    version: int | None
+    fields: tuple[FieldView, ...]
+    evidence: tuple[EvidenceView, ...]
+    groups: tuple[CompactionGroupView, ...]
     issues: tuple[ReadIssue, ...]

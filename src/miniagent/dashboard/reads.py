@@ -163,3 +163,13 @@ class ScopeRead:
     scopes: dict[str, ScopeFacts]
     complete: bool
     issues: tuple[ReadIssue, ...]
+
+
+@dataclass(frozen=True)
+class CompactionRead:
+    events: tuple[StoredEvent, ...]
+    snapshots: dict[int, StoredSnapshot]
+    source_events: dict[UUID, StoredEvent]
+    unloaded_versions: tuple[int, ...]
+    unloaded_event_ids: tuple[UUID, ...]
+    issues: tuple[ReadIssue, ...]
