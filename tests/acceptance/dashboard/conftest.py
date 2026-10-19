@@ -112,3 +112,8 @@ def page(site: BrowserSite):
         finally:
             context.close()
             browser.close()
+
+
+@pytest.fixture
+async def database(tmp_path: Path) -> Path:
+    return await make_database(tmp_path / "runs.sqlite3")

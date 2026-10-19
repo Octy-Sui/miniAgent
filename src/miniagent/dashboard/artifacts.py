@@ -27,7 +27,14 @@ from miniagent.dashboard.reads import (
 )
 
 OpenFd = Callable[..., int]
-_UNSAFE_ERRNOS = {errno.ELOOP, errno.ENOTDIR, errno.ENXIO, errno.ENODEV}
+_UNSAFE_ERRNOS = {
+    errno.ELOOP,
+    errno.ENOTDIR,
+    errno.ENXIO,
+    errno.ENODEV,
+    errno.ENOTSUP,
+    errno.EOPNOTSUPP,
+}
 
 
 def _candidate(name: str) -> UUID | None:

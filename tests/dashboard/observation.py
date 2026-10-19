@@ -94,11 +94,21 @@ class RecordingConnection(sqlite3.Connection):
 
 import os
 import sys
+from multiprocessing.connection import Connection
 from types import FrameType
 
 
 class RecordingOpen:
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        pause_at: tuple[str, ...] | None = None,
+        channel: Connection | None = None,
+    ) -> None:
+        self.pause_at = pause_at
+        self.channel = channel
+        self.paused = False
         self.root = root.resolve()
         self.nodes: dict[int, tuple[str, ...]] = {}
         self.opened: list[tuple[int, tuple[str, ...], int, int]] = []
@@ -113,6 +123,17 @@ class RecordingOpen:
         self.nodes[descriptor] = relative
         info = os.fstat(descriptor)
         self.opened.append((descriptor, relative, info.st_dev, info.st_ino))
+        if relative == self.pause_at and not self.paused and self.channel is not None:
+            self.paused = True
+            self.channel.send(
+                {"opened": (descriptor, relative, info.st_dev, info.st_ino)}
+            )
+            if not self.channel.poll(10):
+                os.close(descriptor)
+                raise TimeoutError("FD observation handshake timed out")
+            if self.channel.recv() != "continue":
+                os.close(descriptor)
+                raise ValueError("invalid FD observation handshake")
         return descriptor
 
     def content_fd(self, descriptor: object) -> bool:
@@ -120,13 +141,19 @@ class RecordingOpen:
         return len(path) == 3 and path[0] == "content" and len(path[2]) == 64
 
 
-def probe_content(root: str, run_id: str, artifact_id: str, channel) -> None:
+def probe_content(
+    root: str,
+    run_id: str,
+    artifact_id: str,
+    channel,
+    pause_at: tuple[str, ...] | None = None,
+) -> None:
     from uuid import UUID
 
     from miniagent.dashboard.artifacts import ArtifactReader
     from miniagent.dashboard.reads import ReadBudget, ReadFailure
 
-    opening = RecordingOpen(Path(root))
+    opening = RecordingOpen(Path(root), pause_at=pause_at, channel=channel)
     reads = []
     hashes = []
 
@@ -162,5 +189,13 @@ def probe_content(root: str, run_id: str, artifact_id: str, channel) -> None:
             continue
         if (info.st_dev, info.st_ino) == (device, inode):
             leaked.append(descriptor)
-    channel.send({**data, "reads": reads, "hashes": hashes, "leaked": leaked})
+    channel.send(
+        {
+            **data,
+            "reads": reads,
+            "hashes": hashes,
+            "leaked": leaked,
+            "opened": opening.opened,
+        }
+    )
     channel.close()
