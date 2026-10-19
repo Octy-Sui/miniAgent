@@ -75,7 +75,9 @@ def parse_json(content: str | bytes, *, budget: ReadBudget | None = None) -> Jso
                 parse_float=_float,
             ),
         )
-    except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+    except ContentError:
+        raise
+    except (UnicodeError, ValueError, RecursionError) as exc:
         raise ContentError("json_invalid") from exc
     if budget is not None:
         budget.check()

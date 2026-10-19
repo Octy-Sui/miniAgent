@@ -58,7 +58,9 @@ def project_events(batch: EventBatch) -> tuple[EventView, ...]:
             if item.event is not None
             else "正文未完成读取或不支持",
             redact_json(
-                _hide_locations(item.event.payload.model_dump(mode="json")),
+                _hide_locations(
+                    item.event.payload.model_dump(mode="json", exclude_unset=True)
+                ),
                 schema="event",
             )
             if item.event is not None
@@ -129,18 +131,22 @@ def project_tools(
             result = event.payload.result
             if result is not None:
                 output = result.output
-                completeness = (
-                    "truncated"
-                    if any(
-                        (
-                            output.stdout_truncated,
-                            output.stderr_truncated,
-                            output.content_truncated,
-                            output.omitted_fields,
+                if (
+                    "output" in result.model_fields_set
+                    and set(type(output).model_fields) <= output.model_fields_set
+                ):
+                    completeness = (
+                        "truncated"
+                        if any(
+                            (
+                                output.stdout_truncated,
+                                output.stderr_truncated,
+                                output.content_truncated,
+                                output.omitted_fields,
+                            )
                         )
+                        else "complete"
                     )
-                    else "complete"
-                )
                 code = (result.data or {}).get("exit_code")
                 exit_code = code if type(code) is int else None
         tools.append(

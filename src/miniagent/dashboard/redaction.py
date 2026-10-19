@@ -13,6 +13,8 @@ _LOCATION_KEYS = frozenset(
         "workspace_path",
         "environment_refs",
         "endpoint",
+        "original_endpoint_identity",
+        "current_endpoint_identity",
         "base_url",
         "openai_base_url",
         "connection_string",

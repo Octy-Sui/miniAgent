@@ -361,9 +361,14 @@ class ArtifactReader:
                     )
                 if info.st_size != record.size_bytes:
                     raise ReadFailure(409, "artifact_size_mismatch")
-                if record.media_type == "application/json" and not budget.reserve(
-                    info.st_size
-                ):
+                structured = record.media_type.split(";", 1)[
+                    0
+                ].strip().lower() == "application/json" or record.type in {
+                    "evaluation_config",
+                    "evaluation_summary",
+                    "evaluation_report",
+                }
+                if structured and not budget.reserve(info.st_size):
                     return VerifiedContent(
                         record,
                         None,

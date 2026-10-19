@@ -44,7 +44,7 @@ class CursorTimes(Parameters):
 
 
 class RunPosition(Parameters):
-    created_at: UtcDatetime
+    created_at: UtcDatetime | None
     run_id: UUID
 
 

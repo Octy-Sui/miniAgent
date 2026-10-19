@@ -137,7 +137,9 @@ def render_runs(
                 "cost": format_usd(item.cost_usd)
                 if item.cost_usd is not None
                 else "未记录",
-                "created": item.envelope.created_at.isoformat(),
+                "created": item.envelope.created_at.isoformat()
+                if item.envelope.created_at
+                else None,
                 "href": f"/runs/{item.envelope.run_id}",
             }
         )
@@ -441,7 +443,42 @@ def render_run(
         budget=budget,
         connect=deps.connect,
     )
-    view = project_run(read.run, boundary, evaluation_event=read.evaluation_event)
+    completed = [
+        item
+        for item in compaction.events
+        if item.event is not None
+        and isinstance(item.event.payload, CompactionCompleted)
+        and item.run_id == run_id
+        and item.sequence <= boundary.as_of_sequence
+    ]
+    latest = max(completed, key=lambda item: item.sequence, default=None)
+    latest_payload = (
+        latest.event.payload
+        if latest is not None and latest.event is not None
+        else None
+    )
+    view = project_run(
+        read.run,
+        boundary,
+        evaluation_event=read.evaluation_event,
+        latest_compaction=latest_payload
+        if isinstance(latest_payload, CompactionCompleted)
+        else None,
+    )
+    if latest is not None:
+        view = replace(
+            view,
+            usage=tuple(
+                replace(
+                    field,
+                    source_label=f"Event #{latest.sequence}",
+                    source=SourceTarget(run_id, event_id=latest.event_id),
+                )
+                if field.key in {"old_input_tokens", "new_input_tokens"}
+                else field
+                for field in view.usage
+            ),
+        )
     context: dict[str, object] = {
         "run_id": str(run_id),
         "located": params.event_id is not None,
@@ -884,6 +921,23 @@ def render_workspace(
         issues.append(
             ReadIssue("evaluation_not_loaded", "评测关联未完成加载；请在详情时间线检查")
         )
+    contents = {}
+    for item in manifests.values():
+        if item.record is not None and item.record.type in {
+            "evaluation_config",
+            "evaluation_summary",
+            "evaluation_report",
+        }:
+            content = _read_evidence_content(deps, run_id, item, budget)
+            if content is not None:
+                contents[item.artifact_id] = content
+    evidence = adapt_evaluation(contents)
+    preliminary = project_evaluations(
+        read.run, boundary, read.events.items, tuple(manifests.values()), evidence
+    )
+    association_conflict = association_conflict or any(
+        view.outcome == "conflict" for view in preliminary
+    )
     choice = choose_patch(
         discovery, tuple(associated), association_conflict=association_conflict
     )
@@ -895,16 +949,10 @@ def render_workspace(
         for item in discovery.items
     ):
         raise ReadFailure(422, "patch_selection_invalid")
-    contents = {}
-    for item in manifests.values():
-        if item.record is not None and (
-            item.record.type
-            in {"evaluation_config", "evaluation_summary", "evaluation_report"}
-            or item.artifact_id == selected
-        ):
-            content = _read_evidence_content(deps, run_id, item, budget)
-            if content is not None:
-                contents[item.artifact_id] = content
+    if selected is not None:
+        content = _read_evidence_content(deps, run_id, manifests[selected], budget)
+        if content is not None:
+            contents[selected] = content
     evaluations = project_evaluations(
         read.run,
         boundary,

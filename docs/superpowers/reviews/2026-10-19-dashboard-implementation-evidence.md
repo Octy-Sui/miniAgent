@@ -741,4 +741,87 @@ HTMX 按[官方安装文档](https://htmx.org/docs/)和[配置 API](https://htmx
 
 ## 独立整分支审查
 
-待完成：Task 26 提交并生成 review-package 后，按 executing-plans 只派一次全分支独立 reviewer。Critical / Important 一次 TDD 修复批次后运行完整套件；Minor 只记录延后。最终报告在此追加，不把当前测试通过当成独立审查。
+2026-10-20 按 executing-plans 派发唯一一次全分支独立审查，reviewer 为 gpt-6-astra / high，范围 `49a8714..9fa4427`。审查者只读源码、设计、计划、11 条原有裁决与证据，并用真实 SQLite／FileArtifactStore／ASGI 复现；未修改工作树、索引或提交，未再派子代理、未重复全套测试。
+
+结论：0 Critical、8 Important、3 类 Minor；建议修复后合并。执行者按实际用户影响复核，8 项 Important 均成立。一次 TDD 修复批次如下，所有修复限制在 Dashboard 及其测试中：
+
+| 编号 | 独立审查发现／根因 | 修复和消费路径回归 |
+| --- | --- | --- |
+| R1 | v3 ProviderIdentityChanged 的两个 endpoint identity 不在共享脱敏表 | 把已知连接字段纳入共享规则；真实持久化 Event→详情响应验证两个地址均不泄露 |
+| R2 | ToolResult.output 及子字段缺失被 decoder 默认值补成 complete | 按 Pydantic 字段存在性判断完整度，payload exclude_unset；删除整个 output／单一 false 标记均显示未记录且不补造 payload |
+| R3 | 默认 patch 在 config/summary 消费前选择，已知 hash 冲突仍声称明确关联 | 先解析有界结构化证据并投影关联冲突，再默认选择；合法 hash 的冲突 config 不预选 patch |
+| R4 | 原生 patch form 带 boundary，只返回 diff，无法更新多 attempt 评测卡 | 显式选择走完整 Workspace GET，创建新页面边界；每次仍只读一个 patch；两 attempt 原生表单选择后仅所选组通过，其余明确尚未校验 |
+| R5 | JSON MIME 参数／大小写及按业务类型解析绕过正文预算 | Reader 对规范化 application/json 与 evaluation_config/summary/report 均先预留实际大小；5 个变体在不足预算下均不读内容 |
+| R6 | Python 5,000 位整数限制抛普通 ValueError，未转换 ContentError | 保留已有固定 ContentError，其他 JSON ValueError 转 json_invalid；真实 Artifact 预览返回200元信息＋解析问题，无正文回退 |
+| R7 | codec 降级后 envelope 又裸解析时间，坏一行毒化整页 | 坏时间设 None＋行 issue，保留 ID/sequence/status；详情邻居仍可见，Run 的三个时间字段分别隔离，坏创建时间分页可继续 |
+| R8 | project_run.latest_compaction 从未接入实际页面 | 从同一边界已读取的最近 CompactionCompleted 接入估计，展示 Event序号并可定位；过滤掉压缩事件的详情仍显示两个估计 |
+
+修复前 16 个变体实际失败。Tool output 与 Event 时间的首轮夹具 UPDATE 被不可变触发器拦截，不能当作产品 RED：仅在损坏测试数据库删除对应触发器，恢复 output 投影到原 HEAD，然后重新观察完整性误报及详情500的真实 RED。修复后16个变体通过；另外增加坏 created_at 的游标分页回归，共17个通过。Ruff（仅修改 Python 文件）与全仓 ty check 通过。没有执行第二轮 reviewer。
+
+### 暂缓的次要问题
+
+- Runs 行没有展示 item.issues 的具体原因，只显示未加载／未记录。
+- Event 行没有展示时间和 span ID；Runs 的状态选择器没有原生多选，GET 仍支持多个状态。
+- 部分既有测试／builder 存在中段 imports，按仓库规则不阻塞提交。
+
+### 最终裁决（按发生顺序）
+
+- Final: Ruling: real device node behavior remains DEFER — no safe nonprivileged fixture; FIFO/socket evidence does not establish device behavior — cost if wrong: unsupported node behavior could differ until tested with a dedicated fixture.
+- Final: Ruling: native OS hidden-event delivery remains DEFER — controlled visibility tests prove refresh logic only, headed window switching did not change document.hidden — cost if wrong: native window hiding may not pause refresh on some platforms.
+- Final: Ruling: human usability/assistive technology/WCAG certification not claimed — AI screenshots and keyboard checks establish only the exercised paths — cost if wrong: human or assistive technology issues remain undiscovered.
+- Final: Ruling: non-macOS file boundary compatibility not claimed — actual descriptor and race evidence is macOS only — cost if wrong: another OS may reject supported reads or handle unsafe nodes differently.
+- Final: Ruling: malformed created_at uses a nullable typed timestamp and a signed Run ID cursor anchor resolved inside the next short read transaction — no fabricated date and no corrupt raw timestamp in signed tokens, pagination still reaches adjacent valid records — cost if wrong: deleting the malformed anchor between pages returns controlled409 and requires refreshing the list.
+
+### 修复批次最终验证
+
+最终命令：`UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run --extra dashboard pytest -q --junitxml=.superpowers/sdd/2026-10-19-dashboard/final-suite.xml`。真实浏览器、文件描述符、套接字与进程用例在允许这些 OS 操作的执行环境中运行。
+
+结果：**1388 passed, 19 skipped, 0 failure/error，298.52 秒，exit 0**。其中 Dashboard 574 个通过（原557＋最终回归17）；19个 skip 没有改记 PASS。修改文件的 Ruff check／format 与全仓 `uv run --extra dashboard ty check` 均通过。以上 Task 26 原有599行证据是修复前基线，最终结果以本节为准；原有5项 mutation 证据来自审查前版本，本次未重复 mutation 或独立审查。
+
+新增最终回归的实际 JUnit 节点如下（R编号对应上表，所有状态均从最终全仓 XML提取）：
+
+| 实际测试节点 | 状态 |
+| --- | --- |
+
+
+| <code>tests/dashboard/test_final_review.py::test_provider_identity_change_hides_both_connections</code> | PASS |
+| <code>tests/dashboard/test_final_review.py::test_unrecorded_tool_output_is_not_complete[output]</code> | PASS |
+| <code>tests/dashboard/test_final_review.py::test_unrecorded_tool_output_is_not_complete[stdout_truncated]</code> | PASS |
+| <code>tests/dashboard/test_final_review.py::test_every_structured_artifact_reserves_body_budget[application/json; charset=utf-8-evaluation_report]</code> | PASS |
+| <code>tests/dashboard/test_final_review.py::test_every_structured_artifact_reserves_body_budget[Application/JSON-evaluation_report]</code> | PASS |
+| <code>tests/dashboard/test_final_review.py::test_every_structured_artifact_reserves_body_budget[text/plain-evaluation_config]</code> | PASS |
+| <code>tests/dashboard/test_final_review.py::test_every_structured_artifact_reserves_body_budget[text/plain-evaluation_summary]</code> | PASS |
+| <code>tests/dashboard/test_final_review.py::test_every_structured_artifact_reserves_body_budget[text/plain-evaluation_report]</code> | PASS |
+| <code>tests/dashboard/test_final_review.py::test_large_json_integer_degrades_only_the_preview</code> | PASS |
+| <code>tests/dashboard/test_final_review.py::test_bad_event_time_keeps_neighbour_and_identity</code> | PASS |
+| <code>tests/dashboard/test_final_review.py::test_bad_run_time_is_a_row_issue[created_at]</code> | PASS |
+| <code>tests/dashboard/test_final_review.py::test_bad_run_time_is_a_row_issue[updated_at]</code> | PASS |
+| <code>tests/dashboard/test_final_review.py::test_bad_run_time_is_a_row_issue[finished_at]</code> | PASS |
+| <code>tests/dashboard/test_final_review.py::test_corrupt_creation_time_cursor_keeps_other_runs_reachable</code> | PASS |
+| <code>tests/dashboard/test_final_review.py::test_recent_compaction_estimates_reach_filtered_detail</code> | PASS |
+| <code>tests/dashboard/test_final_review.py::test_patch_selector_rebuilds_evaluation_cards</code> | PASS |
+| <code>tests/dashboard/test_final_review.py::test_conflicting_config_prevents_default_patch</code> | PASS |
+
+全仓跳过节点（保留 skip 原意）：
+
+- `tests.acceptance.resume.test_docker::test_same_container_layer_survives_resume[running]`：DEFER: explicit prepared MINIAGENT_RESUME_DOCKER_IMAGE is required; no pull
+- `tests.acceptance.resume.test_docker::test_same_container_layer_survives_resume[exited]`：DEFER: explicit prepared MINIAGENT_RESUME_DOCKER_IMAGE is required; no pull
+- `tests.acceptance.resume.test_docker::test_deleted_or_replaced_container_is_rejected[False]`：DEFER: explicit prepared MINIAGENT_RESUME_DOCKER_IMAGE is required; no pull
+- `tests.acceptance.resume.test_docker::test_deleted_or_replaced_container_is_rejected[True]`：DEFER: explicit prepared MINIAGENT_RESUME_DOCKER_IMAGE is required; no pull
+- `tests.acceptance.resume.test_docker_connections::test_workspace_and_evaluator_use_their_own_daemons`：DEFER: three independently prepared daemon connections unavailable
+- `tests.acceptance.resume.test_docker_connections::test_frozen_tls_connection_survives_resume`：DEFER: independently prepared verified TLS daemon/image unavailable
+- `tests.acceptance.resume.test_docker_faults::test_real_helper_and_guest_birth_identity_is_recorded`：DEFER: explicit prepared MINIAGENT_RESUME_DOCKER_IMAGE is required; no pull
+- `tests.acceptance.resume.test_docker_faults::test_dead_supervisor_with_live_group_is_busy`：DEFER: explicit prepared MINIAGENT_RESUME_DOCKER_IMAGE is required; no pull
+- `tests.acceptance.resume.test_swebench::test_swebench_resume_preserves_patch_and_expected_unresolved`：DEFER: no independent prior unresolved manifest; user confirmed unavailable
+- `tests.environments.test_docker::test_docker_workspace_with_task_image`：MINIAGENT_DOCKER_IMAGE is not configured
+- `tests.environments.test_docker_attach::test_real_running_and_exited_container_retains_original_layer`：DEFER: requires an explicitly prepared Docker image; no pull
+- `tests.environments.test_docker_supervisor::test_supervisor_separates_control_frames_from_command_output`：DEFER: Linux supervisor requires Linux or an explicitly prepared Docker image
+- `tests.environments.test_docker_supervisor::test_supervisor_exit_does_not_hide_live_group`：DEFER: Linux supervisor requires Linux or an explicitly prepared Docker image
+- `tests.environments.test_docker_supervisor::test_supervisor_streams_large_stdin_and_binary_output`：DEFER: Linux supervisor requires Linux or an explicitly prepared Docker image
+- `tests.environments.test_docker_supervisor::test_killed_supervisor_leaves_no_completed_evidence`：DEFER: Linux supervisor requires Linux or an explicitly prepared Docker image
+- `tests.environments.test_docker_supervisor::test_real_sdk_chain_preserves_binary_io_and_end_evidence`：DEFER: Linux supervisor requires Linux or an explicitly prepared Docker image
+- `tests.environments.test_docker_supervisor::test_guest_identity_commit_failure_never_releases_command`：DEFER: Linux supervisor requires Linux or an explicitly prepared Docker image
+- `tests.integration.test_swebench_evaluation::test_real_ready_development_patch_is_verified`：Real SWE-bench requires explicit cached-image opt-in
+- `tests.integration.test_swebench_evaluation::test_real_invalid_patch_fails`：Real SWE-bench requires explicit cached-image opt-in
+
+本计划的临时 ledger、brief、diff 和原始运行日志在最终修复提交后删除；全部裁决、暂缓项、执行结果与可复核测试源码保留在本证据和 Git 历史中。

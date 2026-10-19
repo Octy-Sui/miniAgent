@@ -27,6 +27,7 @@ from miniagent.dashboard.reads import (
     RunPageRead,
     StoredRun,
     _missing_state_fields,
+    recorded_time,
 )
 from miniagent.runtime.state import RunStatus
 from miniagent.runtime.store_contracts import (
@@ -96,15 +97,15 @@ def _canonical_time(value: object) -> str | None:
         return None
 
 
-def _envelope(row: sqlite3.Row) -> RunEnvelope:
+def _envelope(row: sqlite3.Row, issues: list[ReadIssue]) -> RunEnvelope:
     return RunEnvelope(
         run_id=UUID(row["run_id"]),
         schema_version=row["schema_version"],
         status=RunStatus(row["status"]),
-        created_at=datetime.fromisoformat(row["created_at"]),
-        updated_at=datetime.fromisoformat(row["updated_at"]),
-        finished_at=datetime.fromisoformat(row["finished_at"])
-        if row["finished_at"]
+        created_at=recorded_time(row["created_at"], issues, "created_at"),
+        updated_at=recorded_time(row["updated_at"], issues, "updated_at"),
+        finished_at=recorded_time(row["finished_at"], issues, "finished_at")
+        if row["finished_at"] is not None
         else None,
         last_event_sequence=row["last_event_sequence"],
         latest_snapshot_version=row["latest_snapshot_version"],
@@ -168,7 +169,16 @@ def list_runs(
         )
         if after is not None:
             where += " AND (created_at,run_id)<(?,?)"
-            values.extend((encode_datetime(after.created_at), str(after.run_id)))
+            if after.created_at is None:
+                anchor = connection.execute(
+                    "SELECT created_at FROM runs WHERE run_id=?", (str(after.run_id),)
+                ).fetchone()
+                if anchor is None:
+                    raise ReadFailure(409, "cursor_anchor_missing")
+                after_time = anchor[0]
+            else:
+                after_time = encode_datetime(after.created_at)
+            values.extend((after_time, str(after.run_id)))
         rows = connection.execute(
             _PREFIX
             + "SELECT * FROM base WHERE "
@@ -223,7 +233,7 @@ def _list_item(row: sqlite3.Row, budget: ReadBudget) -> RunListItem:
             issues.append(ReadIssue("usage_invalid", "费用格式无效"))
     duration = fields["active_duration_ms"]
     return RunListItem(
-        envelope=_envelope(row),
+        envelope=_envelope(row, issues),
         task=str(fields["task"])
         if fields["task"] is not None and row["task_type"] == "text"
         else None,
@@ -331,7 +341,7 @@ def _load_run(
     if record is not None and context is not None:
         record = record.model_copy(update={"recovery_context": context})
     return StoredRun(
-        _envelope(row),
+        _envelope(row, issues),
         record,
         ("local" if context.workspace_spec.kind == "local" else "docker")
         if context is not None

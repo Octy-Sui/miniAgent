@@ -79,12 +79,15 @@ def project_spans(facts: ScopeRead, boundary: PageBoundary) -> tuple[SpanView, .
             if not starts:
                 issues.append(ReadIssue("scope_incomplete", "scope 开始记录缺失"))
         elif (
-            ends[0].occurred_at < starts[0].occurred_at
+            ends[0].occurred_at is None
+            or starts[0].occurred_at is None
+            or ends[0].occurred_at < starts[0].occurred_at
             or ends[0].sequence < starts[0].sequence
         ):
             state = "invalid_time"
             issues.append(ReadIssue("invalid_time", "scope 记录时间或顺序倒退"))
         else:
+            assert ends[0].occurred_at is not None and starts[0].occurred_at is not None
             duration = int(
                 (ends[0].occurred_at - starts[0].occurred_at).total_seconds() * 1000
             )

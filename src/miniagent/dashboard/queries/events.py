@@ -1,6 +1,5 @@
 import sqlite3
 from collections import deque
-from datetime import datetime
 from importlib.resources import files
 from pathlib import Path
 from uuid import UUID
@@ -29,6 +28,7 @@ from miniagent.dashboard.reads import (
     StoredRun,
     StoredSnapshot,
     ToolFacts,
+    recorded_time,
 )
 from miniagent.models.messages import AssistantMessage
 from miniagent.runtime.context import CompactionSummary, EventSource
@@ -81,7 +81,7 @@ def _load_event(
         run_id=UUID(row["run_id"]),
         sequence=row["sequence"],
         type=row["type"],
-        occurred_at=datetime.fromisoformat(row["occurred_at"]),
+        occurred_at=recorded_time(row["occurred_at"], issues, "occurred_at"),
         step_number=row["step_number"],
         span_id=row["span_id"],
         parent_span_id=row["parent_span_id"],

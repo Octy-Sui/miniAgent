@@ -20,6 +20,21 @@ class ReadIssue:
     field_path: tuple[str | int, ...] = ()
 
 
+def recorded_time(
+    value: object, issues: list[ReadIssue], field: str
+) -> datetime | None:
+    try:
+        if not isinstance(value, str):
+            raise TypeError("timestamp_not_text")
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("timestamp_not_aware")
+        return parsed
+    except (TypeError, ValueError):
+        issues.append(ReadIssue("invalid_time", "登记时间无效", field_path=(field,)))
+        return None
+
+
 class ReadFailure(Exception):
     def __init__(self, status_code: int, code: str) -> None:
         self.status_code = status_code
@@ -61,8 +76,8 @@ class RunEnvelope:
     run_id: UUID
     schema_version: int
     status: RunStatus
-    created_at: datetime
-    updated_at: datetime
+    created_at: datetime | None
+    updated_at: datetime | None
     finished_at: datetime | None
     last_event_sequence: int
     latest_snapshot_version: int
@@ -103,7 +118,7 @@ class StoredEvent:
     run_id: UUID
     sequence: int
     type: str
-    occurred_at: datetime
+    occurred_at: datetime | None
     step_number: int | None
     span_id: str | None
     parent_span_id: str | None
