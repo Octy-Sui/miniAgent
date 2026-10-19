@@ -1,4 +1,5 @@
 import base64
+import select
 import socket
 import struct
 import sys
@@ -11,6 +12,7 @@ import docker
 from docker.errors import DockerException
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
+from miniagent.environments import docker_supervisor
 from miniagent.environments.contracts import Command
 
 MAX_FRAME_BYTES = 262144
@@ -136,18 +138,15 @@ def serve(channel: socket.socket) -> None:
             )
         return
     _permit(channel, opening, "permit_create", request.deadline)
-    command = request.command
-    if command is None:
-        raise ValueError("Execution request requires command")
     with _client(request) as client:
+        source = Path(docker_supervisor.__file__).read_text()
         created = client.exec_create(
             request.container_id,
-            command.argv,
-            stdin=command.stdin is not None,
+            ["python", "-c", source],
+            stdin=True,
             stdout=True,
             stderr=True,
-            workdir=command.cwd,
-            environment=command.environment,
+            workdir="/",
         )
         exec_id = created["Id"]
         send("exec_created", {"exec_id": exec_id})
@@ -160,10 +159,30 @@ def serve(channel: socket.socket) -> None:
         try:
             raw.settimeout(min(10.0, max(0.001, request.deadline - monotonic())))
             send("exec_started", {"exec_id": exec_id})
-            if command.stdin is not None:
-                raw.sendall(command.stdin.encode())
-                raw.shutdown(socket.SHUT_WR)
             while True:
+                remaining = request.deadline - monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Helper proxy deadline exhausted")
+                ready, _, _ = select.select([channel, raw], [], [], remaining)
+                if not ready:
+                    raise TimeoutError("Helper proxy deadline exhausted")
+                if channel in ready:
+                    frame = receive_frame(channel, request.deadline)
+                    if (
+                        frame.attempt_id != opening.attempt_id
+                        or frame.execution_id != opening.execution_id
+                        or frame.type != "guest_write"
+                        or not isinstance(frame.body.get("content"), str)
+                    ):
+                        raise ValueError("Invalid guest input frame")
+                    content = frame.body["content"]
+                    assert isinstance(content, str)
+                    raw.settimeout(
+                        min(10.0, max(0.001, request.deadline - monotonic()))
+                    )
+                    raw.sendall(base64.b64decode(content, validate=True))
+                if raw not in ready:
+                    continue
                 try:
                     header = _read_exact(raw, 8, request.deadline)
                 except EOFError:
@@ -182,7 +201,7 @@ def serve(channel: socket.socket) -> None:
                 raise TimeoutError("Helper deadline exhausted before RPC")
             client.timeout = min(10.0, request.deadline - monotonic())
             result = client.exec_inspect(exec_id)
-            if result["Running"] or not isinstance(result.get("ExitCode"), int):
+            if result["Running"] or type(result.get("ExitCode")) is not int:
                 raise ValueError("Docker command completion is unconfirmed")
             send("finished", {"exit_code": result["ExitCode"]})
         finally:

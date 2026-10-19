@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import socket
 import struct
@@ -23,6 +24,7 @@ from miniagent.environments.docker_exec_helper import (
     encode_frame,
     receive_frame,
 )
+from miniagent.environments.docker_supervisor import encode_guest_frame
 from miniagent.environments.managed_execution import (
     DockerExecIdentity,
     ManagedExecutionError,
@@ -47,6 +49,7 @@ def engine():
             self.calls = []
             self.output_gate = threading.Event()
             self.running = False
+            self.guest_completes = True
             self.delay_start = False
             self.start_received = threading.Event()
             self.start_gate = threading.Event()
@@ -82,11 +85,61 @@ def engine():
                 self.end_headers()
                 self.wfile.flush()
                 if state.output_gate.wait(5):
-                    body = b"helper-output"
-                    try:
-                        self.wfile.write(struct.pack(">BxxxI", 1, len(body)) + body)
+                    self.connection.settimeout(5)
+
+                    def receive():
+                        header = self.rfile.read(4)
+                        if len(header) != 4:
+                            raise EOFError
+                        return json.loads(
+                            self.rfile.read(struct.unpack(">I", header)[0])
+                        )
+
+                    def send(opening, kind, body):
+                        frame = encode_guest_frame(
+                            opening["attempt_id"], opening["execution_id"], kind, body
+                        )
+                        self.wfile.write(struct.pack(">BxxxI", 1, len(frame)) + frame)
                         self.wfile.flush()
-                    except (BrokenPipeError, ConnectionResetError):
+
+                    try:
+                        opening = receive()
+                        while receive()["type"] != "configuration_end":
+                            pass
+                        send(
+                            opening,
+                            "guest_identified",
+                            {
+                                "guest": {
+                                    "pid": 123,
+                                    "pgid": 123,
+                                    "sid": 123,
+                                    "boot_id": "boot",
+                                    "start_ticks": 1,
+                                }
+                            },
+                        )
+                        assert receive()["type"] == "permit_command"
+                        send(
+                            opening,
+                            "data",
+                            {
+                                "stream": 1,
+                                "content": base64.b64encode(b"helper-output").decode(),
+                            },
+                        )
+                        if state.guest_completes:
+                            send(
+                                opening,
+                                "completed",
+                                {
+                                    "status": "success",
+                                    "exit_code": 0,
+                                    "group_ended": True,
+                                    "issuer_ended": True,
+                                },
+                            )
+                    except (BrokenPipeError, ConnectionResetError, EOFError):
                         pass
                 self.close_connection = True
             else:
@@ -532,3 +585,21 @@ async def test_helper_output_limit_is_preserved(engine):
         max_output_bytes=3,
     )
     assert result.stdout == "hel" and result.stdout_truncated
+
+
+async def test_docker_exec_completes_only_after_helper_exec_and_group_end(engine):
+    engine.guest_completes = False
+    observer = Observer(engine)
+    with pytest.raises(ManagedExecutionError, match="complete guest evidence"):
+        await run_docker_exec(
+            Command(argv=["true"]),
+            connection=engine.connection,
+            container_id="a" * 64,
+            observer=observer,
+            attempt_id=observer.attempt_id,
+            deadline=monotonic() + 5,
+        )
+    assert not any(
+        isinstance(fact, DockerExecIdentity) and permission == "ended"
+        for fact, permission, _ in observer.facts
+    )

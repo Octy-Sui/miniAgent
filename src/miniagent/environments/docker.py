@@ -5,6 +5,7 @@
 import asyncio
 import hashlib
 import math
+import os
 import posixpath
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -27,11 +28,21 @@ from miniagent.environments.docker_connection import (
     DockerConnection,
     docker_argv,
     harness_environment,
+    resolve_docker_connection,
+)
+from miniagent.environments.docker_exec import run_docker_exec_output
+from miniagent.environments.managed_execution import (
+    ManagedExecutionError,
+    MemoryExecutionObserver,
+    current_execution_observer,
 )
 from miniagent.environments.process import (
     decode_output,
+    identify_host_process,
+    inspect_host_execution,
     read_stream,
     reap_process,
+    register_host_process,
     write_stdin,
 )
 
@@ -359,6 +370,64 @@ class DockerWorkspaceBackend:
         cleanup_deadline: float | None = None,
     ) -> DockerCommandResult:
         started_at = monotonic()
+        observer = current_execution_observer() or MemoryExecutionObserver()
+        if argv[:2] == ["container", "exec"]:
+            if self.connection is None:
+                self.connection = await resolve_docker_connection(
+                    Path(self.docker_executable), dict(os.environ)
+                )
+            index = 2
+            cwd, environment_values = "/", {}
+            while index < len(argv) and argv[index].startswith("--"):
+                option = argv[index]
+                index += 1
+                if option == "--interactive":
+                    continue
+                value = argv[index]
+                index += 1
+                if option == "--workdir":
+                    cwd = value
+                elif option == "--env":
+                    name, value = value.split("=", 1)
+                    environment_values[name] = value
+                else:
+                    raise ValueError(f"Unsupported managed exec option: {option}")
+            budget = timeout_seconds if timeout_seconds is not None else 60.0
+            deadline = min(started_at + budget, cleanup_deadline or math.inf)
+            output = await run_docker_exec_output(
+                Command(
+                    argv=argv[index + 1 :],
+                    cwd=cwd,
+                    environment=environment_values,
+                    timeout_seconds=budget,
+                ),
+                connection=self.connection,
+                container_id=argv[index],
+                observer=observer,
+                attempt_id=observer.attempt_id,
+                deadline=deadline,
+                stdin_bytes=stdin,
+                max_output_bytes=None
+                if capture_all
+                else (
+                    self.max_output_bytes
+                    if max_output_bytes is None
+                    else max_output_bytes
+                ),
+            )
+            if output.result.status is ExecutionStatus.TIMEOUT:
+                raise TimeoutError(
+                    "Docker command timed out after verified group cleanup"
+                )
+            assert output.result.exit_code is not None
+            return DockerCommandResult(
+                exit_code=output.result.exit_code,
+                stdout=output.stdout,
+                stderr=output.stderr,
+                duration_ms=output.result.duration_ms,
+                stdout_truncated=output.result.stdout_truncated,
+                stderr_truncated=output.result.stderr_truncated,
+            )
         command = (
             docker_argv(Path(self.docker_executable), self.connection, argv)
             if self.connection is not None
@@ -379,6 +448,20 @@ class DockerWorkspaceBackend:
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
+        identity = identify_host_process(
+            process.pid,
+            attempt_id=observer.attempt_id,
+            execution_id=uuid4(),
+            role="docker_helper",
+        )
+        register_host_process(process, identity)
+        try:
+            await observer.identified(identity)
+        except BaseException:
+            await reap_process(
+                process, [], deadline=cleanup_deadline or monotonic() + 5.0
+            )
+            raise
         if process.stdout is None or process.stderr is None:
             raise DockerWorkspaceError("Docker process output pipes are unavailable")
 
@@ -425,6 +508,13 @@ class DockerWorkspaceBackend:
 
         if process.returncode is None:
             raise DockerWorkspaceError("Docker process ended without an exit code")
+        evidence = inspect_host_execution(identity)
+        if evidence.outcome != "ended":
+            await reap_process(
+                process, tasks, deadline=cleanup_deadline or monotonic() + 5.0
+            )
+            raise ManagedExecutionError("Docker CLI whole group end is unconfirmed")
+        await observer.ended(evidence)
         stdout, stdout_truncated = stdout_task.result()
         stderr, stderr_truncated = stderr_task.result()
         return DockerCommandResult(

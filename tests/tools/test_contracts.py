@@ -126,12 +126,16 @@ def test_tool_contract_metadata_is_logical_and_snapshotted() -> None:
     registry = ToolRegistry([tool])
 
     metadata = registry.contract_metadata("text")
+    assert metadata["docker_helper_protocol"] == 1
+    assert metadata["docker_supervisor_protocol"] == 1
     tool.contract_version = "changed"
 
     assert metadata == {
         "name": "text",
         "version": "text-v1",
         "unknown_outcome": "reject",
+        "docker_helper_protocol": 1,
+        "docker_supervisor_protocol": 1,
         "input_schema": TextArguments.model_json_schema(),
         "execution_options": {"timeout_seconds": 2},
     }

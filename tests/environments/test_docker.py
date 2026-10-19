@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from time import monotonic
 from uuid import uuid4
 
+import psutil
 import pytest
 
 from miniagent.artifacts import ArtifactStore, ArtifactWrite
@@ -34,6 +35,11 @@ async def test_export_patch_shares_budget_with_cleanup(export_workspace, tmp_pat
         )
     assert monotonic() - started < 6.0
     pid = int((tmp_path / "cleanup-started").read_text())
+    try:
+        process = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return
+    await asyncio.to_thread(process.wait, timeout=2)
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
 

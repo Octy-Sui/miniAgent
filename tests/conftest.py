@@ -1,6 +1,14 @@
+import base64
 import hashlib
 import json
+import os
+import select
+import signal
+import struct
+import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from pathlib import Path
 from uuid import uuid4
@@ -14,10 +22,12 @@ from miniagent.environments import (
     DockerWorkspaceBackend,
     DockerWorkspaceSpec,
 )
+from miniagent.environments.docker_connection import DockerConnection
+from miniagent.environments.docker_supervisor import encode_guest_frame
 
 
 @pytest.fixture
-def export_workspace(tmp_path):
+def export_workspace(tmp_path, export_engine):
     executable = tmp_path / "docker-export"
     executable.write_text(
         f"#!{sys.executable}\n"
@@ -48,6 +58,7 @@ elif "diff" in args:
     backend = DockerWorkspaceBackend(
         artifact_store=FileArtifactStore(tmp_path / "unused-artifacts"),
         docker_executable=str(executable),
+        connection=export_engine(executable),
     )
     return DockerWorkspace(
         backend=backend,
@@ -355,3 +366,140 @@ async def evaluation_case(tmp_path, prepared_bundle, docker_cli, harness_executa
         run_id=run_id, task="issue", candidate=CandidateOutput(text="done", patch=patch)
     )
     return evaluator, request, store
+
+
+@pytest.fixture
+def export_engine():
+    """External Engine test double; execute the fixture CLI only after guest permission."""
+    executable = None
+    commands = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, format, *args):
+            pass
+
+        def do_GET(self):
+            self.respond({"Running": False, "ExitCode": 0})
+
+        def respond(self, body, status=200):
+            content = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+
+        def do_POST(self):
+            json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if self.path.endswith("/exec"):
+                identifier = uuid4().hex
+                commands[identifier] = None
+                self.respond({"Id": identifier}, 201)
+                return
+            self.send_response(101)
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Upgrade", "tcp")
+            self.end_headers()
+            self.wfile.flush()
+            self.connection.settimeout(5)
+
+            def receive():
+                header = self.rfile.read(4)
+                if len(header) != 4:
+                    raise EOFError
+                return json.loads(self.rfile.read(struct.unpack(">I", header)[0]))
+
+            def send(opening, kind, body):
+                frame = encode_guest_frame(
+                    opening["attempt_id"], opening["execution_id"], kind, body
+                )
+                self.wfile.write(struct.pack(">BxxxI", 1, len(frame)) + frame)
+                self.wfile.flush()
+
+            process = None
+            try:
+                opening = receive()
+                source = bytearray()
+                while True:
+                    frame = receive()
+                    if frame["type"] == "configuration_end":
+                        break
+                    source.extend(base64.b64decode(frame["body"]["content"]))
+                command = json.loads(source)
+                send(
+                    opening,
+                    "guest_identified",
+                    {
+                        "guest": {
+                            "pid": 123,
+                            "pgid": 123,
+                            "sid": 123,
+                            "boot_id": "test",
+                            "start_ticks": 1,
+                        }
+                    },
+                )
+                assert receive()["type"] == "permit_command"
+                assert executable is not None
+                process = subprocess.Popen(
+                    [str(executable), *command["argv"]],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    start_new_session=True,
+                )
+                while True:
+                    try:
+                        stdout, stderr = process.communicate(timeout=0.01)
+                        break
+                    except subprocess.TimeoutExpired:
+                        if select.select([self.connection], [], [], 0)[
+                            0
+                        ] and not self.connection.recv(1):
+                            return
+                for number, content in ((1, stdout), (2, stderr)):
+                    for offset in range(0, len(content), 32768):
+                        send(
+                            opening,
+                            "data",
+                            {
+                                "stream": number,
+                                "content": base64.b64encode(
+                                    content[offset : offset + 32768]
+                                ).decode(),
+                            },
+                        )
+                send(
+                    opening,
+                    "completed",
+                    {
+                        "status": "success" if process.returncode == 0 else "error",
+                        "exit_code": process.returncode,
+                        "group_ended": True,
+                        "issuer_ended": True,
+                    },
+                )
+            except (EOFError, BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                if process is not None:
+                    if process.poll() is None:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    process.communicate(timeout=2)
+                self.close_connection = True
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def configure(path):
+        nonlocal executable
+        executable = path
+        return DockerConnection(
+            None, f"tcp://127.0.0.1:{server.server_port}", None, False, "export-test"
+        )
+
+    yield configure
+    server.shutdown()
+    server.server_close()
+    thread.join(5)

@@ -110,6 +110,8 @@ class ToolRegistry:
             "name": binding.definition.name,
             "version": binding.contract_version,
             "unknown_outcome": binding.unknown_outcome,
+            "docker_helper_protocol": 1,
+            "docker_supervisor_protocol": 1,
             "input_schema": orjson.loads(orjson.dumps(binding.definition.input_schema)),
             "execution_options": orjson.loads(orjson.dumps(binding.execution_options)),
         }

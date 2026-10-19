@@ -18,10 +18,12 @@ from miniagent.environments.docker_exec_helper import (
     HelperRequest,
     encode_frame,
 )
+from miniagent.environments.docker_supervisor import encode_command, encode_guest_frame
 from miniagent.environments.managed_execution import (
     DockerExecIdentity,
     ExecutionEvidence,
     ExecutionObserver,
+    GuestProcessIdentity,
     HostProcessIdentity,
     ManagedExecutionError,
 )
@@ -31,6 +33,13 @@ from miniagent.environments.process import (
     reap_process,
     register_host_process,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class DockerExecOutput:
+    result: ExecutionResult
+    stdout: bytes
+    stderr: bytes
 
 
 @dataclass(slots=True)
@@ -154,7 +163,7 @@ def _request(
     )
 
 
-async def run_docker_exec(
+async def run_docker_exec_output(
     command: Command,
     *,
     connection: DockerConnection,
@@ -162,11 +171,12 @@ async def run_docker_exec(
     observer: ExecutionObserver,
     attempt_id: UUID,
     deadline: float,
-    max_output_bytes: int = 1024 * 1024,
-) -> ExecutionResult:
+    max_output_bytes: int | None = 1024 * 1024,
+    stdin_bytes: bytes | None = None,
+) -> DockerExecOutput:
     if observer.attempt_id != attempt_id:
         raise ManagedExecutionError("Docker observer attempt mismatch")
-    if max_output_bytes < 1:
+    if max_output_bytes is not None and max_output_bytes < 1:
         raise ValueError("Docker output limit must be positive")
     started = monotonic()
     reserve = min(1.0, max(0.0, deadline - started) / 4)
@@ -174,7 +184,7 @@ async def run_docker_exec(
         _request(
             connection,
             container_id=container_id,
-            command=command,
+            command=None,
             deadline=deadline - reserve,
         ),
         attempt_id=attempt_id,
@@ -204,6 +214,20 @@ async def run_docker_exec(
         await helper.send("permit_start")
         stdout, stderr = bytearray(), bytearray()
         truncated = {1: False, 2: False}
+        guest_buffer = bytearray()
+        completion = None
+
+        async def write_guest(content: bytes) -> None:
+            for offset in range(0, len(content), 32768):
+                await helper.send(
+                    "guest_write",
+                    {
+                        "content": base64.b64encode(
+                            content[offset : offset + 32768]
+                        ).decode()
+                    },
+                )
+
         while True:
             frame = await helper.receive()
             if frame.type == "exec_started":
@@ -213,23 +237,118 @@ async def run_docker_exec(
                     )
                 remote = remote.model_copy(update={"started_observed": True})
                 await observer.identified(remote)
+                await write_guest(
+                    encode_command(
+                        command,
+                        attempt_id=attempt_id,
+                        execution_id=remote.execution_id,
+                        timeout_seconds=max(0.001, helper.deadline - monotonic()),
+                        stdin_bytes=stdin_bytes,
+                    )
+                )
             elif frame.type == "data" and remote.started_observed:
-                number, content = frame.body.get("stream"), frame.body.get("content")
-                if (
-                    not isinstance(number, int)
-                    or number not in (1, 2)
-                    or not isinstance(content, str)
-                ):
-                    raise ManagedExecutionError("Docker helper output frame is invalid")
-                output = stdout if number == 1 else stderr
-                chunk = base64.b64decode(content, validate=True)
-                remaining = max(0, max_output_bytes - len(output))
-                output.extend(chunk[:remaining])
-                truncated[number] |= len(chunk) > remaining
+                content = frame.body.get("content")
+                if frame.body.get("stream") != 1 or not isinstance(content, str):
+                    raise ManagedExecutionError("Supervisor output channel is invalid")
+                guest_buffer.extend(base64.b64decode(content, validate=True))
+                while len(guest_buffer) >= 4:
+                    size = struct.unpack(">I", guest_buffer[:4])[0]
+                    if size > MAX_FRAME_BYTES:
+                        raise ManagedExecutionError(
+                            "Guest frame exceeds protocol limit"
+                        )
+                    if len(guest_buffer) < size + 4:
+                        break
+                    guest_frame = Frame.model_validate_json(
+                        bytes(guest_buffer[4 : size + 4])
+                    )
+                    del guest_buffer[: size + 4]
+                    if (
+                        guest_frame.attempt_id != attempt_id
+                        or guest_frame.execution_id != remote.execution_id
+                    ):
+                        raise ManagedExecutionError("Guest control scope mismatch")
+                    if (
+                        guest_frame.type == "guest_identified"
+                        and remote.guest is None
+                        and completion is None
+                    ):
+                        guest = GuestProcessIdentity.model_validate(
+                            guest_frame.body.get("guest")
+                        )
+                        remote = remote.model_copy(update={"guest": guest})
+                        await observer.identified(remote)
+                        await write_guest(
+                            encode_guest_frame(
+                                attempt_id, remote.execution_id, "permit_command", {}
+                            )
+                        )
+                    elif (
+                        guest_frame.type == "data"
+                        and remote.guest is not None
+                        and completion is None
+                    ):
+                        number, output_content = (
+                            guest_frame.body.get("stream"),
+                            guest_frame.body.get("content"),
+                        )
+                        if (
+                            not isinstance(number, int)
+                            or number not in (1, 2)
+                            or not isinstance(output_content, str)
+                        ):
+                            raise ManagedExecutionError(
+                                "Guest business output is invalid"
+                            )
+                        output = stdout if number == 1 else stderr
+                        chunk = base64.b64decode(output_content, validate=True)
+                        remaining = (
+                            len(chunk)
+                            if max_output_bytes is None
+                            else max(0, max_output_bytes - len(output))
+                        )
+                        output.extend(chunk[:remaining])
+                        truncated[number] |= len(chunk) > remaining
+                    elif (
+                        guest_frame.type == "completed"
+                        and remote.guest is not None
+                        and completion is None
+                    ):
+                        completion = guest_frame.body
+                        code, status = (
+                            completion.get("exit_code"),
+                            completion.get("status"),
+                        )
+                        if (
+                            completion.get("group_ended") is not True
+                            or completion.get("issuer_ended") is not True
+                            or status not in ("success", "error", "timeout")
+                        ):
+                            raise ManagedExecutionError(
+                                "Guest whole group end is unconfirmed"
+                            )
+                        if (
+                            (status == "timeout" and code is not None)
+                            or (status != "timeout" and type(code) is not int)
+                            or (status == "success" and code != 0)
+                            or (status == "error" and code == 0)
+                        ):
+                            raise ManagedExecutionError(
+                                "Guest result disposition is invalid"
+                            )
+                    else:
+                        raise ManagedExecutionError(
+                            "Guest execution completion is unconfirmed"
+                        )
             elif frame.type == "finished" and remote.started_observed:
-                exit_code = frame.body.get("exit_code")
-                if not isinstance(exit_code, int):
-                    raise ManagedExecutionError("Docker helper exit code is invalid")
+                if (
+                    completion is None
+                    or guest_buffer
+                    or frame.body.get("exit_code") != 0
+                ):
+                    raise ManagedExecutionError(
+                        "Docker exec lacks complete guest evidence"
+                    )
                 async with asyncio.timeout_at(helper.deadline):
                     await helper.process.wait()
                 evidence = inspect_host_execution(helper.identity)
@@ -238,10 +357,20 @@ async def run_docker_exec(
                         "Docker helper whole group end is unconfirmed"
                     )
                 await observer.ended(evidence)
-                return ExecutionResult(
-                    status=ExecutionStatus.SUCCESS
-                    if exit_code == 0
-                    else ExecutionStatus.ERROR,
+                await observer.ended(
+                    ExecutionEvidence(
+                        execution_id=remote.execution_id,
+                        identity=remote,
+                        outcome="ended",
+                        started_observed=True,
+                        group_ended=True,
+                        issuer_ended=True,
+                    )
+                )
+                exit_code = completion.get("exit_code")
+                assert exit_code is None or isinstance(exit_code, int)
+                result = ExecutionResult(
+                    status=ExecutionStatus(completion["status"]),
                     exit_code=exit_code,
                     stdout=stdout.decode(errors="replace"),
                     stderr=stderr.decode(errors="replace"),
@@ -249,6 +378,7 @@ async def run_docker_exec(
                     stderr_truncated=truncated[2],
                     duration_ms=int((monotonic() - started) * 1000),
                 )
+                return DockerExecOutput(result, bytes(stdout), bytes(stderr))
             else:
                 raise ManagedExecutionError("Docker helper protocol state is invalid")
     except (TimeoutError, OSError, ValueError) as exc:
@@ -258,6 +388,29 @@ async def run_docker_exec(
     finally:
         helper.deadline = deadline
         await helper.close()
+
+
+async def run_docker_exec(
+    command: Command,
+    *,
+    connection: DockerConnection,
+    container_id: str,
+    observer: ExecutionObserver,
+    attempt_id: UUID,
+    deadline: float,
+    max_output_bytes: int = 1024 * 1024,
+) -> ExecutionResult:
+    return (
+        await run_docker_exec_output(
+            command,
+            connection=connection,
+            container_id=container_id,
+            observer=observer,
+            attempt_id=attempt_id,
+            deadline=deadline,
+            max_output_bytes=max_output_bytes,
+        )
+    ).result
 
 
 async def inspect_docker_execution(

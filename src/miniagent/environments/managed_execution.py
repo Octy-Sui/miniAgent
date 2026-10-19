@@ -1,8 +1,9 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass, field
 from typing import Annotated, Literal, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -93,3 +94,31 @@ def execution_scope(observer: ExecutionObserver) -> Iterator[None]:
 
 def current_execution_observer() -> ExecutionObserver | None:
     return _OBSERVER.get()
+
+
+@dataclass(slots=True)
+class MemoryExecutionObserver:
+    attempt_id: UUID = field(default_factory=uuid4)
+    identities: dict[UUID, ExecutionIdentity] = field(default_factory=dict)
+    evidence: dict[UUID, ExecutionEvidence] = field(default_factory=dict)
+
+    async def identified(
+        self,
+        identity: ExecutionIdentity,
+        *,
+        permission: Literal["observe", "create_exec", "start_exec"] = "observe",
+    ) -> None:
+        if identity.attempt_id != self.attempt_id:
+            raise ManagedExecutionError("Execution observer attempt mismatch")
+        self.identities[identity.execution_id] = identity
+
+    async def ended(self, evidence: ExecutionEvidence) -> None:
+        if evidence.identity != self.identities.get(evidence.execution_id):
+            raise ManagedExecutionError("Execution evidence identity mismatch")
+        if (
+            evidence.outcome != "ended"
+            or not evidence.group_ended
+            or not evidence.issuer_ended
+        ):
+            raise ManagedExecutionError("Execution whole group end is unconfirmed")
+        self.evidence[evidence.execution_id] = evidence
