@@ -228,8 +228,8 @@ async def test_guest_identity_commit_failure_never_releases_command(supervisor_c
     connection = await resolve_docker_connection(Path("docker"), dict(os.environ))
 
     class RejectGuestObserver(MemoryExecutionObserver):
-        async def identified(self, identity, *, permission="observe"):
-            await super().identified(identity, permission=permission)
+        async def identified(self, identity, *, permission="observe", command=None):
+            await super().identified(identity, permission=permission, command=command)
             if isinstance(identity, DockerExecIdentity) and identity.guest is not None:
                 raise RunPersistenceError(
                     run_id=uuid4(), operation="identity", last_confirmed_sequence=1

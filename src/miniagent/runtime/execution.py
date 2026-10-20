@@ -9,6 +9,7 @@ from time import monotonic
 from typing import Literal, Protocol
 from uuid import UUID, uuid4
 
+from miniagent.environments.evidence import CommandEvidence, CommandOutputEvidence
 from miniagent.environments.managed_execution import (
     ExecutionEvidence,
     ExecutionIdentity,
@@ -47,6 +48,7 @@ from miniagent.runtime.events import (
     OperationExecutionEnded,
     OperationExecutionIdentified,
     OperationInterrupted,
+    OperationOutputRecorded,
     PolicyDecided,
     RunEventType,
     RunFinished,
@@ -1542,6 +1544,7 @@ class _OperationObserver:
         identity: ExecutionIdentity,
         *,
         permission: Literal["observe", "create_exec", "start_exec"] = "observe",
+        command: CommandEvidence | None = None,
     ) -> None:
         raise_if_interrupted()
         operation = self._operation()
@@ -1574,12 +1577,25 @@ class _OperationObserver:
                         attempt_id=self.attempt_id,
                         identity=identity,
                         permission=permission,
+                        command=command,
                     )
                 )
             ],
         )
         self.execution.state = state
         self.execution._ended_executions.pop(identity.execution_id, None)
+
+    async def output_recorded(self, output: CommandOutputEvidence) -> None:
+        operation = self._operation()
+        if output.attempt_id != self.attempt_id or not any(
+            identity.execution_id == output.execution_id
+            for identity in operation.executions
+        ):
+            raise ManagedExecutionError("Output belongs to an unidentified execution")
+        await self.execution.journal.record_activity(
+            self.execution.state,
+            [self.execution.trace.run_event(OperationOutputRecorded(output=output))],
+        )
 
     async def ended(self, evidence: ExecutionEvidence) -> None:
         operation = self._operation()

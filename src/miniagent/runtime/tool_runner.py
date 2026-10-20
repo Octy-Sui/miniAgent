@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from miniagent.agents import AgentSpec
+from miniagent.artifacts.contracts import ArtifactPersistenceError
 from miniagent.environments.managed_execution import (
     ManagedExecutionError,
     execution_scope,
@@ -105,7 +106,11 @@ class ToolCallRunner:
                             call,
                             prepared,
                         )
-                    except (RunPersistenceError, ManagedExecutionError):
+                    except (
+                        RunPersistenceError,
+                        ManagedExecutionError,
+                        ArtifactPersistenceError,
+                    ):
                         raise
                     except Exception as exc:  # noqa: BLE001
                         return ToolBatchOutcome(
@@ -203,6 +208,7 @@ class ToolCallRunner:
             CancellationRequested,
             InterruptionRequested,
             RunPersistenceError,
+            ArtifactPersistenceError,
             ManagedExecutionError,
         ):
             raise

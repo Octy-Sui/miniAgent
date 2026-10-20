@@ -7,6 +7,8 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from miniagent.environments.evidence import CommandEvidence, CommandOutputEvidence
+
 
 class _Identity(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -75,7 +77,10 @@ class ExecutionObserver(Protocol):
         identity: ExecutionIdentity,
         *,
         permission: Literal["observe", "create_exec", "start_exec"] = "observe",
+        command: CommandEvidence | None = None,
     ) -> None: ...
+
+    async def output_recorded(self, output: CommandOutputEvidence) -> None: ...
 
     async def ended(self, evidence: ExecutionEvidence) -> None: ...
 
@@ -103,6 +108,8 @@ class MemoryExecutionObserver:
     attempt_id: UUID = field(default_factory=uuid4)
     identities: dict[UUID, ExecutionIdentity] = field(default_factory=dict)
     evidence: dict[UUID, ExecutionEvidence] = field(default_factory=dict)
+    commands: dict[UUID, CommandEvidence] = field(default_factory=dict)
+    outputs: dict[UUID, CommandOutputEvidence] = field(default_factory=dict)
 
     def check_permission(self) -> None:
         pass
@@ -112,10 +119,21 @@ class MemoryExecutionObserver:
         identity: ExecutionIdentity,
         *,
         permission: Literal["observe", "create_exec", "start_exec"] = "observe",
+        command: CommandEvidence | None = None,
     ) -> None:
         if identity.attempt_id != self.attempt_id:
             raise ManagedExecutionError("Execution observer attempt mismatch")
         self.identities[identity.execution_id] = identity
+        if command is not None:
+            self.commands[identity.execution_id] = command
+
+    async def output_recorded(self, output: CommandOutputEvidence) -> None:
+        if (
+            output.attempt_id != self.attempt_id
+            or output.execution_id not in self.identities
+        ):
+            raise ManagedExecutionError("Output belongs to an unidentified execution")
+        self.outputs[output.execution_id] = output
 
     async def ended(self, evidence: ExecutionEvidence) -> None:
         if evidence.identity != self.identities.get(evidence.execution_id):

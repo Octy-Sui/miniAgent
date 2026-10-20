@@ -154,7 +154,7 @@ class Observer:
         self.fail = fail
         self.facts = []
 
-    async def identified(self, identity, *, permission="observe"):
+    async def identified(self, identity, *, permission="observe", command=None):
         self.facts.append((identity, permission, monotonic()))
         if permission == self.fail:
             raise RunPersistenceError(
@@ -162,6 +162,9 @@ class Observer:
             )
         if isinstance(identity, DockerExecIdentity) and identity.started_observed:
             self.engine.output_gate.set()
+
+    async def output_recorded(self, output):
+        self.facts.append((output, "output", monotonic()))
 
     async def ended(self, evidence):
         self.facts.append((evidence, "ended", monotonic()))

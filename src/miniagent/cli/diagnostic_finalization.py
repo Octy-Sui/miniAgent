@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 from miniagent.artifacts import ArtifactStore
 from miniagent.cli.candidate_submission import CandidateSubmission, SubmissionResult
 from miniagent.environments import Workspace
+from miniagent.environments.evidence import CommandEvidence, CommandOutputEvidence
 from miniagent.environments.managed_execution import (
     ExecutionEvidence,
     ExecutionIdentity,
@@ -28,6 +29,7 @@ from miniagent.runtime.events import (
     DiagnosticFinalizationStarted,
     EventPayload,
     NewRunEvent,
+    OperationOutputRecorded,
 )
 from miniagent.runtime.interruption import (
     InterruptionRequested,
@@ -136,6 +138,7 @@ class _DiagnosticObserver:
         identity: ExecutionIdentity,
         *,
         permission: Literal["observe", "create_exec", "start_exec"] = "observe",
+        command: CommandEvidence | None = None,
     ) -> None:
         self.check_permission()
         assert self.memory is not None
@@ -145,10 +148,18 @@ class _DiagnosticObserver:
             )
         await self._append(
             DiagnosticFinalizationExecutionIdentified(
-                attempt_id=self.attempt_id, identity=identity, permission=permission
+                attempt_id=self.attempt_id,
+                identity=identity,
+                permission=permission,
+                command=command,
             )
         )
-        await self.memory.identified(identity, permission=permission)
+        await self.memory.identified(identity, permission=permission, command=command)
+
+    async def output_recorded(self, output: CommandOutputEvidence) -> None:
+        assert self.memory is not None
+        await self.memory.output_recorded(output)
+        await self._append(OperationOutputRecorded(output=output))
 
     async def ended(self, evidence: ExecutionEvidence) -> None:
         assert self.memory is not None

@@ -3,6 +3,7 @@ import os
 import signal
 import socket
 import sys
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from hashlib import sha256
 from pathlib import Path
@@ -13,6 +14,7 @@ from weakref import WeakKeyDictionary
 
 import psutil
 
+from miniagent.environments.evidence import CommandEvidence
 from miniagent.environments.managed_execution import (
     ExecutionEvidence,
     ExecutionObserver,
@@ -190,6 +192,7 @@ async def start_host_process(
     role: Literal["local_command", "docker_helper", "harness"],
     attempt_id: UUID,
     observer: ExecutionObserver | None,
+    command: CommandEvidence | None = None,
     deadline: float,
     cwd: Path | str | None = None,
     env: dict[str, str] | None = None,
@@ -232,7 +235,7 @@ async def start_host_process(
         )
         register_host_process(process, identity)
         if observer is not None:
-            await observer.identified(identity)
+            await observer.identified(identity, command=command)
             identified = True
             observer.check_permission()
         if monotonic() >= deadline:
@@ -283,10 +286,14 @@ async def start_host_process(
 async def read_stream(
     stream: asyncio.StreamReader,
     limit: int | None,
+    *,
+    on_chunk: Callable[[bytes], Awaitable[None]] | None = None,
 ) -> tuple[bytes, bool]:
     content = bytearray()
     truncated = False
     while chunk := await stream.read(64 * 1024):
+        if on_chunk is not None:
+            await on_chunk(chunk)
         if limit is None:
             content.extend(chunk)
             continue

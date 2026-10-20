@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from miniagent.artifacts.contracts import ArtifactRef
+from miniagent.environments.evidence import CommandEvidence, CommandOutputEvidence
 from miniagent.environments.managed_execution import (
     ExecutionEvidence,
     ExecutionIdentity,
@@ -39,6 +40,7 @@ class EventSequenceConflictError(RuntimeError):
 
 
 class RunEventType(StrEnum):
+    OPERATION_OUTPUT_RECORDED = "operation_output_recorded"
     COMPACTION_REQUESTED = "compaction_requested"
     COMPACTION_ATTEMPT_RECORDED = "compaction_attempt_recorded"
     COMPACTION_FAILED = "compaction_failed"
@@ -241,7 +243,15 @@ class OperationInterrupted(_Payload):
     unconfirmed: bool
 
 
+class OperationOutputRecorded(_Payload):
+    type: Literal[RunEventType.OPERATION_OUTPUT_RECORDED] = (
+        RunEventType.OPERATION_OUTPUT_RECORDED
+    )
+    output: CommandOutputEvidence
+
+
 class OperationExecutionIdentified(_Payload):
+    command: CommandEvidence | None = None
     type: Literal[RunEventType.OPERATION_EXECUTION_IDENTIFIED] = (
         RunEventType.OPERATION_EXECUTION_IDENTIFIED
     )
@@ -292,6 +302,7 @@ class DiagnosticFinalizationStarted(_Payload):
 
 
 class DiagnosticFinalizationExecutionIdentified(_Payload):
+    command: CommandEvidence | None = None
     type: Literal[RunEventType.DIAGNOSTIC_FINALIZATION_EXECUTION_IDENTIFIED] = (
         RunEventType.DIAGNOSTIC_FINALIZATION_EXECUTION_IDENTIFIED
     )
@@ -487,7 +498,8 @@ class CompactionCompleted(_Payload):
 
 
 type EventPayload = Annotated[
-    CompactionRequested
+    OperationOutputRecorded
+    | CompactionRequested
     | CompactionAttemptRecorded
     | CompactionFailed
     | CompactionCompleted

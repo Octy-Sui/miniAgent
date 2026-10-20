@@ -17,6 +17,7 @@ from time import monotonic
 from uuid import UUID, uuid4
 
 from miniagent.artifacts import ArtifactStore, ArtifactWrite
+from miniagent.artifacts.contracts import ArtifactPersistenceError
 from miniagent.environments.attachment import (
     AttachmentFacts,
     AttachmentProblem,
@@ -32,10 +33,13 @@ from miniagent.environments.contracts import (
     PatchExportCleanupError,
     WorkspaceCheckpoint,
 )
+from miniagent.environments.evidence import CommandEvidence, CommandOutputEvidence
 from miniagent.environments.managed_execution import (
     ManagedExecutionError,
+    current_cleanup_deadline,
     current_execution_observer,
 )
+from miniagent.environments.output_capture import OutputCapture
 from miniagent.environments.process import (
     decode_output,
     inspect_host_execution,
@@ -65,6 +69,7 @@ class LocalCommandResult:
     duration_ms: int
     stdout_truncated: bool = False
     stderr_truncated: bool = False
+    output_evidence: CommandOutputEvidence | None = None
 
 
 class LocalWorkspaceBackend:
@@ -439,6 +444,7 @@ class LocalWorkspaceBackend:
         max_output_bytes: int | None = None,
         capture_all: bool = False,
         cleanup_deadline: float | None = None,
+        output_capture: OutputCapture | None = None,
     ) -> LocalCommandResult:
         started_at = monotonic()
         observer = current_execution_observer()
@@ -447,8 +453,15 @@ class LocalWorkspaceBackend:
         process, identity = await start_host_process(
             argv,
             role="local_command",
-            attempt_id=observer.attempt_id if observer else uuid4(),
+            attempt_id=observer.attempt_id
+            if observer
+            else output_capture.attempt_id
+            if output_capture
+            else uuid4(),
             observer=observer,
+            command=CommandEvidence(
+                argv=tuple(argv), cwd=str(cwd), timeout_seconds=timeout_seconds
+            ),
             deadline=cleanup_deadline
             or started_at
             + (timeout_seconds if timeout_seconds is not None else float("inf")),
@@ -464,10 +477,43 @@ class LocalWorkspaceBackend:
             limit = (
                 self.max_output_bytes if max_output_bytes is None else max_output_bytes
             )
-        stdout_task = asyncio.create_task(read_stream(process.stdout, limit))
-        stderr_task = asyncio.create_task(read_stream(process.stderr, limit))
+        stdout_task = asyncio.create_task(
+            read_stream(
+                process.stdout,
+                limit,
+                on_chunk=(lambda chunk: output_capture.write("stdout", chunk))
+                if output_capture
+                else None,
+            )
+        )
+        stderr_task = asyncio.create_task(
+            read_stream(
+                process.stderr,
+                limit,
+                on_chunk=(lambda chunk: output_capture.write("stderr", chunk))
+                if output_capture
+                else None,
+            )
+        )
         wait_task = asyncio.create_task(process.wait())
         tasks: list[asyncio.Task[object]] = [stdout_task, stderr_task, wait_task]
+
+        async def record_output(reason: str | None) -> None:
+            if output_capture is None:
+                return
+            output = await output_capture.finish(
+                execution_id=identity.execution_id,
+                stdout_eof=stdout_task.done()
+                and not stdout_task.cancelled()
+                and stdout_task.exception() is None,
+                stderr_eof=stderr_task.done()
+                and not stderr_task.cancelled()
+                and stderr_task.exception() is None,
+                reason=reason,
+            )
+            if observer is not None:
+                await observer.output_recorded(output)
+
         if stdin is not None:
             tasks.append(
                 asyncio.create_task(
@@ -501,8 +547,18 @@ class LocalWorkspaceBackend:
             elif not process_group_absent(process.pid):
                 raise ManagedExecutionError("Local command group end is unconfirmed")
         except BaseException as exc:
+            # A failed evidence sink must not leave a full pipe blocking process reaping.
+            for stream_task in (stdout_task, stderr_task):
+                stream_task.cancel()
+            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            discard_tasks = [
+                asyncio.create_task(read_stream(process.stdout, 0)),
+                asyncio.create_task(read_stream(process.stderr, 0)),
+            ]
             diagnostics = await reap_process(
-                process, tasks, deadline=cleanup_deadline or monotonic() + 5.0
+                process,
+                [*tasks, *discard_tasks],
+                deadline=cleanup_deadline or monotonic() + 5.0,
             )
             for diagnostic in diagnostics:
                 exc.add_note(diagnostic)
@@ -511,13 +567,19 @@ class LocalWorkspaceBackend:
                     "Local command cleanup is unconfirmed"
                 ) from exc
             if (
-                isinstance(exc, (TimeoutError, asyncio.CancelledError))
+                isinstance(
+                    exc,
+                    (TimeoutError, asyncio.CancelledError, ArtifactPersistenceError),
+                )
                 and identity is not None
                 and observer is not None
             ):
                 await observer.ended(inspect_host_execution(identity))
+            if not isinstance(exc, ArtifactPersistenceError):
+                await record_output(type(exc).__name__)
             raise
 
+        await record_output(None)
         if process.returncode is None:
             raise LocalWorkspaceError("Local process ended without an exit code")
         stdout, stdout_truncated = stdout_task.result()
@@ -529,6 +591,7 @@ class LocalWorkspaceBackend:
             duration_ms=int((monotonic() - started_at) * 1000),
             stdout_truncated=stdout_truncated,
             stderr_truncated=stderr_truncated,
+            output_evidence=output_capture.output if output_capture else None,
         )
 
     @staticmethod
@@ -614,9 +677,17 @@ class LocalWorkspace:
         async with self._operation_lock:
             self._require_active()
             started_at = monotonic()
+            observer = current_execution_observer()
+            capture = await OutputCapture.open(
+                store=self.backend.artifact_store,
+                run_id=self.run_id,
+                attempt_id=observer.attempt_id if observer else uuid4(),
+                deadline=current_cleanup_deadline(),
+            )
             try:
                 result = await self.backend._run(
                     command.argv,
+                    output_capture=capture,
                     cwd=self._resolve_cwd(command.cwd),
                     environment=self.spec.environment_values | command.environment,
                     stdin=command.stdin.encode() if command.stdin is not None else None,
@@ -626,11 +697,14 @@ class LocalWorkspace:
                 self.state = LocalWorkspaceState.BROKEN
                 return ExecutionResult(
                     status=ExecutionStatus.TIMEOUT,
+                    output_evidence=capture.output,
                     duration_ms=int((monotonic() - started_at) * 1000),
                 )
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, ArtifactPersistenceError):
                 self.state = LocalWorkspaceState.BROKEN
                 raise
+            finally:
+                await capture.abort()
 
             return ExecutionResult(
                 status=(
@@ -639,6 +713,7 @@ class LocalWorkspace:
                     else ExecutionStatus.ERROR
                 ),
                 exit_code=result.exit_code,
+                output_evidence=result.output_evidence,
                 stdout=decode_output(result.stdout, result.stdout_truncated),
                 stderr=decode_output(result.stderr, result.stderr_truncated),
                 stdout_truncated=result.stdout_truncated,

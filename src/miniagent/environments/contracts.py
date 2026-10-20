@@ -6,6 +6,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validato
 
 from miniagent.artifacts.contracts import ArtifactRef
 from miniagent.environments.attachment import AttachmentFacts, WorkspaceAttachment
+from miniagent.environments.evidence import CommandOutputEvidence
 
 
 class WorkspaceDelta(BaseModel):
@@ -43,6 +44,7 @@ class ExecutionResult(BaseModel):
     duration_ms: int = Field(ge=0)
     artifacts: list[ArtifactRef] = Field(default_factory=list)
     workspace_delta: WorkspaceDelta | None = None
+    output_evidence: CommandOutputEvidence | None = None
 
     @model_validator(mode="after")
     def validate_exit_code(self) -> "ExecutionResult":

@@ -29,8 +29,8 @@ async def test_real_helper_and_guest_birth_identity_is_recorded(
     _, workspace, _, connection = docker_workspace
 
     class Observer(MemoryExecutionObserver):
-        async def identified(self, identity, *, permission="observe"):
-            await super().identified(identity, permission=permission)
+        async def identified(self, identity, *, permission="observe", command=None):
+            await super().identified(identity, permission=permission, command=command)
             with (tmp_path / "permissions.jsonl").open("a") as stream:
                 stream.write(
                     json.dumps(

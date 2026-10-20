@@ -110,11 +110,14 @@ async def test_identity_commit_failure_reaps_owned_group_and_propagates(
         attempt_id = uuid4()
         identity = None
 
-        async def identified(self, identity, *, permission="observe"):
+        async def identified(self, identity, *, permission="observe", command=None):
             self.identity = identity
             raise RunPersistenceError(
                 run_id=workspace.run_id, operation="identity", last_confirmed_sequence=1
             )
+
+        async def output_recorded(self, output):
+            pytest.fail("unconfirmed command cannot have output evidence")
 
         async def ended(self, evidence):
             pytest.fail("unconfirmed command must not produce trusted evidence")
