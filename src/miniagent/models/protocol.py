@@ -69,6 +69,24 @@ class ModelResponse(BaseModel):
     error: ModelError | None = None
 
 
+class ProviderToolCallEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str | None = None
+    name: str | None = None
+    arguments: str | None = None
+
+
+class ProviderResponseEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    content: str | None = None
+    tool_calls: tuple[ProviderToolCallEvidence, ...] = ()
+    finish_reason: str | None = None
+    provider_request_id: str | None = None
+    usage: dict[str, int | None] | None = None
+
+
 class ModelProvider(Protocol):
     async def generate(self, request: ModelRequest) -> ModelResponse: ...
 
@@ -81,3 +99,10 @@ class ModelProviderError(RuntimeError):
 
 class ModelContextLimitError(ModelProviderError):
     pass
+
+
+class ModelResponseNormalizationError(ModelProviderError):
+    def __init__(self, *, evidence: ProviderResponseEvidence, code: str) -> None:
+        self.evidence = evidence
+        self.code = code
+        super().__init__("Model response normalization failed")

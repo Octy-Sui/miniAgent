@@ -14,7 +14,10 @@ from miniagent.models.protocol import (
     ModelProviderError,
     ModelRequest,
     ModelResponse,
+    ModelResponseNormalizationError,
     ModelUsage,
+    ProviderResponseEvidence,
+    ProviderToolCallEvidence,
 )
 from miniagent.tools.contracts import ToolCall
 
@@ -139,47 +142,95 @@ class QwenProvider:
             raise
         except APIConnectionError as exc:
             raise ModelProviderError(str(exc), retryable=True) from exc
-        choice = response.choices[0]
-        provider_message = choice.message
-
-        tool_calls = [
-            ToolCall(
-                id=call.id,
-                name=call.function.name,
-                arguments=self._parse_arguments(call.function.arguments),
+        choice = response.choices[0] if response.choices else None
+        provider_message = choice.message if choice is not None else None
+        usage = response.usage
+        prompt_details = usage.prompt_tokens_details if usage else None
+        completion_details = usage.completion_tokens_details if usage else None
+        raw_usage = (
+            {
+                "input_tokens": usage.prompt_tokens,
+                "cached_input_tokens": prompt_details.cached_tokens
+                if prompt_details
+                else None,
+                "output_tokens": usage.completion_tokens,
+                "reasoning_output_tokens": completion_details.reasoning_tokens
+                if completion_details
+                else None,
+                "total_tokens": usage.total_tokens,
+            }
+            if usage
+            else None
+        )
+        evidence = ProviderResponseEvidence(
+            content=provider_message.content if provider_message else None,
+            tool_calls=tuple(
+                ProviderToolCallEvidence(
+                    id=getattr(call, "id", None),
+                    name=getattr(getattr(call, "function", None), "name", None),
+                    arguments=getattr(
+                        getattr(call, "function", None), "arguments", None
+                    ),
+                )
+                for call in (provider_message.tool_calls or ())
             )
-            for call in provider_message.tool_calls or []
-        ]
-
-        message = AssistantMessage(
-            content=provider_message.content,
-            tool_calls=tuple(tool_calls),
-        )
-
-        prompt_details = (
-            response.usage.prompt_tokens_details if response.usage else None
-        )
-        completion_details = (
-            response.usage.completion_tokens_details if response.usage else None
-        )
-
-        return ModelResponse(
-            message=message,
-            finish_reason=self._map_finish_reason(choice.finish_reason),
-            usage=ModelUsage(
-                input_tokens=response.usage.prompt_tokens,
-                cached_input_tokens=(
-                    prompt_details.cached_tokens or 0 if prompt_details else 0
-                ),
-                output_tokens=response.usage.completion_tokens,
-                reasoning_output_tokens=(
-                    completion_details.reasoning_tokens or 0
-                    if completion_details
-                    else 0
-                ),
-                total_tokens=response.usage.total_tokens,
-            )
-            if response.usage
-            else None,
+            if provider_message
+            else (),
+            finish_reason=choice.finish_reason if choice else None,
             provider_request_id=response.id,
+            usage={
+                key: value if type(value) is int else None
+                for key, value in raw_usage.items()
+            }
+            if raw_usage
+            else None,
         )
+        try:
+            choice = response.choices[0]
+            provider_message = choice.message
+
+            tool_calls = [
+                ToolCall(
+                    id=call.id,
+                    name=call.function.name,
+                    arguments=self._parse_arguments(call.function.arguments),
+                )
+                for call in provider_message.tool_calls or []
+            ]
+
+            message = AssistantMessage(
+                content=provider_message.content,
+                tool_calls=tuple(tool_calls),
+            )
+
+            prompt_details = (
+                response.usage.prompt_tokens_details if response.usage else None
+            )
+            completion_details = (
+                response.usage.completion_tokens_details if response.usage else None
+            )
+
+            return ModelResponse(
+                message=message,
+                finish_reason=self._map_finish_reason(choice.finish_reason),
+                usage=ModelUsage(
+                    input_tokens=response.usage.prompt_tokens,
+                    cached_input_tokens=(
+                        prompt_details.cached_tokens or 0 if prompt_details else 0
+                    ),
+                    output_tokens=response.usage.completion_tokens,
+                    reasoning_output_tokens=(
+                        completion_details.reasoning_tokens or 0
+                        if completion_details
+                        else 0
+                    ),
+                    total_tokens=response.usage.total_tokens,
+                )
+                if response.usage
+                else None,
+                provider_request_id=response.id,
+            )
+        except (ValueError, TypeError, IndexError, AttributeError):
+            raise ModelResponseNormalizationError(
+                evidence=evidence, code="MODEL_RESPONSE_NORMALIZATION_FAILED"
+            ) from None
