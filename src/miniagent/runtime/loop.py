@@ -630,34 +630,55 @@ class AgentRuntime:
                     continue
                 break
             cost = None
+            pricing_failure = None
             if self.pricing is not None and response.usage is not None:
                 target = execution.state.definition.agent_spec.model
-                cost = calculate_request_cost(
-                    provider=target.provider,
-                    model=target.model,
-                    usage=response.usage,
-                    pricing=self.pricing,
-                )
+                if not any(
+                    price.provider == target.provider and price.model == target.model
+                    for price in self.pricing.models
+                ):
+                    pricing_failure = RunError(
+                        code="COST_CALCULATION_FAILED",
+                        message="No pricing configured for summary model",
+                    )
+                else:
+                    cost = calculate_request_cost(
+                        provider=target.provider,
+                        model=target.model,
+                        usage=response.usage,
+                        pricing=self.pricing,
+                    )
             attempt = CompactionAttempt(
                 attempt=number,
                 attempt_id=attempt_id,
                 usage=response.usage,
                 request_cost=cost,
                 provider_request_id=response.provider_request_id,
-                error_code=response.error.code if response.error else None,
+                error_code=pricing_failure.code
+                if pricing_failure
+                else response.error.code
+                if response.error
+                else None,
             )
             attempts.append(attempt)
             await execution.record_compaction_attempt(
                 attempt,
                 response=response,
-                failure=RunError(
-                    code=response.error.code,
-                    message=response.error.message,
-                    retryable=response.error.retryable,
-                )
-                if response.error
-                else None,
+                failure=pricing_failure
+                or (
+                    RunError(
+                        code=response.error.code,
+                        message=response.error.message,
+                        retryable=response.error.retryable,
+                    )
+                    if response.error
+                    else None
+                ),
             )
+            if pricing_failure is not None:
+                failure = pricing_failure.message
+                response = None
+                break
             if self.cancellation_token.is_cancelled:
                 await execution.fail_compaction(
                     "COMPACTION_FAILED", "compaction cancelled", tuple(attempts)

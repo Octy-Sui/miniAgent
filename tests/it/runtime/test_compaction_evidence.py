@@ -279,3 +279,27 @@ async def test_tc_u05_04_published_summary_is_not_recharged_on_resume(tmp_path):
     assert len(attempts) == 1
     assert len(runtime.provider.requests) == 1
     assert result.output == "candidate"
+
+
+async def test_summary_missing_target_price_preserves_response_before_failure(tmp_path):
+    from miniagent.metering.pricing import PriceConfig
+    from miniagent.models.protocol import ModelUsage
+
+    response = summary_response().model_copy(
+        update={"usage": ModelUsage(input_tokens=10, output_tokens=5, total_tokens=15)}
+    )
+    runtime, execution, provider, store = await pipeline(tmp_path, response=response)
+    runtime.pricing = PriceConfig(models=[])
+    await runtime._prepare_request(execution, force=True)
+    recorded = [
+        event.payload
+        for event in await store.list_events(execution.state.identity.run_id)
+        if isinstance(event.payload, CompactionAttemptRecorded)
+    ]
+    assert len(recorded) == len(provider.requests) == 1
+    assert recorded[0].response == response
+    assert recorded[0].result.usage == response.usage
+    assert recorded[0].result.request_cost is None
+    assert recorded[0].result.error_code == "COST_CALCULATION_FAILED"
+    assert execution.state.context.current_version is None
+    assert execution.state.usage.input_tokens == 10
