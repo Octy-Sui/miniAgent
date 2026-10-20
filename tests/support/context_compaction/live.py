@@ -149,6 +149,7 @@ async def execute(directory: Path, run_id: str) -> None:
     provider.client._client.event_hooks["response"].append(wire_response)
     capturing = CapturingProvider(provider, folder)
     runtime = AgentRuntime(
+        artifact_store=dependencies.artifact_store,
         provider=capturing,
         tools=dependencies.tools,
         config=config,

@@ -933,7 +933,9 @@ async def test_newer_related_record_versions_are_reported_as_unsupported(
         await operation
 
 
-async def test_historical_snapshot_preserves_request(tmp_path: Path) -> None:
+async def test_historical_snapshot_preserves_request(
+    tmp_path: Path, runtime_persistence
+) -> None:
     from miniagent.models.config import GenerationOptions
     from miniagent.models.messages import SystemMessage, UserMessage
     from miniagent.models.protocol import ModelProvider
@@ -971,7 +973,12 @@ async def test_historical_snapshot_preserves_request(tmp_path: Path) -> None:
     assert await store.load_version(state.identity.run_id, 1) == first
     assert await store.load_version(uuid4(), 1) is None
     assert await store.load_version(state.identity.run_id, 3) is None
-    runtime = AgentRuntime(provider=UnusedProvider(), tools=ToolRegistry([]))
+    runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
+        run_store=runtime_persistence.store,
+        provider=UnusedProvider(),
+        tools=ToolRegistry([]),
+    )
     restored = await store.load_version(state.identity.run_id, 1)
     assert restored is not None
     assert (

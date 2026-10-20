@@ -20,7 +20,7 @@ from tests.support.runtime.runtime_resume import completed_protocol
 @pytest.mark.parametrize("mode", ["rejected", "expired", "handler_error"])
 @pytest.mark.parametrize("sent", [signal.SIGINT, signal.SIGTERM])
 async def test_signal_after_approval_termination_keeps_resolution_and_stopping_decision(
-    tmp_path, mode, sent
+    tmp_path, mode, sent, runtime_persistence
 ):
     process = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -63,7 +63,10 @@ async def test_signal_after_approval_termination_keeps_resolution_and_stopping_d
         record = await completed_protocol(store, execution)
         provider = QueueProvider([])
         result = await AgentRuntime(
-            provider=provider, tools=ToolRegistry([]), run_store=store
+            artifact_store=runtime_persistence.artifacts,
+            provider=provider,
+            tools=ToolRegistry([]),
+            run_store=store,
         ).resume(record)
         assert result.status is RunStatus.FAILED and provider.requests == []
         assert (

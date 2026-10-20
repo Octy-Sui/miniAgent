@@ -27,11 +27,13 @@ from tests.support.policy.policy import (
 )
 
 
-async def test_approved_shell_call_executes_once() -> None:
+async def test_approved_shell_call_executes_once(runtime_persistence) -> None:
     tool = RecordingShell()
     provider = QueueProvider([shell_response(), final_response()])
     approvals = ResolvingApprovalHandler(ApprovalOutcome.APPROVED)
     runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
+        run_store=runtime_persistence.store,
         provider=provider,
         tools=ToolRegistry([tool]),
         approval_handler=approvals,
@@ -45,9 +47,11 @@ async def test_approved_shell_call_executes_once() -> None:
     assert len(approvals.requests) == 1
 
 
-async def test_docker_shell_call_executes_without_approval() -> None:
+async def test_docker_shell_call_executes_without_approval(runtime_persistence) -> None:
     tool = RecordingShell()
     runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
+        run_store=runtime_persistence.store,
         provider=QueueProvider([shell_response(), final_response()]),
         tools=ToolRegistry([tool]),
         policy_context=PolicyContext(
@@ -64,10 +68,12 @@ async def test_docker_shell_call_executes_without_approval() -> None:
     assert result.usage.tool_calls == 1
 
 
-async def test_rejected_shell_call_stops_without_execution() -> None:
+async def test_rejected_shell_call_stops_without_execution(runtime_persistence) -> None:
     tool = RecordingShell()
     approvals = ResolvingApprovalHandler(ApprovalOutcome.REJECTED)
     runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
+        run_store=runtime_persistence.store,
         provider=QueueProvider([shell_response()]),
         tools=ToolRegistry([tool]),
         approval_handler=approvals,
@@ -80,9 +86,11 @@ async def test_rejected_shell_call_stops_without_execution() -> None:
     assert result.usage.tool_calls == 0
 
 
-async def test_missing_approval_handler_fails_closed() -> None:
+async def test_missing_approval_handler_fails_closed(runtime_persistence) -> None:
     tool = RecordingShell()
     runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
+        run_store=runtime_persistence.store,
         provider=QueueProvider([shell_response()]),
         tools=ToolRegistry([tool]),
     )
@@ -93,9 +101,11 @@ async def test_missing_approval_handler_fails_closed() -> None:
     assert tool.executions == 0
 
 
-async def test_approval_request_expires_without_execution() -> None:
+async def test_approval_request_expires_without_execution(runtime_persistence) -> None:
     tool = RecordingShell()
     runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
+        run_store=runtime_persistence.store,
         provider=QueueProvider([shell_response()]),
         tools=ToolRegistry([tool]),
         approval_handler=BlockingApprovalHandler(),
@@ -108,10 +118,14 @@ async def test_approval_request_expires_without_execution() -> None:
     assert tool.executions == 0
 
 
-async def test_cancelling_in_memory_approval_returns_cancelled_result() -> None:
+async def test_cancelling_in_memory_approval_returns_cancelled_result(
+    runtime_persistence,
+) -> None:
     token = CancellationToken()
     approvals = BlockingApprovalHandler()
     runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
+        run_store=runtime_persistence.store,
         provider=QueueProvider([shell_response()]),
         tools=ToolRegistry([RecordingShell()]),
         approval_handler=approvals,
@@ -129,11 +143,13 @@ async def test_cancelling_in_memory_approval_returns_cancelled_result() -> None:
 
 async def test_approved_shell_call_persists_approval_atomically(
     tmp_path: Path,
+    runtime_persistence,
 ) -> None:
     store = SQLiteRunStore(tmp_path / "runs.sqlite3")
     await store.initialize()
     approvals = ResolvingApprovalHandler(ApprovalOutcome.APPROVED)
     runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
         provider=QueueProvider([shell_response(), final_response()]),
         tools=ToolRegistry([RecordingShell()]),
         approval_handler=approvals,
@@ -186,6 +202,7 @@ async def test_approved_shell_call_persists_approval_atomically(
 
 async def test_approval_expiring_during_commit_is_persisted_as_expired(
     tmp_path: Path,
+    runtime_persistence,
 ) -> None:
     store = SQLiteRunStore(
         tmp_path / "runs.sqlite3",
@@ -195,6 +212,7 @@ async def test_approval_expiring_during_commit_is_persisted_as_expired(
     tool = RecordingShell()
     approvals = ResolvingApprovalHandler(ApprovalOutcome.APPROVED)
     runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
         provider=QueueProvider([shell_response()]),
         tools=ToolRegistry([tool]),
         approval_handler=approvals,

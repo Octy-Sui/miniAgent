@@ -43,7 +43,9 @@ from tests.support.runtime.tool_batch_resume import prefix
 
 
 @pytest.mark.parametrize(("phase",), [("request",), ("candidate",), ("terminate",)])
-async def test_resume_attaches_without_create_or_run_started(tmp_path, phase):
+async def test_resume_attaches_without_create_or_run_started(
+    tmp_path, phase, runtime_persistence
+):
     store, execution = await started(tmp_path)
     if phase != "request":
         disposition = (
@@ -69,7 +71,10 @@ async def test_resume_attaches_without_create_or_run_started(tmp_path, phase):
         [final_response("candidate")] if phase == "request" else []
     )
     result = await AgentRuntime(
-        provider=provider, tools=ToolRegistry([]), run_store=store
+        artifact_store=runtime_persistence.artifacts,
+        provider=provider,
+        tools=ToolRegistry([]),
+        run_store=store,
     ).resume(record)
     events = await store.list_events(result.run_id)
     assert result.run_id == record.state.identity.run_id
@@ -87,7 +92,9 @@ async def test_resume_attaches_without_create_or_run_started(tmp_path, phase):
     ("invalid",),
     [("stale",), ("recovering",), ("suspended",), ("running_without_completed",)],
 )
-async def test_resume_rejects_stale_or_recovering_record(tmp_path, invalid):
+async def test_resume_rejects_stale_or_recovering_record(
+    tmp_path, invalid, runtime_persistence
+):
     store, execution = await started(tmp_path)
     record = await store.get(execution.state.identity.run_id)
     if invalid == "stale":
@@ -158,14 +165,17 @@ async def test_resume_rejects_stale_or_recovering_record(tmp_path, invalid):
     provider = QueueProvider([])
     with pytest.raises(ValueError, match="resume|Resume|recover|stale|completed"):
         await AgentRuntime(
-            provider=provider, tools=ToolRegistry([]), run_store=store
+            artifact_store=runtime_persistence.artifacts,
+            provider=provider,
+            tools=ToolRegistry([]),
+            run_store=store,
         ).resume(record)
     assert provider.requests == []
 
 
 @pytest.mark.parametrize(("complete_batch",), [(False,), (True,)])
 async def test_resume_dispatches_original_tool_and_complete_step_phases(
-    tmp_path, complete_batch
+    tmp_path, complete_batch, runtime_persistence
 ):
 
     store, execution, tool = await prefix(
@@ -173,6 +183,7 @@ async def test_resume_dispatches_original_tool_and_complete_step_phases(
     )
     record = await completed_protocol(store, execution)
     result = await AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
         provider=QueueProvider([]),
         tools=ToolRegistry([tool]),
         run_store=store,
@@ -184,6 +195,7 @@ async def test_resume_dispatches_original_tool_and_complete_step_phases(
 
 async def test_resume_restarts_uncommitted_evaluation_without_completing_step_twice(
     tmp_path,
+    runtime_persistence,
 ):
     store, execution = await started(tmp_path)
     await execution.record_model_response(
@@ -194,14 +206,19 @@ async def test_resume_restarts_uncommitted_evaluation_without_completing_step_tw
     await execution.begin_evaluation("candidate")
     record = await completed_protocol(store, execution)
     result = await AgentRuntime(
-        provider=QueueProvider([]), tools=ToolRegistry([]), run_store=store
+        artifact_store=runtime_persistence.artifacts,
+        provider=QueueProvider([]),
+        tools=ToolRegistry([]),
+        run_store=store,
     ).resume(record)
     assert result.output == "candidate"
     events = await store.list_events(result.run_id)
     assert sum(event.type == RunEventType.STEP_COMPLETED for event in events) == 1
 
 
-async def test_resume_prepares_existing_created_record_without_run_started(tmp_path):
+async def test_resume_prepares_existing_created_record_without_run_started(
+    tmp_path, runtime_persistence
+):
     store = SQLiteRunStore(tmp_path / "created.sqlite3")
     await store.initialize()
     spec = agent()
@@ -222,6 +239,7 @@ async def test_resume_prepares_existing_created_record_without_run_started(tmp_p
     execution = RunExecution.attach(await store.get(state.identity.run_id), journal)
     record = await completed_protocol(store, execution)
     result = await AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
         provider=QueueProvider([final_response()]),
         tools=ToolRegistry([]),
         run_store=store,
@@ -232,7 +250,9 @@ async def test_resume_prepares_existing_created_record_without_run_started(tmp_p
     assert sum(event.type == RunEventType.STEP_STARTED for event in events) == 1
 
 
-async def test_resume_terminates_from_complete_evaluation_result(tmp_path):
+async def test_resume_terminates_from_complete_evaluation_result(
+    tmp_path, runtime_persistence
+):
     store, execution = await started(tmp_path)
     await execution.record_model_response(
         final_response("candidate"),
@@ -244,7 +264,10 @@ async def test_resume_terminates_from_complete_evaluation_result(tmp_path):
     await execution.record_evaluation_result(supplied)
     record = await completed_protocol(store, execution)
     result = await AgentRuntime(
-        provider=QueueProvider([]), tools=ToolRegistry([]), run_store=store
+        artifact_store=runtime_persistence.artifacts,
+        provider=QueueProvider([]),
+        tools=ToolRegistry([]),
+        run_store=store,
     ).resume(record)
     assert result.output == "verified"
     assert (

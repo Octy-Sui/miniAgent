@@ -140,7 +140,7 @@ async def test_tc_u15_05_and_06(
 @pytest.mark.parametrize(
     "variant", ["duplicate_resume_start", "compaction_selection_conflict"]
 )
-async def test_tc_u15_07(tmp_path: Path, variant: str) -> None:
+async def test_tc_u15_07(tmp_path: Path, variant: str, runtime_persistence) -> None:
     import json
 
     from miniagent.runtime import AgentRuntime
@@ -165,7 +165,10 @@ async def test_tc_u15_07(tmp_path: Path, variant: str) -> None:
             )
         provider = QueueProvider([])
         runtime = AgentRuntime(
-            provider=provider, tools=ToolRegistry([]), run_store=store
+            artifact_store=runtime_persistence.artifacts,
+            provider=provider,
+            tools=ToolRegistry([]),
+            run_store=store,
         )
         with pytest.raises(ValueError, match="unique start"):
             await runtime.resume(record)

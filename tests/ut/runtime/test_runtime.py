@@ -101,7 +101,7 @@ class TestRunState:
         assert state.recovery.checkpoint_id is None
 
 
-def test_request_rejects_fixed_prefix_tampering() -> None:
+def test_request_rejects_fixed_prefix_tampering(runtime_persistence) -> None:
     from miniagent.models.messages import SystemMessage, UserMessage
     from miniagent.runtime.state import ConversationState
 
@@ -118,7 +118,12 @@ def test_request_rejects_fixed_prefix_tampering() -> None:
         config=RuntimeConfig(),
         messages=(SystemMessage(content="fixed"), UserMessage(content="task")),
     )
-    runtime = AgentRuntime(provider=QueueProvider([]), tools=ToolRegistry([]))
+    runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
+        run_store=runtime_persistence.store,
+        provider=QueueProvider([]),
+        tools=ToolRegistry([]),
+    )
     assert runtime._build_request(state).generation.max_output_tokens == 976
     altered = state.model_copy(
         update={
@@ -135,7 +140,9 @@ def test_request_rejects_fixed_prefix_tampering() -> None:
 
 
 @pytest.mark.parametrize(("change",), [("description",), ("schema",), ("version",)])
-def test_request_rejects_changed_tool_contract(change: str) -> None:
+def test_request_rejects_changed_tool_contract(
+    change: str, runtime_persistence
+) -> None:
     from miniagent.models.messages import SystemMessage, UserMessage
     from miniagent.runtime.state import RunDefinition
 
@@ -177,4 +184,9 @@ def test_request_rejects_changed_tool_contract(change: str) -> None:
         }
     )
     with pytest.raises(ValueError, match="tool contract"):
-        AgentRuntime(provider=QueueProvider([]), tools=registry)._build_request(state)
+        AgentRuntime(
+            artifact_store=runtime_persistence.artifacts,
+            run_store=runtime_persistence.store,
+            provider=QueueProvider([]),
+            tools=registry,
+        )._build_request(state)

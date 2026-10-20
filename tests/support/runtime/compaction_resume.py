@@ -1,5 +1,6 @@
 from dataclasses import replace
 
+from miniagent.artifacts import FileArtifactStore
 from miniagent.runtime import AgentRuntime
 from miniagent.runtime.context import build_summary_request, select_compaction_prefix
 from miniagent.runtime.events import (
@@ -46,6 +47,7 @@ async def failed_summary(tmp_path, used):
     )
     await execution.record_model_failure("CONTEXT_CAPACITY_EXCEEDED")
     runtime = AgentRuntime(
+        artifact_store=FileArtifactStore(tmp_path / "artifacts"),
         provider=QueueProvider([]),
         tools=ToolRegistry([]),
         run_store=store,

@@ -323,7 +323,7 @@ async def test_export_retry_requires_old_chain_end_and_new_index(
 
 
 async def test_trusted_timeout_keeps_file_change_and_verified_group_end(
-    submission_case, tmp_path
+    submission_case, tmp_path, runtime_persistence
 ):
     """TC-U6-03/04: trusted TIMEOUT retains actual edits and verified execution end."""
     workspace, _artifacts = submission_case
@@ -344,6 +344,7 @@ async def test_trusted_timeout_keeps_file_change_and_verified_group_end(
         usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
     result = await AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
         provider=QueueProvider([response]),
         tools=ToolRegistry([tool]),
         run_store=store,

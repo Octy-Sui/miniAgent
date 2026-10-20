@@ -19,7 +19,9 @@ from tests.support.runtime.runtime import QueueProvider
 from tests.support.trajectory.fixtures import request_for
 
 
-async def test_started_request_retries_same_step_and_counts_unknown_once(tmp_path):
+async def test_started_request_retries_same_step_and_counts_unknown_once(
+    tmp_path, runtime_persistence
+):
     store, execution = await started(tmp_path)
     execution = await reopen(store, execution)
     await execution.interrupt_operation(unconfirmed=True)
@@ -31,7 +33,10 @@ async def test_started_request_retries_same_step_and_counts_unknown_once(tmp_pat
     )
     provider = QueueProvider([response])
     result = await AgentRuntime(
-        provider=provider, tools=ToolRegistry([]), run_store=store
+        artifact_store=runtime_persistence.artifacts,
+        provider=provider,
+        tools=ToolRegistry([]),
+        run_store=store,
     )._drive(execution)
     assert result.usage.model_requests == 2
     assert result.usage.unconfirmed_model_requests == 1
@@ -41,7 +46,9 @@ async def test_started_request_retries_same_step_and_counts_unknown_once(tmp_pat
     assert len(provider.requests) == 1
 
 
-async def test_committed_candidate_dispatches_without_model_request(tmp_path):
+async def test_committed_candidate_dispatches_without_model_request(
+    tmp_path, runtime_persistence
+):
     store, execution = await started(tmp_path)
     await execution.record_model_response(
         ModelResponse(
@@ -54,12 +61,17 @@ async def test_committed_candidate_dispatches_without_model_request(tmp_path):
     execution = await reopen(store, execution)
     provider = QueueProvider([])
     result = await AgentRuntime(
-        provider=provider, tools=ToolRegistry([]), run_store=store
+        artifact_store=runtime_persistence.artifacts,
+        provider=provider,
+        tools=ToolRegistry([]),
+        run_store=store,
     )._drive(execution)
     assert result.output == "candidate" and provider.requests == []
 
 
-async def test_failure_disposition_with_nonempty_text_never_evaluates(tmp_path):
+async def test_failure_disposition_with_nonempty_text_never_evaluates(
+    tmp_path, runtime_persistence
+):
     store, execution = await started(tmp_path)
     decision = TerminationDecision(
         status="failed",
@@ -77,14 +89,19 @@ async def test_failure_disposition_with_nonempty_text_never_evaluates(tmp_path):
     execution = await reopen(store, execution)
     provider = QueueProvider([])
     result = await AgentRuntime(
-        provider=provider, tools=ToolRegistry([]), run_store=store
+        artifact_store=runtime_persistence.artifacts,
+        provider=provider,
+        tools=ToolRegistry([]),
+        run_store=store,
     )._drive(execution)
     assert result.error is not None
     assert result.error.code == "BAD_RESPONSE" and provider.requests == []
     assert result.output is None
 
 
-async def test_confirmed_usage_preserves_prior_unknown_attempts(tmp_path):
+async def test_confirmed_usage_preserves_prior_unknown_attempts(
+    tmp_path, runtime_persistence
+):
     store, execution = await started(tmp_path)
     await execution.interrupt_operation(unconfirmed=True)
     await execution.begin_model_retry(request=request_for(execution.state))
@@ -110,7 +127,11 @@ async def test_confirmed_usage_preserves_prior_unknown_attempts(tmp_path):
         ]
     )
     result = await AgentRuntime(
-        provider=provider, tools=ToolRegistry([]), run_store=store, pricing=prices
+        artifact_store=runtime_persistence.artifacts,
+        provider=provider,
+        tools=ToolRegistry([]),
+        run_store=store,
+        pricing=prices,
     )._drive(execution)
     assert result.usage.unconfirmed_model_requests == 2
     assert result.usage.model_requests == 3

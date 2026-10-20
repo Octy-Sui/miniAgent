@@ -251,7 +251,9 @@ async def test_missing_summary_usage_stays_unknown(tmp_path) -> None:
     assert failed.attempts[0].usage is None
 
 
-async def test_compaction_continues_same_run_before_business_step(tmp_path) -> None:
+async def test_compaction_continues_same_run_before_business_step(
+    tmp_path, runtime_persistence
+) -> None:
     from miniagent.agents import AgentSpec
     from miniagent.models.config import GenerationOptions, ModelTarget
     from miniagent.models.protocol import FinishReason, ModelResponse
@@ -286,6 +288,7 @@ async def test_compaction_continues_same_run_before_business_step(tmp_path) -> N
     store = SQLiteRunStore(tmp_path / "integration.sqlite3")
     await store.initialize()
     runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
         provider=provider,
         tools=ToolRegistry([tool]),
         policy_engine=AllowPolicyEngine(),
@@ -489,7 +492,7 @@ async def test_cancel_returned_summary_before_publish_or_business_step(
 
 @pytest.mark.parametrize(("unsafe",), [(False,), (True,)])
 async def test_real_summary_capacity_precheck_preserves_safe_business_only(
-    tmp_path, unsafe
+    tmp_path, unsafe, runtime_persistence
 ) -> None:
 
     from miniagent.runtime import AgentRuntime
@@ -590,7 +593,11 @@ async def test_real_summary_capacity_precheck_preserves_safe_business_only(
     )
     provider = QueueProvider([final_response()])
     runtime = AgentRuntime(
-        provider=provider, tools=registry, estimator=estimator, run_store=store
+        artifact_store=runtime_persistence.artifacts,
+        provider=provider,
+        tools=registry,
+        estimator=estimator,
+        run_store=store,
     )
     outcome = await runtime._request_model(execution, agent)
     assert isinstance(outcome, TerminateRun if unsafe else ContinueRun)
@@ -609,7 +616,9 @@ async def test_real_summary_capacity_precheck_preserves_safe_business_only(
     assert all(event.type.value != "compaction_requested" for event in events)
 
 
-async def test_repeated_compaction_retains_prior_source_chain(tmp_path) -> None:
+async def test_repeated_compaction_retains_prior_source_chain(
+    tmp_path, runtime_persistence
+) -> None:
     from miniagent.agents import AgentSpec
     from miniagent.models.config import GenerationOptions, ModelTarget
     from miniagent.runtime import AgentRuntime, RunStatus, RuntimeConfig
@@ -652,6 +661,7 @@ async def test_repeated_compaction_retains_prior_source_chain(tmp_path) -> None:
     store = SQLiteRunStore(tmp_path / "chain.sqlite3")
     await store.initialize()
     runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
         provider=provider,
         tools=ToolRegistry([SuccessfulTool()]),
         estimator=GrowingEstimator(),

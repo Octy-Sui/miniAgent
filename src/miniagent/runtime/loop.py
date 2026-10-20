@@ -121,10 +121,14 @@ class AgentRuntime:
         policy_engine: PolicyEngine | None = None,
         policy_context: PolicyContext | None = None,
         approval_handler: ApprovalHandler | None = None,
-        run_store: RuntimeStore | None = None,
-        artifact_store: ArtifactStore | None = None,
+        run_store: RuntimeStore,
+        artifact_store: ArtifactStore,
         estimator: PromptTokenEstimator | None = None,
     ) -> None:
+        if run_store is None:
+            raise ValueError("run_store is required")
+        if artifact_store is None:
+            raise ValueError("artifact_store is required")
         self.provider = provider
         self.tools = tools
         self.config = config or RuntimeConfig()

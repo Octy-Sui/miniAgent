@@ -30,7 +30,9 @@ from tests.support.runtime.runtime import (
 )
 
 
-async def test_interruption_suspends_without_fabricated_tool_result(tmp_path):
+async def test_interruption_suspends_without_fabricated_tool_result(
+    tmp_path, runtime_persistence
+):
     store = SQLiteRunStore(tmp_path / "runs.sqlite3")
     await store.initialize()
     tool = BlockingTool()
@@ -43,6 +45,7 @@ async def test_interruption_suspends_without_fabricated_tool_result(tmp_path):
         usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
     runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
         provider=QueueProvider([response]),
         tools=ToolRegistry([tool]),
         run_store=store,
@@ -75,11 +78,15 @@ async def test_interruption_suspends_without_fabricated_tool_result(tmp_path):
     )
 
 
-async def test_explicit_cancellation_remains_terminal():
+async def test_explicit_cancellation_remains_terminal(runtime_persistence):
     provider = BlockingProvider()
     cancellation = CancellationToken()
     runtime = AgentRuntime(
-        provider=provider, tools=ToolRegistry([]), cancellation_token=cancellation
+        artifact_store=runtime_persistence.artifacts,
+        run_store=runtime_persistence.store,
+        provider=provider,
+        tools=ToolRegistry([]),
+        cancellation_token=cancellation,
     )
     running = asyncio.create_task(
         runtime.run(agent(), "task", interruption_token=InterruptionToken())
@@ -90,11 +97,16 @@ async def test_explicit_cancellation_remains_terminal():
     assert isinstance(result, RunResult) and result.status is RunStatus.CANCELLED
 
 
-async def test_bare_cancelled_error_is_not_suspension(tmp_path):
+async def test_bare_cancelled_error_is_not_suspension(tmp_path, runtime_persistence):
     store = SQLiteRunStore(tmp_path / "runs.sqlite3")
     await store.initialize()
     provider = BlockingProvider()
-    runtime = AgentRuntime(provider=provider, tools=ToolRegistry([]), run_store=store)
+    runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
+        provider=provider,
+        tools=ToolRegistry([]),
+        run_store=store,
+    )
     running = asyncio.create_task(
         runtime.run(agent(), "task", interruption_token=InterruptionToken())
     )
@@ -105,7 +117,9 @@ async def test_bare_cancelled_error_is_not_suspension(tmp_path):
 
 
 @pytest.mark.parametrize(("expired",), [(False,), (True,)])
-async def test_trusted_result_commits_before_pause_only_with_budget(tmp_path, expired):
+async def test_trusted_result_commits_before_pause_only_with_budget(
+    tmp_path, expired, runtime_persistence
+):
     now = [monotonic()]
     token = InterruptionToken(timeout_seconds=2, clock=lambda: now[0])
     store = SQLiteRunStore(tmp_path / "runs.sqlite3")
@@ -131,6 +145,7 @@ async def test_trusted_result_commits_before_pause_only_with_budget(tmp_path, ex
         usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
     runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
         provider=QueueProvider([response]),
         tools=ToolRegistry([tool]),
         run_store=store,
@@ -151,7 +166,9 @@ async def test_trusted_result_commits_before_pause_only_with_budget(tmp_path, ex
         assert not any(event.type == RunEventType.STEP_COMPLETED for event in events)
 
 
-async def test_pending_approval_is_invalidated_atomically_with_suspension(tmp_path):
+async def test_pending_approval_is_invalidated_atomically_with_suspension(
+    tmp_path, runtime_persistence
+):
     store = SQLiteRunStore(tmp_path / "runs.sqlite3")
     await store.initialize()
     token = InterruptionToken()
@@ -190,6 +207,7 @@ async def test_pending_approval_is_invalidated_atomically_with_suspension(tmp_pa
         usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
     runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
         provider=QueueProvider([response]),
         tools=ToolRegistry([tool]),
         run_store=store,
@@ -210,7 +228,9 @@ async def test_pending_approval_is_invalidated_atomically_with_suspension(tmp_pa
     assert not tool.started.is_set()
 
 
-async def test_interruption_before_initial_record_creates_no_run(tmp_path):
+async def test_interruption_before_initial_record_creates_no_run(
+    tmp_path, runtime_persistence
+):
     store = SQLiteRunStore(tmp_path / "runs.sqlite3")
     await store.initialize()
     token = InterruptionToken()
@@ -218,7 +238,10 @@ async def test_interruption_before_initial_record_creates_no_run(tmp_path):
     run_id = uuid4()
     with pytest.raises(InterruptionRequested):
         await AgentRuntime(
-            provider=QueueProvider([]), tools=ToolRegistry([]), run_store=store
+            artifact_store=runtime_persistence.artifacts,
+            provider=QueueProvider([]),
+            tools=ToolRegistry([]),
+            run_store=store,
         ).run(agent(), "task", run_id=run_id, interruption_token=token)
     with pytest.raises(RunNotFoundError):
         await store.get(run_id)

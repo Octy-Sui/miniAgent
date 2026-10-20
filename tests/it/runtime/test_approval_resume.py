@@ -35,7 +35,7 @@ from tests.support.tools.contracts import EvidenceWorkspace
     ],
 )
 async def test_old_approval_is_not_reused_for_current_policy(
-    tmp_path, effect, interactive
+    tmp_path, effect, interactive, runtime_persistence
 ):
     spec = agent(allowed_tools=["shell"])
     state = create_run_state(
@@ -63,7 +63,9 @@ async def test_old_approval_is_not_reused_for_current_policy(
     record = await store.get(request.run_id)
     approvals = await store.list_unconsumed_approvals(request.run_id)
     execution = RunExecution.attach(
-        record, RunJournal.attach(RunRecorder.attach(store, record), approvals)
+        record,
+        RunJournal.attach(RunRecorder.attach(store, record), approvals),
+        artifact_store=runtime_persistence.artifacts,
     )
 
     class CurrentPolicy:
@@ -105,6 +107,7 @@ async def test_old_approval_is_not_reused_for_current_policy(
 
     handler = FreshHandler()
     runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
         provider=QueueProvider([]),
         tools=ToolRegistry([tool]),
         run_store=store,

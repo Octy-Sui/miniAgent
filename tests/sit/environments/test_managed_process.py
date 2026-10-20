@@ -25,7 +25,7 @@ from tests.support.runtime.runtime import AllowPolicyEngine, QueueProvider, agen
 
 
 async def test_live_child_with_closed_pipes_prevents_trusted_tool_completion(
-    tmp_path, source_repository
+    tmp_path, source_repository, runtime_persistence
 ):
     """TC-U10-01: real Runtime must not commit a result while a descendant lives."""
 
@@ -47,6 +47,7 @@ async def test_live_child_with_closed_pipes_prevents_trusted_tool_completion(
     store = SQLiteRunStore(tmp_path / "runs.sqlite3")
     await store.initialize()
     runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
         provider=QueueProvider([response]),
         tools=ToolRegistry([ShellTool(workspace)]),
         policy_engine=AllowPolicyEngine(),

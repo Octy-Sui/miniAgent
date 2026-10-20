@@ -38,13 +38,14 @@ async def test_step_guard_limits_only_new_steps(tmp_path, steps, allowed):
     ],
 )
 async def test_batch_failure_uses_earlier_persisted_results(
-    tmp_path, first_status, suffix_status, failed
+    tmp_path, first_status, suffix_status, failed, runtime_persistence
 ):
     store, execution, tool = await prefix(
         tmp_path, first_status, suffix_status=suffix_status
     )
     provider = QueueProvider([])
     result = await AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
         provider=provider,
         tools=ToolRegistry([tool]),
         run_store=store,
@@ -62,13 +63,18 @@ async def test_batch_failure_uses_earlier_persisted_results(
     assert provider.requests == []
 
 
-async def test_finished_batch_at_step_limit_completes_without_new_request(tmp_path):
+async def test_finished_batch_at_step_limit_completes_without_new_request(
+    tmp_path, runtime_persistence
+):
     store, execution, tool = await prefix(
         tmp_path, ToolStatus.SUCCESS, complete_batch=True
     )
     provider = QueueProvider([])
     await AgentRuntime(
-        provider=provider, tools=ToolRegistry([tool]), run_store=store
+        artifact_store=runtime_persistence.artifacts,
+        provider=provider,
+        tools=ToolRegistry([tool]),
+        run_store=store,
     )._drive(execution)
     assert provider.requests == []
     assert (tmp_path / "effects").read_text().splitlines() == ["c0", "c1", "c2"]

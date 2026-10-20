@@ -28,7 +28,7 @@ from tests.support.runtime.runtime import QueueProvider
     [(True, None), (False, "TASK_UNRESOLVED"), (False, "EVALUATOR_FAILED")],
 )
 async def test_committed_evaluation_result_finishes_without_evaluator(
-    tmp_path, passed, code
+    tmp_path, passed, code, runtime_persistence
 ):
     store, execution = await started(tmp_path)
     await execution.record_model_response(
@@ -76,6 +76,7 @@ async def test_committed_evaluation_result_finishes_without_evaluator(
             raise AssertionError("Committed result must not rerun evaluator")
 
     result = await AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
         provider=QueueProvider([]),
         tools=ToolRegistry([]),
         run_store=store,
@@ -105,7 +106,9 @@ async def test_committed_evaluation_result_finishes_without_evaluator(
         ),
     ],
 )
-async def test_evaluator_control_error_never_becomes_business_failure(tmp_path, error):
+async def test_evaluator_control_error_never_becomes_business_failure(
+    tmp_path, error, runtime_persistence
+):
     store, execution = await started(tmp_path)
     await execution.record_model_response(
         ModelResponse(
@@ -122,6 +125,7 @@ async def test_evaluator_control_error_never_becomes_business_failure(tmp_path, 
 
     with pytest.raises(type(error)):
         await AgentRuntime(
+            artifact_store=runtime_persistence.artifacts,
             provider=QueueProvider([]),
             tools=ToolRegistry([]),
             run_store=store,
@@ -136,6 +140,7 @@ async def test_evaluator_control_error_never_becomes_business_failure(tmp_path, 
 
 async def test_evaluator_cannot_commit_result_with_unfinished_identified_execution(
     tmp_path,
+    runtime_persistence,
 ):
     store, execution = await started(tmp_path)
     await execution.record_model_response(
@@ -167,6 +172,7 @@ async def test_evaluator_cannot_commit_result_with_unfinished_identified_executi
 
     with pytest.raises(ManagedExecutionError, match="end"):
         await AgentRuntime(
+            artifact_store=runtime_persistence.artifacts,
             provider=QueueProvider([]),
             tools=ToolRegistry([]),
             run_store=store,
@@ -180,7 +186,9 @@ async def test_evaluator_cannot_commit_result_with_unfinished_identified_executi
 @pytest.mark.parametrize(
     ("action",), [("applied_then_error",), ("not_dispatched_then_error",)]
 )
-async def test_real_observer_commit_uncertainty_stops_evaluation(tmp_path, action):
+async def test_real_observer_commit_uncertainty_stops_evaluation(
+    tmp_path, action, runtime_persistence
+):
     store, execution = await started(tmp_path)
     await execution.record_model_response(
         ModelResponse(
@@ -220,6 +228,7 @@ async def test_real_observer_commit_uncertainty_stops_evaluation(tmp_path, actio
 
     with pytest.raises(RunPersistenceError):
         await AgentRuntime(
+            artifact_store=runtime_persistence.artifacts,
             provider=QueueProvider([]),
             tools=ToolRegistry([]),
             run_store=boundary,

@@ -103,12 +103,14 @@ class TestAgentRuntime:
     async def test_persists_execution_boundaries_to_sqlite(
         self,
         tmp_path: Path,
+        runtime_persistence,
     ) -> None:
         store = SQLiteRunStore(tmp_path / "runs.sqlite3")
         await store.initialize()
         run_id = uuid4()
         tool = SuccessfulTool()
         runtime = AgentRuntime(
+            artifact_store=runtime_persistence.artifacts,
             provider=QueueProvider([tool_response(), final_response()]),
             tools=registry(tool),
             policy_engine=AllowPolicyEngine(),
@@ -192,12 +194,18 @@ class TestAgentRuntime:
 
     async def test_invalid_tool_arguments_are_returned_without_execution(
         self,
+        runtime_persistence,
     ) -> None:
         tool = SuccessfulTool()
         provider = QueueProvider(
             [tool_response(arguments={"unexpected": True}), final_response()]
         )
-        runtime = AgentRuntime(provider=provider, tools=registry(tool))
+        runtime = AgentRuntime(
+            artifact_store=runtime_persistence.artifacts,
+            run_store=runtime_persistence.store,
+            provider=provider,
+            tools=registry(tool),
+        )
 
         assert (
             await runtime.run(agent(allowed_tools=["ok"]), "task")
@@ -212,9 +220,12 @@ class TestAgentRuntime:
 
     async def test_mismatched_tool_result_is_returned_as_structured_error(
         self,
+        runtime_persistence,
     ) -> None:
         provider = QueueProvider([tool_response(), final_response()])
         runtime = AgentRuntime(
+            artifact_store=runtime_persistence.artifacts,
+            run_store=runtime_persistence.store,
             provider=provider,
             tools=registry(MismatchedResultTool()),
             policy_engine=AllowPolicyEngine(),
@@ -227,7 +238,9 @@ class TestAgentRuntime:
         assert message.content is not None
         assert orjson.loads(message.content)["error"]["code"] == ("INVALID_TOOL_RESULT")
 
-    async def test_model_usage_and_cost_accumulate_across_steps(self) -> None:
+    async def test_model_usage_and_cost_accumulate_across_steps(
+        self, runtime_persistence
+    ) -> None:
         first = tool_response().model_copy(
             update={
                 "usage": ModelUsage(
@@ -262,6 +275,8 @@ class TestAgentRuntime:
             ]
         )
         runtime = AgentRuntime(
+            artifact_store=runtime_persistence.artifacts,
+            run_store=runtime_persistence.store,
             provider=QueueProvider([first, second]),
             tools=registry(SuccessfulTool()),
             pricing=pricing,
@@ -278,7 +293,9 @@ class TestAgentRuntime:
         assert result.usage.cached_input_cost_usd == Decimal("0.0000090")
         assert result.usage.cost_usd == Decimal("0.0001530")
 
-    async def test_model_usage_accumulates_without_pricing(self) -> None:
+    async def test_model_usage_accumulates_without_pricing(
+        self, runtime_persistence
+    ) -> None:
         response = final_response().model_copy(
             update={
                 "usage": ModelUsage(
@@ -291,6 +308,8 @@ class TestAgentRuntime:
             }
         )
         runtime = AgentRuntime(
+            artifact_store=runtime_persistence.artifacts,
+            run_store=runtime_persistence.store,
             provider=QueueProvider([response]),
             tools=registry(),
         )
@@ -306,6 +325,7 @@ class TestAgentRuntime:
 
     async def test_provider_request_does_not_share_state_message_internals(
         self,
+        runtime_persistence,
     ) -> None:
         first = tool_response(arguments={"value": "original"})
 
@@ -323,6 +343,8 @@ class TestAgentRuntime:
                 return final_response()
 
         runtime = AgentRuntime(
+            artifact_store=runtime_persistence.artifacts,
+            run_store=runtime_persistence.store,
             provider=MutatingProvider(),
             tools=registry(SuccessfulTool()),
         )
@@ -332,11 +354,15 @@ class TestAgentRuntime:
         ).status is RunStatus.SUCCEEDED
         assert first.message.tool_calls[0].arguments == {"value": "original"}
 
-    async def test_model_stop_is_evaluated_before_run_succeeds(self) -> None:
+    async def test_model_stop_is_evaluated_before_run_succeeds(
+        self, runtime_persistence
+    ) -> None:
         evaluator = RecordingEvaluator(
             EvaluationResult(passed=True, output="verified output")
         )
         runtime = AgentRuntime(
+            artifact_store=runtime_persistence.artifacts,
+            run_store=runtime_persistence.store,
             provider=QueueProvider([final_response()]),
             tools=registry(),
             evaluator=evaluator,
@@ -351,7 +377,7 @@ class TestAgentRuntime:
         assert evaluator.requests[0].candidate.text == "finished"
         assert evaluator.requests[0].run_id == result.run_id
 
-    async def test_failed_evaluation_fails_run(self) -> None:
+    async def test_failed_evaluation_fails_run(self, runtime_persistence) -> None:
         evaluator = RecordingEvaluator(
             EvaluationResult(
                 passed=False,
@@ -359,6 +385,8 @@ class TestAgentRuntime:
             )
         )
         runtime = AgentRuntime(
+            artifact_store=runtime_persistence.artifacts,
+            run_store=runtime_persistence.store,
             provider=QueueProvider([final_response()]),
             tools=registry(),
             evaluator=evaluator,
@@ -376,6 +404,7 @@ class TestAgentRuntime:
         self,
         tmp_path: Path,
         passed: bool,
+        runtime_persistence,
     ) -> None:
         store = SQLiteRunStore(tmp_path / "runs.sqlite3")
         await store.initialize()
@@ -390,6 +419,7 @@ class TestAgentRuntime:
                 return EvaluationResult(passed=passed)
 
         runtime = AgentRuntime(
+            artifact_store=runtime_persistence.artifacts,
             provider=QueueProvider([final_response()]),
             tools=registry(),
             evaluator=CheckingEvaluator(),
@@ -425,9 +455,11 @@ class TestAgentRuntime:
             < run_finish.sequence
         )
 
-    async def test_step_limit_stops_tool_loop(self) -> None:
+    async def test_step_limit_stops_tool_loop(self, runtime_persistence) -> None:
         provider = QueueProvider([tool_response(), tool_response()])
         runtime = AgentRuntime(
+            artifact_store=runtime_persistence.artifacts,
+            run_store=runtime_persistence.store,
             provider=provider,
             tools=registry(SuccessfulTool()),
             config=RuntimeConfig(max_steps=2),
@@ -443,13 +475,15 @@ class TestAgentRuntime:
         assert provider.requests[0].generation.max_output_tokens == 100
         assert [tool.name for tool in provider.requests[0].tools] == ["ok"]
 
-    async def test_abnormal_model_finish_fails_run(self) -> None:
+    async def test_abnormal_model_finish_fails_run(self, runtime_persistence) -> None:
         response = ModelResponse(
             message=AssistantMessage(content="partial"),
             finish_reason=FinishReason.LENGTH,
             usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
         )
         runtime = AgentRuntime(
+            artifact_store=runtime_persistence.artifacts,
+            run_store=runtime_persistence.store,
             provider=QueueProvider([response]),
             tools=registry(),
         )
@@ -460,8 +494,10 @@ class TestAgentRuntime:
         assert result.error is not None
         assert result.error.code == "MODEL_ABNORMAL_FINISH"
 
-    async def test_provider_exception_fails_run(self) -> None:
+    async def test_provider_exception_fails_run(self, runtime_persistence) -> None:
         runtime = AgentRuntime(
+            artifact_store=runtime_persistence.artifacts,
+            run_store=runtime_persistence.store,
             provider=QueueProvider([RuntimeError("offline")]),
             tools=registry(),
         )
@@ -472,9 +508,13 @@ class TestAgentRuntime:
         assert result.error is not None
         assert result.error.code == "PROVIDER_EXCEPTION"
 
-    async def test_consecutive_failed_tool_steps_stop_run(self) -> None:
+    async def test_consecutive_failed_tool_steps_stop_run(
+        self, runtime_persistence
+    ) -> None:
         provider = QueueProvider([tool_response("missing"), tool_response("missing")])
         runtime = AgentRuntime(
+            artifact_store=runtime_persistence.artifacts,
+            run_store=runtime_persistence.store,
             provider=provider,
             tools=registry(),
             config=RuntimeConfig(max_consecutive_failures=2),
@@ -485,10 +525,14 @@ class TestAgentRuntime:
         assert result.reason == TerminationReason.CONSECUTIVE_FAILURE_LIMIT
         assert len(provider.requests) == 2
 
-    async def test_cancellation_stops_in_flight_model_request(self) -> None:
+    async def test_cancellation_stops_in_flight_model_request(
+        self, runtime_persistence
+    ) -> None:
         provider = BlockingProvider()
         token = CancellationToken()
         runtime = AgentRuntime(
+            artifact_store=runtime_persistence.artifacts,
+            run_store=runtime_persistence.store,
             provider=provider,
             tools=registry(),
             cancellation_token=token,
@@ -503,9 +547,16 @@ class TestAgentRuntime:
         assert result.reason == TerminationReason.CANCEL_REQUESTED
         assert provider.cancelled
 
-    async def test_asyncio_cancellation_propagates_and_stops_model(self) -> None:
+    async def test_asyncio_cancellation_propagates_and_stops_model(
+        self, runtime_persistence
+    ) -> None:
         provider = BlockingProvider()
-        runtime = AgentRuntime(provider=provider, tools=registry())
+        runtime = AgentRuntime(
+            artifact_store=runtime_persistence.artifacts,
+            run_store=runtime_persistence.store,
+            provider=provider,
+            tools=registry(),
+        )
         run = asyncio.create_task(runtime.run(agent(), "task"))
         await provider.started.wait()
 
@@ -517,7 +568,9 @@ class TestAgentRuntime:
 
 
 @pytest.mark.parametrize(("passed",), [(True,), (False,)])
-async def test_evaluation_artifacts_commit_with_terminal_state(tmp_path, passed):
+async def test_evaluation_artifacts_commit_with_terminal_state(
+    tmp_path, passed, runtime_persistence
+):
     run_id = uuid4()
     artifacts = FileArtifactStore(tmp_path / "artifacts")
     report_ref = await artifacts.put(
@@ -526,6 +579,7 @@ async def test_evaluation_artifacts_commit_with_terminal_state(tmp_path, passed)
     store = SQLiteRunStore(tmp_path / "journal.sqlite3")
     await store.initialize()
     runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
         provider=QueueProvider([final_response()]),
         tools=registry(),
         run_store=store,

@@ -4,6 +4,7 @@ from uuid import UUID
 
 import pytest
 
+from miniagent.artifacts import FileArtifactStore
 from miniagent.metering.pricing import ModelPrice, PriceConfig
 from miniagent.models.messages import AssistantMessage
 from miniagent.models.protocol import FinishReason, ModelResponse, ModelUsage
@@ -39,14 +40,19 @@ async def reopen(store, tools):
     )
     record = await completed_protocol(store, execution)
     provider = QueueProvider([final_response("must not be requested")])
-    result = await AgentRuntime(provider=provider, tools=tools, run_store=store).resume(
-        record
-    )
+    result = await AgentRuntime(
+        artifact_store=FileArtifactStore(store.path.parent / "artifacts"),
+        provider=provider,
+        tools=tools,
+        run_store=store,
+    ).resume(record)
     assert provider.requests == []
     return result
 
 
-async def test_failed_step_stop_survives_lost_completion_ack(tmp_path):
+async def test_failed_step_stop_survives_lost_completion_ack(
+    tmp_path, runtime_persistence
+):
     store = SQLiteRunStore(tmp_path / "runs.sqlite3")
     await store.initialize()
     boundary = StoreBoundary(
@@ -67,6 +73,7 @@ async def test_failed_step_stop_survives_lost_completion_ack(tmp_path):
         usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
     runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
         provider=QueueProvider([response]),
         tools=tools,
         run_store=boundary,
@@ -84,7 +91,9 @@ async def test_failed_step_stop_survives_lost_completion_ack(tmp_path):
 
 
 @pytest.mark.parametrize("failure", ["provider_exception", "missing_usage"])
-async def test_fatal_model_failure_survives_lost_closure_ack(tmp_path, failure):
+async def test_fatal_model_failure_survives_lost_closure_ack(
+    tmp_path, failure, runtime_persistence
+):
     store = SQLiteRunStore(tmp_path / "runs.sqlite3")
     await store.initialize()
     boundary = StoreBoundary(
@@ -114,6 +123,7 @@ async def test_fatal_model_failure_survives_lost_closure_ack(tmp_path, failure):
         else final_response("unpriced").model_copy(update={"usage": None})
     )
     runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
         provider=QueueProvider([response]),
         tools=ToolRegistry([]),
         run_store=boundary,

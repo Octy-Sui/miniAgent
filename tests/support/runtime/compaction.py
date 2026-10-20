@@ -1,5 +1,6 @@
 from dataclasses import replace
 
+from miniagent.artifacts import FileArtifactStore
 from miniagent.runtime.context import validate_summary
 from miniagent.runtime.events import NewRunEvent
 from miniagent.runtime.journal import RunJournal
@@ -79,6 +80,7 @@ async def pipeline(tmp_path, *, old=10001, summary=3000, candidate=1000, respons
     )
     provider = QueueProvider([response or summary_response()])
     runtime = AgentRuntime(
+        artifact_store=FileArtifactStore(tmp_path / "artifacts"),
         provider=provider,
         tools=ToolRegistry([]),
         run_store=store,

@@ -33,7 +33,7 @@ from tests.support.runtime.runtime import QueueProvider, agent
         "normalization",
     ],
 )
-async def test_tc_u03_03(tmp_path, variant):
+async def test_tc_u03_03(tmp_path, variant, runtime_persistence):
     store = SQLiteRunStore(tmp_path / "runs.db")
     await store.initialize()
     usage = ModelUsage(input_tokens=10, output_tokens=5, total_tokens=15)
@@ -81,7 +81,11 @@ async def test_tc_u03_03(tmp_path, variant):
         )
     )
     runtime = AgentRuntime(
-        provider=provider, tools=ToolRegistry([]), run_store=store, pricing=pricing
+        artifact_store=runtime_persistence.artifacts,
+        provider=provider,
+        tools=ToolRegistry([]),
+        run_store=store,
+        pricing=pricing,
     )
     result = await runtime.run(agent(), "task")
     record = await store.get(result.run_id)
@@ -124,7 +128,7 @@ async def test_tc_u03_03(tmp_path, variant):
 
 
 @pytest.mark.parametrize("stage", ["model_requested", "model_responded"])
-async def test_tc_u03_02_atomic_sql_failure(tmp_path, stage):
+async def test_tc_u03_02_atomic_sql_failure(tmp_path, stage, runtime_persistence):
     import sqlite3
 
     from miniagent.runtime.recording import RunPersistenceError
@@ -144,7 +148,12 @@ async def test_tc_u03_02_atomic_sql_failure(tmp_path, stage):
             )
         ]
     )
-    runtime = AgentRuntime(provider=provider, tools=ToolRegistry([]), run_store=store)
+    runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
+        provider=provider,
+        tools=ToolRegistry([]),
+        run_store=store,
+    )
     from uuid import uuid4
 
     run_id = uuid4()
@@ -161,7 +170,9 @@ async def test_tc_u03_02_atomic_sql_failure(tmp_path, stage):
     )
 
 
-async def test_tc_u03_04_unexpected_calculation_exception_propagates(tmp_path):
+async def test_tc_u03_04_unexpected_calculation_exception_propagates(
+    tmp_path, runtime_persistence
+):
     from decimal import Overflow
     from uuid import uuid4
 
@@ -189,7 +200,11 @@ async def test_tc_u03_04_unexpected_calculation_exception_propagates(tmp_path):
     run_id = uuid4()
     with pytest.raises(Overflow):
         await AgentRuntime(
-            provider=provider, tools=ToolRegistry([]), run_store=store, pricing=pricing
+            artifact_store=runtime_persistence.artifacts,
+            provider=provider,
+            tools=ToolRegistry([]),
+            run_store=store,
+            pricing=pricing,
         ).run(agent(), "task", run_id=run_id)
     events = await store.list_events(run_id)
     assert sum(isinstance(event.payload, ModelRequested) for event in events) == 1
@@ -197,7 +212,7 @@ async def test_tc_u03_04_unexpected_calculation_exception_propagates(tmp_path):
 
 
 async def test_cancelled_response_transaction_drains_actual_commit(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, runtime_persistence
 ):
     import asyncio
     import sqlite3
@@ -218,9 +233,12 @@ async def test_cancelled_response_transaction_drains_actual_commit(
     provider = QueueProvider([response])
     run_id = uuid4()
     task = asyncio.create_task(
-        AgentRuntime(provider=provider, tools=ToolRegistry([]), run_store=store).run(
-            agent(), "task", run_id=run_id
-        )
+        AgentRuntime(
+            artifact_store=runtime_persistence.artifacts,
+            provider=provider,
+            tools=ToolRegistry([]),
+            run_store=store,
+        ).run(agent(), "task", run_id=run_id)
     )
     try:
         assert await asyncio.to_thread(barrier.entered.wait, 5), (
@@ -248,7 +266,9 @@ async def test_cancelled_response_transaction_drains_actual_commit(
     assert record.state.execution.active_operation is None
 
 
-async def test_tc_u03_01_request_committed_before_provider_entry(tmp_path):
+async def test_tc_u03_01_request_committed_before_provider_entry(
+    tmp_path, runtime_persistence
+):
     from uuid import uuid4
 
     store = SQLiteRunStore(tmp_path / "runs.db")
@@ -268,12 +288,17 @@ async def test_tc_u03_01_request_committed_before_provider_entry(tmp_path):
             return response
 
     result = await AgentRuntime(
-        provider=Provider(), tools=ToolRegistry([]), run_store=store
+        artifact_store=runtime_persistence.artifacts,
+        provider=Provider(),
+        tools=ToolRegistry([]),
+        run_store=store,
     ).run(agent(), "task", run_id=run_id)
     assert result.output == "final sentinel"
 
 
-async def test_accepted_tool_response_preserves_evidence_and_charges_once(tmp_path):
+async def test_accepted_tool_response_preserves_evidence_and_charges_once(
+    tmp_path, runtime_persistence
+):
     from tests.support.runtime.runtime import AllowPolicyEngine, SuccessfulTool
 
     store = SQLiteRunStore(tmp_path / "runs.db")
@@ -304,6 +329,7 @@ async def test_accepted_tool_response_preserves_evidence_and_charges_once(tmp_pa
         ]
     )
     result = await AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
         provider=provider,
         tools=ToolRegistry([tool]),
         run_store=store,

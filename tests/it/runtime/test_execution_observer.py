@@ -30,7 +30,9 @@ from tests.support.runtime.runtime import (
 @pytest.mark.parametrize(
     ("action",), [("applied_then_error",), ("not_dispatched_then_error",)]
 )
-async def test_observer_commit_failure_stops_tool_runner(tmp_path, action):
+async def test_observer_commit_failure_stops_tool_runner(
+    tmp_path, action, runtime_persistence
+):
     """AC07 / F2: an uncertain identity commit must abort before the next effect."""
     store = SQLiteRunStore(tmp_path / "runs.sqlite3")
     await store.initialize()
@@ -46,6 +48,7 @@ async def test_observer_commit_failure_stops_tool_runner(tmp_path, action):
         usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
     runtime = AgentRuntime(
+        artifact_store=runtime_persistence.artifacts,
         provider=QueueProvider([response]),
         tools=ToolRegistry([tool]),
         policy_engine=AllowPolicyEngine(),
