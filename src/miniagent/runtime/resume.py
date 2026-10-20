@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 from uuid import UUID
@@ -22,9 +23,15 @@ from miniagent.runtime.events import (
     OperationInterrupted,
     RunEvent,
 )
+from miniagent.runtime.history import iter_run_events
 from miniagent.runtime.progress import ComponentEnvelope, ExecutionPhase
 from miniagent.runtime.state import TERMINAL_STATUSES, RunState, RunStatus
-from miniagent.runtime.store_contracts import RunRecord, StoredApproval, ToolResultFact
+from miniagent.runtime.store_contracts import (
+    RunRecord,
+    RuntimeStore,
+    StoredApproval,
+    ToolResultFact,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,68 +90,71 @@ class ResumePlan:
     readiness: Literal["ready", "requires_live_checks"] = "ready"
 
 
-def history_facts(
-    record: RunRecord,
-    events: tuple[RunEvent, ...],
-    *,
-    tool_results: tuple[ToolResultFact, ...] = (),
-    approvals: tuple[StoredApproval, ...] = (),
-) -> ResumeHistoryFacts:
-    errors = []
-    if [event.sequence for event in events] != list(
-        range(1, record.last_event_sequence + 1)
-    ):
-        errors.append("Event history is incomplete or out of order")
-    if any(event.run_id != record.state.identity.run_id for event in events):
-        errors.append("Event history belongs to another run")
-    operation = record.state.execution.active_operation
-    if operation is not None and not any(
-        event.event_id == operation.started_event_id
-        and event.sequence == operation.started_sequence
-        for event in events
-    ):
-        errors.append("Active operation start fact is missing")
-    identities: dict[UUID, dict[UUID, ExecutionIdentity]] = {}
-    ended: dict[UUID, dict[UUID, ExecutionEvidence]] = {}
-    permissions: dict[UUID, set[str]] = {}
-    interrupted = set()
-    diagnostic_attempts = set()
-    for event in events:
+class _HistoryFactsBuilder:
+    def __init__(self, record: RunRecord) -> None:
+        self.record = record
+        self.expected_sequence = 1
+        self.operation_found = record.state.execution.active_operation is None
+        self.errors: list[str] = []
+        self.identities: dict[UUID, dict[UUID, ExecutionIdentity]] = {}
+        self.ended: dict[UUID, dict[UUID, ExecutionEvidence]] = {}
+        self.permissions: dict[UUID, set[str]] = {}
+        self.interrupted: set[UUID] = set()
+        self.diagnostic_attempts: set[UUID] = set()
+
+    def feed(self, event: RunEvent) -> None:
+        if (
+            event.sequence != self.expected_sequence
+            or event.sequence > self.record.last_event_sequence
+        ):
+            self.errors.append("Event history is incomplete or out of order")
+        self.expected_sequence = event.sequence + 1
+        if event.run_id != self.record.state.identity.run_id:
+            self.errors.append("Event history belongs to another run")
+        operation = self.record.state.execution.active_operation
+        if (
+            operation is not None
+            and event.event_id == operation.started_event_id
+            and event.sequence == operation.started_sequence
+        ):
+            self.operation_found = True
         payload = event.payload
         if isinstance(payload, DiagnosticFinalizationStarted):
-            diagnostic_attempts.add(payload.attempt_id)
-            identities.setdefault(payload.attempt_id, {})
-            permissions.setdefault(payload.attempt_id, set())
+            self.diagnostic_attempts.add(payload.attempt_id)
+            self.identities.setdefault(payload.attempt_id, {})
+            self.permissions.setdefault(payload.attempt_id, set())
         if isinstance(
             payload,
             (OperationExecutionIdentified, DiagnosticFinalizationExecutionIdentified),
         ):
-            identities.setdefault(payload.attempt_id, {})[
+            self.identities.setdefault(payload.attempt_id, {})[
                 payload.identity.execution_id
             ] = payload.identity
-            permissions.setdefault(payload.attempt_id, set()).add(payload.permission)
+            self.permissions.setdefault(payload.attempt_id, set()).add(
+                payload.permission
+            )
         elif isinstance(
             payload, (OperationExecutionEnded, DiagnosticFinalizationExecutionEnded)
         ):
             if (
-                identities.get(payload.attempt_id, {}).get(
+                self.identities.get(payload.attempt_id, {}).get(
                     payload.evidence.execution_id
                 )
                 != payload.evidence.identity
             ):
-                errors.append("Execution end has no matching identified fact")
-            ended.setdefault(payload.attempt_id, {})[payload.evidence.execution_id] = (
-                payload.evidence
-            )
+                self.errors.append("Execution end has no matching identified fact")
+            self.ended.setdefault(payload.attempt_id, {})[
+                payload.evidence.execution_id
+            ] = payload.evidence
         elif isinstance(payload, OperationInterrupted):
-            interrupted.add(payload.attempt_id)
+            self.interrupted.add(payload.attempt_id)
         elif (
             isinstance(payload, DiagnosticFinalizationCompleted)
             or isinstance(payload, DiagnosticFinalizationInterrupted)
             and payload.execution_ended
         ):
-            known = identities.get(payload.attempt_id, {})
-            proof = ended.get(payload.attempt_id, {})
+            known = self.identities.get(payload.attempt_id, {})
+            proof = self.ended.get(payload.attempt_id, {})
             if any(
                 identity.execution_id not in proof
                 or proof[identity.execution_id].identity != identity
@@ -153,23 +163,68 @@ def history_facts(
                 or not proof[identity.execution_id].issuer_ended
                 for identity in known.values()
             ):
-                errors.append("Diagnostic completion lacks whole-group end facts")
-            interrupted.add(payload.attempt_id)
-    chains = tuple(
-        ExecutionChainFact(
-            attempt_id=attempt,
-            identities=tuple(items.values()),
-            create_permission_committed="create_exec" in permissions[attempt],
-            start_permission_committed="start_exec" in permissions[attempt],
-            command_permission_committed="observe" in permissions[attempt],
-            evidence=tuple(ended.get(attempt, {}).values()),
-            scope="diagnostic" if attempt in diagnostic_attempts else "business",
+                self.errors.append("Diagnostic completion lacks whole-group end facts")
+            self.interrupted.add(payload.attempt_id)
+
+    def finish(
+        self,
+        *,
+        tool_results: tuple[ToolResultFact, ...] = (),
+        approvals: tuple[StoredApproval, ...] = (),
+    ) -> ResumeHistoryFacts:
+        if self.expected_sequence != self.record.last_event_sequence + 1:
+            self.errors.append("Event history is incomplete or out of order")
+        if not self.operation_found:
+            self.errors.append("Active operation start fact is missing")
+        chains = tuple(
+            ExecutionChainFact(
+                attempt_id=attempt,
+                identities=tuple(items.values()),
+                create_permission_committed="create_exec" in self.permissions[attempt],
+                start_permission_committed="start_exec" in self.permissions[attempt],
+                command_permission_committed="observe" in self.permissions[attempt],
+                evidence=tuple(self.ended.get(attempt, {}).values()),
+                scope="diagnostic"
+                if attempt in self.diagnostic_attempts
+                else "business",
+            )
+            for attempt, items in self.identities.items()
         )
-        for attempt, items in identities.items()
-    )
-    return ResumeHistoryFacts(
-        tool_results, approvals, frozenset(interrupted), chains, tuple(errors)
-    )
+        return ResumeHistoryFacts(
+            tool_results,
+            approvals,
+            frozenset(self.interrupted),
+            chains,
+            tuple(self.errors),
+        )
+
+
+def history_facts(
+    record: RunRecord,
+    events: Iterable[RunEvent],
+    *,
+    tool_results: tuple[ToolResultFact, ...] = (),
+    approvals: tuple[StoredApproval, ...] = (),
+) -> ResumeHistoryFacts:
+    builder = _HistoryFactsBuilder(record)
+    for event in events:
+        builder.feed(event)
+    return builder.finish(tool_results=tool_results, approvals=approvals)
+
+
+async def collect_history_facts(
+    record: RunRecord,
+    store: RuntimeStore,
+    *,
+    tool_results: tuple[ToolResultFact, ...] = (),
+    approvals: tuple[StoredApproval, ...] = (),
+) -> ResumeHistoryFacts:
+    builder = _HistoryFactsBuilder(record)
+    async for event in iter_run_events(
+        store, record.state.identity.run_id, through_sequence=record.last_event_sequence
+    ):
+        builder.feed(event)
+    return builder.finish(tool_results=tool_results, approvals=approvals)
 
 
 def _chain_ended(

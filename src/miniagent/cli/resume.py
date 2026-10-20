@@ -86,7 +86,7 @@ from miniagent.runtime.resume import (
     ResumePlan,
     ResumeRejected,
     ResumeRejection,
-    history_facts,
+    collect_history_facts,
     plan_resume,
 )
 from miniagent.runtime.state import TERMINAL_STATUSES
@@ -128,7 +128,6 @@ async def _inspect(config: ResumeConfig) -> _Inspection | ResumeRejection:
         return _rejection(config, "RUN_NOT_FOUND", "Run database does not exist")
     try:
         record = await store.get(config.run_id)
-        events = tuple(await store.list_events(config.run_id))
         approvals = tuple(await store.list_unconsumed_approvals(config.run_id))
         step = record.state.execution.current_step
         results = (
@@ -139,6 +138,9 @@ async def _inspect(config: ResumeConfig) -> _Inspection | ResumeRejection:
             )
             if step and record.state.execution.tool_batch is not None
             else ()
+        )
+        history = await collect_history_facts(
+            record, store, tool_results=results, approvals=approvals
         )
     except RunNotFoundError:
         return _rejection(config, "RUN_NOT_FOUND", "Run does not exist")
@@ -173,7 +175,6 @@ async def _inspect(config: ResumeConfig) -> _Inspection | ResumeRejection:
             "RESUME_STATE_INCONSISTENT",
             "Frozen application definition is invalid",
         )
-    history = history_facts(record, events, tool_results=results, approvals=approvals)
     artifacts = FileArtifactStore(definition.artifact_root)
     attachment = context.attachment
     backend: LocalWorkspaceBackend | DockerWorkspaceBackend
@@ -445,6 +446,10 @@ async def _inspect(config: ResumeConfig) -> _Inspection | ResumeRejection:
             dependency_rejections=tuple(dependencies),
             candidate_rejection=candidate_rejection,
             evaluation_rejection=evaluation_rejection,
+        )
+    if config.dry_run and await store.get(config.run_id) != record:
+        return _rejection(
+            config, "RESUME_VIEW_STALE", "Run changed during resume inspection"
         )
     return _Inspection(
         record,

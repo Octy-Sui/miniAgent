@@ -44,6 +44,7 @@ from miniagent.runtime.events import (
     OperationExecutionIdentified,
     OperationInterrupted,
     PolicyDecided,
+    RunEventType,
     RunFinished,
     RunStarted,
     RunSuspended,
@@ -55,6 +56,7 @@ from miniagent.runtime.events import (
     ToolExecutionStarted,
     ToolStarted,
 )
+from miniagent.runtime.history import iter_run_events
 from miniagent.runtime.interruption import InterruptionRequested, raise_if_interrupted
 from miniagent.runtime.journal import RunJournal
 from miniagent.runtime.progress import (
@@ -886,8 +888,17 @@ class RunExecution:
         evidence = dict(self._ended_executions)
         if store is not None:
             evidence = {}
-            for event in await store.list_events(
-                self.state.identity.run_id, after_sequence=operation.started_sequence
+            record = self.journal.recorder.record
+            assert record is not None
+            async for event in iter_run_events(
+                store,
+                self.state.identity.run_id,
+                after_sequence=operation.started_sequence,
+                through_sequence=record.last_event_sequence,
+                types=(
+                    RunEventType.OPERATION_EXECUTION_IDENTIFIED,
+                    RunEventType.OPERATION_EXECUTION_ENDED,
+                ),
             ):
                 payload = event.payload
                 if (
@@ -953,11 +964,22 @@ class RunExecution:
                 operation = None
             elif kind == "evaluation_attempt_interrupted":
                 store = self.journal.recorder.store
-                if store is None or not any(
-                    isinstance(event.payload, OperationInterrupted)
-                    and event.payload.attempt_id == attempt_id
-                    for event in await store.list_events(self.state.identity.run_id)
-                ):
+                confirmed = False
+                record = self.journal.recorder.record
+                if store is not None and record is not None:
+                    async for previous in iter_run_events(
+                        store,
+                        self.state.identity.run_id,
+                        through_sequence=record.last_event_sequence,
+                        types=(RunEventType.OPERATION_INTERRUPTED,),
+                    ):
+                        if (
+                            isinstance(previous.payload, OperationInterrupted)
+                            and previous.payload.attempt_id == attempt_id
+                        ):
+                            confirmed = True
+                            break
+                if not confirmed:
                     raise ManagedExecutionError(
                         "Previous evaluation attempt has no confirmed interruption"
                     )

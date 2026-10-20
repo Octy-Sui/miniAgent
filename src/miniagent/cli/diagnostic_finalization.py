@@ -35,7 +35,7 @@ from miniagent.runtime.interruption import (
 )
 from miniagent.runtime.progress import ComponentEnvelope, EvaluationProgress
 from miniagent.runtime.recording import RunRecorder
-from miniagent.runtime.resume import history_facts
+from miniagent.runtime.resume import collect_history_facts
 
 
 @dataclass(slots=True)
@@ -196,8 +196,7 @@ async def finalize_diagnostic(
                 message="Diagnostic export skipped because prior execution is unconfirmed",
             ),
         )
-    events = tuple(await store.list_events(recorder.run_id))
-    history = history_facts(record, events)
+    history = await collect_history_facts(record, store)
     if history.history_errors:
         raise ManagedExecutionError("Diagnostic history is inconsistent")
     for chain in history.execution_chains:

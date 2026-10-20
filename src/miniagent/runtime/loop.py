@@ -59,6 +59,7 @@ from miniagent.runtime.events import (
     CompactionRequested,
     ResumeCompleted,
     ResumeStarted,
+    RunEventType,
 )
 from miniagent.runtime.execution import (
     ContinueRun,
@@ -69,6 +70,7 @@ from miniagent.runtime.execution import (
     TerminateRun,
     evaluation_scope,
 )
+from miniagent.runtime.history import iter_run_events
 from miniagent.runtime.interruption import (
     InterruptionRequested,
     InterruptionToken,
@@ -265,23 +267,37 @@ class AgentRuntime:
             or state.execution.active_operation is not None
         ):
             raise ValueError("Resume requires completed recovery and closed operations")
-        events = await self.run_store.list_events(state.identity.run_id)
+        tail = await self.run_store.list_events(
+            state.identity.run_id,
+            after_sequence=record.last_event_sequence - 1,
+            through_sequence=record.last_event_sequence,
+            limit=1,
+        )
         if (
-            not events
-            or events[-1].sequence != record.last_event_sequence
-            or not isinstance(events[-1].payload, ResumeCompleted)
+            not tail
+            or tail[0].sequence != record.last_event_sequence
+            or not isinstance(tail[0].payload, ResumeCompleted)
         ):
             raise ValueError("Resume requires the latest ResumeCompleted event")
-        completed = events[-1].payload
-        started = [
-            event
-            for event in events
-            if isinstance(event.payload, ResumeStarted)
-            and event.payload.resume_attempt_id == completed.resume_attempt_id
-        ]
-        if len(started) != 1:
+        completed_sequence = tail[0].sequence
+        completed = tail[0].payload
+        del tail
+        start = None
+        matching = 0
+        total_started = 0
+        async for event in iter_run_events(
+            self.run_store,
+            state.identity.run_id,
+            through_sequence=record.last_event_sequence,
+            types=(RunEventType.RESUME_STARTED,),
+        ):
+            assert isinstance(event.payload, ResumeStarted)
+            total_started += 1
+            if event.payload.resume_attempt_id == completed.resume_attempt_id:
+                matching += 1
+                start = event
+        if matching != 1 or start is None:
             raise ValueError("Resume completed event has no unique start")
-        start = started[0]
         payload = start.payload
         assert isinstance(payload, ResumeStarted)
         expected_status = {"created": "preparing", "waiting_approval": "running"}.get(
@@ -293,9 +309,8 @@ class AgentRuntime:
             or payload.phase != completed.phase
             or completed.phase != state.execution.phase
             or expected_status != state.lifecycle.status.value
-            or not completed.source_sequence < start.sequence < events[-1].sequence
-            or sum(isinstance(event.payload, ResumeStarted) for event in events)
-            != state.recovery.resume_attempts
+            or not completed.source_sequence < start.sequence < completed_sequence
+            or total_started != state.recovery.resume_attempts
         ):
             raise ValueError(
                 "ResumeCompleted scope differs from current state or source"
@@ -455,35 +470,40 @@ class AgentRuntime:
         original = None
         store = execution.journal.recorder.store
         if progress.source_version is not None and store is not None:
-            requests = [
-                event.payload
-                for event in await store.list_events(execution.state.identity.run_id)
-                if isinstance(event.payload, CompactionRequested)
-                and event.payload.source_snapshot_version == progress.source_version
-            ]
-            if not requests or any(
-                item.covered_messages != requests[0].covered_messages
-                or item.hard_trigger != requests[0].hard_trigger
-                for item in requests
+            record = execution.journal.recorder.record
+            assert record is not None
+            async for event in iter_run_events(
+                store,
+                execution.state.identity.run_id,
+                through_sequence=record.last_event_sequence,
+                types=(RunEventType.COMPACTION_REQUESTED,),
             ):
+                payload = event.payload
+                assert isinstance(payload, CompactionRequested)
+                if payload.source_snapshot_version != progress.source_version:
+                    continue
+                selection = (payload.covered_messages, payload.hard_trigger)
+                if original is not None and original != selection:
+                    raise ValueError(
+                        "Original compaction request is missing or inconsistent"
+                    )
+                original = selection
+            if original is None:
                 raise ValueError(
                     "Original compaction request is missing or inconsistent"
                 )
-            original = requests[0]
         try:
             plan = select_compaction_prefix(
                 execution.state,
                 old_request,
                 self.estimator,
                 force=force or original is not None,
-                covered_messages=original.covered_messages if original else None,
+                covered_messages=original[0] if original else None,
             )
             if plan is not None and original is not None:
                 plan = replace(
                     plan,
-                    hard_trigger=force
-                    or original.hard_trigger
-                    or plan.T > plan.budget.B,
+                    hard_trigger=force or original[1] or plan.T > plan.budget.B,
                 )
         except ContextCapacityError as exc:
             await execution.fail_compaction("CONTEXT_CAPACITY_EXCEEDED", str(exc))
