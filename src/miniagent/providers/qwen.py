@@ -126,7 +126,8 @@ class QwenProvider:
             )
         except APIStatusError as exc:
             code = str(exc.code or "").lower()
-            message = str(exc).lower()
+            message = exc.message.lower()
+            safe_message = f"Provider HTTP request failed (status={exc.status_code})"
             if exc.status_code in (400, 413) and (
                 code
                 in {
@@ -136,53 +137,62 @@ class QwenProvider:
                 }
                 or "maximum context length" in message
             ):
-                raise ModelContextLimitError(str(exc)) from exc
+                raise ModelContextLimitError(safe_message) from None
             if exc.status_code == 429 or exc.status_code >= 500:
-                raise ModelProviderError(str(exc), retryable=True) from exc
-            raise
-        except APIConnectionError as exc:
-            raise ModelProviderError(str(exc), retryable=True) from exc
-        choice = response.choices[0] if response.choices else None
-        provider_message = choice.message if choice is not None else None
-        usage = response.usage
-        prompt_details = usage.prompt_tokens_details if usage else None
-        completion_details = usage.completion_tokens_details if usage else None
-        raw_usage = (
-            {
-                "input_tokens": usage.prompt_tokens,
-                "cached_input_tokens": prompt_details.cached_tokens
-                if prompt_details
-                else None,
-                "output_tokens": usage.completion_tokens,
-                "reasoning_output_tokens": completion_details.reasoning_tokens
-                if completion_details
-                else None,
-                "total_tokens": usage.total_tokens,
-            }
-            if usage
+                raise ModelProviderError(safe_message, retryable=True) from None
+            raise type(exc)(safe_message, response=exc.response, body=None) from None
+        except APIConnectionError:
+            raise ModelProviderError(
+                "Provider connection failed", retryable=True
+            ) from None
+
+        def text(value: object) -> str | None:
+            return value if isinstance(value, str) else None
+
+        choice = (
+            response.choices[0]
+            if isinstance(response.choices, list) and response.choices
             else None
         )
+        provider_message = getattr(choice, "message", None)
+        usage = response.usage
+        prompt_details = getattr(usage, "prompt_tokens_details", None)
+        completion_details = getattr(usage, "completion_tokens_details", None)
+        raw_usage = (
+            {
+                "input_tokens": getattr(usage, "prompt_tokens", None),
+                "cached_input_tokens": getattr(prompt_details, "cached_tokens", None),
+                "output_tokens": getattr(usage, "completion_tokens", None),
+                "reasoning_output_tokens": getattr(
+                    completion_details, "reasoning_tokens", None
+                ),
+                "total_tokens": getattr(usage, "total_tokens", None),
+            }
+            if usage is not None
+            else None
+        )
+        calls = getattr(provider_message, "tool_calls", None)
         evidence = ProviderResponseEvidence(
-            content=provider_message.content if provider_message else None,
+            content=text(getattr(provider_message, "content", None)),
             tool_calls=tuple(
                 ProviderToolCallEvidence(
-                    id=getattr(call, "id", None),
-                    name=getattr(getattr(call, "function", None), "name", None),
-                    arguments=getattr(
-                        getattr(call, "function", None), "arguments", None
+                    id=text(getattr(call, "id", None)),
+                    name=text(getattr(getattr(call, "function", None), "name", None)),
+                    arguments=text(
+                        getattr(getattr(call, "function", None), "arguments", None)
                     ),
                 )
-                for call in (provider_message.tool_calls or ())
+                for call in calls
             )
-            if provider_message
+            if isinstance(calls, (list, tuple))
             else (),
-            finish_reason=choice.finish_reason if choice else None,
-            provider_request_id=response.id,
+            finish_reason=text(getattr(choice, "finish_reason", None)),
+            provider_request_id=text(response.id),
             usage={
                 key: value if type(value) is int else None
                 for key, value in raw_usage.items()
             }
-            if raw_usage
+            if raw_usage is not None
             else None,
         )
         try:
@@ -230,7 +240,7 @@ class QwenProvider:
                 else None,
                 provider_request_id=response.id,
             )
-        except (ValueError, TypeError, IndexError, AttributeError):
+        except (ValueError, TypeError, IndexError, KeyError, AttributeError):
             raise ModelResponseNormalizationError(
                 evidence=evidence, code="MODEL_RESPONSE_NORMALIZATION_FAILED"
             ) from None
