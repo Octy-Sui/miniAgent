@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from time import monotonic
 from typing import Literal
 from uuid import UUID
 
@@ -42,6 +43,9 @@ class OutputCapture:
         return cls(attempt_id=attempt_id, writers=writers)
 
     async def write(self, stream: Literal["stdout", "stderr"], chunk: bytes) -> None:
+        deadline = current_cleanup_deadline()
+        if deadline is not None and monotonic() >= deadline:
+            raise TimeoutError("Output persistence deadline exceeded")
         self.received[stream] += len(chunk)
         await self.writers[stream].write(chunk)
 

@@ -465,3 +465,40 @@ async def test_read_file_evidence_uses_received_bytes_after_source_changes(
     assert result.content.startswith(original[:1024].decode())
     assert result.output.stdout_truncated
     assert len(observer.commands) == len(observer.outputs) == 1
+
+
+async def test_capture_stops_new_writes_after_late_cleanup_deadline(
+    tmp_path, monkeypatch
+):
+    import os
+    from time import monotonic
+    from uuid import uuid4
+
+    from miniagent.environments.managed_execution import cleanup_deadline_scope
+    from miniagent.environments.output_capture import OutputCapture
+
+    deadline = [None]
+    writes = []
+    write = os.write
+
+    def expire_after_write(fd, content):
+        writes.append(len(content))
+        written = write(fd, content)
+        deadline[0] = monotonic() - 1
+        return written
+
+    monkeypatch.setattr(os, "write", expire_after_write)
+    with cleanup_deadline_scope(lambda: deadline[0]):
+        capture = await OutputCapture.open(
+            store=FileArtifactStore(tmp_path / "artifacts"),
+            run_id=uuid4(),
+            attempt_id=uuid4(),
+            deadline=None,
+        )
+        try:
+            await capture.write("stdout", b"first chunk")
+            with pytest.raises(TimeoutError, match="deadline"):
+                await capture.write("stdout", b"must not start")
+        finally:
+            await capture.abort()
+    assert writes == [len(b"first chunk")]
