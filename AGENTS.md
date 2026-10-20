@@ -1,5 +1,5 @@
 <!-- repo-map:start -->
-<!-- repo-map: provisional-against 4c2fce4 | mapped 2026-10-19 -->
+<!-- repo-map: provisional-against d823d58 | mapped 2026-10-20 -->
 # Repository Orientation
 
 miniAgent 是 Python 3.13 的最小 Agent Runtime：模型在有界 Step loop 中调用工具；
@@ -7,15 +7,12 @@ Runtime 负责状态、终止、usage/cost、cancellation 和 evaluation；CLI �
 
 ## Current execution path
 
-`miniagent` / `miniagent run` CLI (`src/miniagent/cli/main.py`) → bootstrap/application
-(`src/miniagent/cli/bootstrap.py`, `src/miniagent/cli/application.py`) → `AgentRuntime`
+`miniagent` / `miniagent run` CLI (`src/miniagent/cli/main.py`) → bootstrap/application (`src/miniagent/cli/bootstrap.py`, `src/miniagent/cli/application.py`) → `AgentRuntime`
 (`src/miniagent/runtime/loop.py`, `src/miniagent/runtime/execution.py`) → provider + `ToolRegistry`/tools → evaluator →
 SQLite journal → `ApplicationResult` and optional patch artifact manifest. Default composition wires `QwenProvider`,
 strict tool argument validation, bounded structured tool results, `read_file`, `shell`,
-Local/Docker Workspace. Local uses `PassThroughEvaluator`; Docker uses candidate patch
-submission + `SWEbenchEvaluator` (`src/miniagent/cli/candidate_submission.py`, `src/miniagent/evaluation/swebench.py`). Docker requires internal `SWEbenchTaskContext`;
-use `trigger` for development tasks, with `--model deepseek-v4-pro-0813` to match current
-limits/pricing. Plain CLI Docker selection lacks task context (`src/miniagent/cli/bootstrap.py`).
+Local/Docker Workspace. Local uses `PassThroughEvaluator`; Docker uses candidate patch submission + `SWEbenchEvaluator` (`src/miniagent/cli/candidate_submission.py`, `src/miniagent/evaluation/swebench.py`).
+Docker requires internal `SWEbenchTaskContext`; use `trigger --model deepseek-v4-pro-0813` for development tasks. Plain CLI Docker lacks task context (`src/miniagent/cli/bootstrap.py`, `config/model_limits.toml`, `config/model_pricing.toml`).
 
 SQLite Run/Event/Snapshot/Approval storage and Event Span scopes are wired into
 `AgentRuntime`. Context compaction runs at completed-Step boundaries with source
@@ -25,13 +22,15 @@ from `config/model_limits.toml` (`src/miniagent/cli/model_limits.py`). Cross-pro
 is wired: `miniagent resume --run-id <uuid> [--database <path>] [--dry-run]`
 (`src/miniagent/cli/resume.py`, `src/miniagent/runtime/resume.py`); frozen definitions and
 original Workspace identity are checked; uncertain shell execution blocks replay.
-General `RecoveryController` and product Trace aggregation/export remain contract-only
-(`src/miniagent/runtime/recovery.py`, `src/miniagent/runtime/tracing.py`).
+`miniagent-dashboard` → `src/miniagent/dashboard/cli.py` → `app.py` serves local read-only
+Run/Event/Span、Snapshot/compaction、evaluation 和 saved patch/artifact views；可选依赖在 `pyproject.toml`。
+General `RecoveryController` and `RunTrace` aggregation/export remain contract-only (`src/miniagent/runtime/recovery.py`, `src/miniagent/runtime/tracing.py`); dashboard derives Span views separately.
 Treat `docs/blueprint.md` as roadmap, not proof of current behavior.
 
 ## Start here
 
 - CLI/config/composition/finalization: `src/miniagent/cli/`
+- Dashboard reads/projections/pages: `src/miniagent/dashboard/`, `tests/dashboard/`, `tests/acceptance/dashboard/`
 - Independent evaluation/data/harness: `src/miniagent/evaluation/`, `tests/evaluation/`
 - Run lifecycle/interruption/resume: `src/miniagent/runtime/`, `src/miniagent/cli/signals.py`, `src/miniagent/cli/resume.py`
 - Model protocol/provider/pricing: `src/miniagent/models/`, `src/miniagent/providers/`, `src/miniagent/metering/`
@@ -41,15 +40,13 @@ Treat `docs/blueprint.md` as roadmap, not proof of current behavior.
 
 ## Source of truth and commands
 
-Code and tests define current behavior. `docs/CONTEXT.md` defines canonical domain
-terms; keep implementation details out of it. Use `docs/repository-map.md` for navigation.
+Code and tests define current behavior. `docs/CONTEXT.md` defines canonical domain terms; keep implementation details out of it.
 
 - Tests (not rerun for this docs-only refresh): `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run pytest -q`
 - Verified type check: `ty check`
 - After modifying Python files, run `uv run ruff check --fix <changed-files>` and `uv run ruff format <changed-files>`. Avoid project-wide lint/format unless necessary.
 - Working-tree config has `qwen3.8-max`, but the default Agent still selects `qwen3.8-flash`; use a configured `--model` (`src/miniagent/agents/default_agent.py`, `config/model_limits.toml`, `config/model_pricing.toml`).
-- Verified resume help: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run miniagent resume --help`
-- Verified CLI surfaces: `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run miniagent --help` and `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run python trigger --help`
+- Verified CLI help (same cache env): `UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run miniagent --help`, `uv run miniagent resume --help`, `uv run python trigger --help`, `uv run miniagent-dashboard --help`.
 
 <!-- repo-map:end -->
 
