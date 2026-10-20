@@ -347,6 +347,7 @@ def _timeline(
         {
             "id": str(event.event_id),
             "sequence": event.sequence,
+            "occurred_at": event.occurred_at.isoformat() if event.occurred_at else None,
             "type": event.type,
             "step": event.step_number,
             "partial": step_is_partial(batch.items, event.step_number)
@@ -583,7 +584,10 @@ def render_events(
         "snapshot_version": boundary.latest_snapshot_version,
         "read_at": boundary.read_at.isoformat(),
         "back_href": f"/runs/{run_id}?"
-        + urlencode(_event_query(back_params))
+        + urlencode(
+            _event_query(back_params)
+            + ([("event_id", str(params.event_id))] if params.event_id else [])
+        )
         + (f"#event-{params.event_id}" if params.event_id else "#timeline"),
         "timeline": _timeline(deps, batch, boundary, params, budget),
         "snapshot_fields": None,

@@ -825,3 +825,31 @@ HTMX 按[官方安装文档](https://htmx.org/docs/)和[配置 API](https://htmx
 - `tests.integration.test_swebench_evaluation::test_real_invalid_patch_fails`：Real SWE-bench requires explicit cached-image opt-in
 
 本计划的临时 ledger、brief、diff 和原始运行日志在最终修复提交后删除；全部裁决、暂缓项、执行结果与可复核测试源码保留在本证据和 Git 历史中。
+
+## 用户补充审查：四项 P2 修复
+
+用户对 `49a8714..d127ebf` 的补充审查均已通过消费路径回归复现，再修复：
+
+- D08 权限隔离：`EACCES`／`EPERM` 转为单项 `artifact_permission_denied`（409），继续既有 unavailable-evidence 路径。真实 chmod(0) 分别令 manifest／content 不可读，Workspace 仍200，受影响预览409，其他已保存日志仍能打开；测试后恢复权限。本次以非 root 用户实际运行，无权限用例跳过。
+- 来源返回定位：返回 Run 的查询包含目标 `event_id`；Event #181 在首批外、以及被恢复的筛选排除时，返回页均包含目标且定位窗口不超过41条，原筛选和分组仍保留。
+- Event 时间：投影保留 `StoredEvent.occurred_at`，主时间线和来源页均显示独立事件的 `<time datetime>`；复用本地时区展示和 UTC title，缺失／无效时间不补造。Chromium 的 Asia/Shanghai 上下文实际显示 GMT+8，同时保留持久化 UTC 时刻。
+- 多状态筛选：原生 status select 支持 multiple；真实浏览器在启用／禁用 JavaScript 时，从重复 status URL 打开、提交其他筛选后，都保留 created 和 succeeded 两个状态。
+
+原独立审查的“Event 行缺时间／Runs 无原生状态多选”暂缓项在此完成；同项中的 span ID 展示及其他原暂缓事项仍保持原状态。
+
+验证：新增8个回归场景均观察到产品问题的 RED→GREEN；修改 Python 文件 Ruff check --fix／format 和全仓 `uv run --extra dashboard ty check` 通过。
+
+Dashboard 回归命令：`UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run --extra dashboard pytest tests/dashboard tests/acceptance/dashboard --deselect=tests/acceptance/dashboard/test_installation.py::test_wheel_preserves_existing_task_entry -q --junitxml=/private/tmp/dashboard-review-followups-regression.xml`。
+
+结果：**581 passed, 1 deselected，50.32秒，exit0**。唯一 deselect 是合并后已确认受工作区未提交的 `qwen/qwen3.8-flash` 模型配置缺失影响的既有 wheel task 入口兼容测试；未修改该配置，未把该测试记为 PASS。本批次遵循仓库指令执行 Dashboard 定向回归，未重复全仓测试。
+
+| 新增实际测试节点 | 状态 |
+| --- | --- |
+| `tests.dashboard.test_review_followups::test_unreadable_artifact_does_not_hide_other_workspace_evidence[manifest]` | PASS |
+| `tests.dashboard.test_review_followups::test_unreadable_artifact_does_not_hide_other_workspace_evidence[content]` | PASS |
+| `tests.dashboard.test_review_followups::test_source_return_locates_event_outside_initial_batch[False]` | PASS |
+| `tests.dashboard.test_review_followups::test_source_return_locates_event_outside_initial_batch[True]` | PASS |
+| `tests.dashboard.test_review_followups::test_timeline_and_source_expose_recorded_event_time` | PASS |
+| `tests.acceptance.dashboard.test_review_followups::test_status_filters_survive_native_form_submission[True]` | PASS |
+| `tests.acceptance.dashboard.test_review_followups::test_status_filters_survive_native_form_submission[False]` | PASS |
+| `tests.acceptance.dashboard.test_review_followups::test_event_time_keeps_utc_source_when_displayed_in_local_timezone` | PASS |

@@ -63,6 +63,8 @@ class ArtifactReader:
         except OSError as exc:
             if exc.errno == errno.ENOENT:
                 raise ReadFailure(404, "artifact_path_missing") from exc
+            if exc.errno in (errno.EACCES, errno.EPERM):
+                raise ReadFailure(409, "artifact_permission_denied") from exc
             if exc.errno in _UNSAFE_ERRNOS:
                 raise ReadFailure(409, "artifact_unsafe") from exc
             raise

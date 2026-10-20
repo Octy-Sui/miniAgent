@@ -66,6 +66,7 @@ def project_events(batch: EventBatch) -> tuple[EventView, ...]:
             if item.event is not None
             else None,
             item.issues,
+            item.occurred_at,
         )
         for item in batch.items
     )

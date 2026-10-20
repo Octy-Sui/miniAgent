@@ -18,6 +18,7 @@ class EventView:
     summary: str
     payload: JsonValue | None
     issues: tuple[ReadIssue, ...]
+    occurred_at: datetime | None = None
 
 
 @dataclass(frozen=True)
