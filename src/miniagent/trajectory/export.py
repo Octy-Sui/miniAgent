@@ -278,7 +278,7 @@ async def encode_trajectory(
                 for stream in ("stdout", "stderr"):
                     evidence = output[stream]
                     assert isinstance(evidence, dict)
-                    if evidence["status"] != "completed":
+                    if evidence["status"] != "complete":
                         issues.append(
                             CoverageIssue(
                                 code="STREAM_PARTIAL",
@@ -322,7 +322,10 @@ async def encode_trajectory(
             "TRAJECTORY_STRUCTURE", "Event history differs from boundary"
         )
     for execution_id, (sequence, attempt_id) in commands.items():
-        if execution_id not in outputs:
+        if (
+            execution_id not in outputs
+            and attempts.get(str(attempt_id), (None, None))[0] == "tool_execution_start"
+        ):
             issues.append(
                 CoverageIssue(
                     code="OUTPUT_MISSING",
@@ -399,6 +402,7 @@ async def encode_trajectory(
                 "execution_permission_tokens",
                 "provider_wire_payloads",
                 "artifact_bodies",
+                "internal_finalization_command_streams",
             ],
             "unknown_requests": [
                 attempt
