@@ -80,8 +80,12 @@ def redact_json(
             return path == ()
         if schema != "event":
             return False
-        if event_type == "compaction_attempt_recorded":
-            return path == ("result", "usage")
+        if event_type in ("model_responded", "compaction_attempt_recorded"):
+            return path in (
+                ("response", "usage"),
+                ("normalization_failure", "usage"),
+                ("result", "usage"),
+            )
         return (
             event_type in ("compaction_completed", "compaction_failed")
             and len(path) == 3

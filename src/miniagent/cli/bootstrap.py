@@ -171,10 +171,14 @@ class BootstrapConfig:
     approval_handler: ApprovalHandler | None = None
     swebench_task: SWEbenchTaskContext | None = None
     run_id: UUID | None = None
+    trajectory: bool | None = None
 
 
 async def bootstrap(config: BootstrapConfig) -> Application:
     settings = Settings()
+    export_trajectory = (
+        settings.export_trajectory if config.trajectory is None else config.trajectory
+    )
     kind = config.workspace_kind or WorkspaceKind(settings.workspace_backend)
     prepared = None
     connection = None
@@ -348,6 +352,7 @@ async def bootstrap(config: BootstrapConfig) -> Application:
         if endpoint.port is not None:
             host += f":{endpoint.port}"
         application_definition = CLIApplicationDefinition(
+            export_trajectory=export_trajectory,
             pricing=pricing,
             pricing_sha256=digest_json(pricing.model_dump(mode="json")),
             tool_contract_sha256=digest_json(
@@ -392,6 +397,7 @@ async def bootstrap(config: BootstrapConfig) -> Application:
         )
         return Application(
             ApplicationDependencies(
+                export_trajectory=export_trajectory,
                 agent=agent,
                 config=runtime_config,
                 task=config.task,
@@ -631,6 +637,7 @@ def rehydrate_application(
         )
     return Application(
         ApplicationDependencies(
+            export_trajectory=definition.export_trajectory,
             agent=state.definition.agent_spec,
             task=state.identity.task,
             run_id=state.identity.run_id,

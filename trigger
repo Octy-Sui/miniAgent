@@ -36,6 +36,12 @@ def main(
         str,
         typer.Option(help="Model used by miniagent.", envvar="MINIAGENT_TRIGGER_MODEL"),
     ] = "deepseek-v4-pro",
+    trajectory: Annotated[
+        bool | None,
+        typer.Option(
+            "--trajectory/--no-trajectory", help="Export committed run trajectory."
+        ),
+    ] = None,
 ) -> None:
     """Run a selected development task using its pinned Docker image."""
     try:
@@ -69,6 +75,7 @@ def main(
                 docker_image=task.image,
                 model=model,
                 swebench_task=SWEbenchTaskContext(instance_id=task.instance_id),
+                trajectory=trajectory,
             )
         )
     except KeyboardInterrupt:

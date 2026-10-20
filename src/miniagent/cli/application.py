@@ -255,10 +255,10 @@ class Application:
             exc.add_note(f"Trajectory: {outcome.ref.uri}")
         elif outcome.status == "failed":
             exc.add_note(
-                f"Trajectory export failed [{outcome.code}]: {outcome.message}"
+                f"TRAJECTORY_EXPORT_FAILED [{outcome.code}]: {outcome.message}"
             )
         elif outcome.status == "skipped":
-            exc.add_note(f"Trajectory export skipped: {outcome.reason}")
+            exc.add_note(f"TRAJECTORY_EXPORT_SKIPPED: {outcome.reason}")
 
     async def _export_trajectory(
         self, token: InterruptionToken | None

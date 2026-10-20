@@ -13,6 +13,7 @@ _SUMMARIES = {
     "run_finished": "记录运行结束",
     "step_started": "开始 Step",
     "step_completed": "完成 Step",
+    "operation_output_recorded": "记录完整命令输出引用",
     "model_requested": "请求模型",
     "model_responded": "模型已响应",
     "tool_start": "开始工具调用",

@@ -52,6 +52,7 @@ def parse_config(
     docker_image: str | None,
     *,
     swebench_task: SWEbenchTaskContext | None = None,
+    trajectory: bool | None = None,
 ) -> BootstrapConfig:
     agent = DEFAULT_AGENT
     if model is not None:
@@ -71,6 +72,7 @@ def parse_config(
         docker_image=docker_image,
         approval_handler=ConsoleApprovalHandler(),
         swebench_task=swebench_task,
+        trajectory=trajectory,
     )
 
 
@@ -81,9 +83,15 @@ async def main(
     docker_image: str | None = None,
     *,
     swebench_task: SWEbenchTaskContext | None = None,
+    trajectory: bool | None = None,
 ) -> None:
     config = parse_config(
-        task, model, workspace, docker_image, swebench_task=swebench_task
+        task,
+        model,
+        workspace,
+        docker_image,
+        swebench_task=swebench_task,
+        trajectory=trajectory,
     )
 
     try:
@@ -146,9 +154,15 @@ def cli(
         str | None,
         typer.Option(help="Docker image used by the docker workspace backend."),
     ] = None,
+    trajectory: Annotated[
+        bool | None,
+        typer.Option(
+            "--trajectory/--no-trajectory", help="Export committed run trajectory."
+        ),
+    ] = None,
 ) -> None:
     try:
-        asyncio.run(main(task, model, workspace, docker_image))
+        asyncio.run(main(task, model, workspace, docker_image, trajectory=trajectory))
     except KeyboardInterrupt:
         raise typer.Exit(code=130) from None
 

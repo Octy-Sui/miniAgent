@@ -19,6 +19,7 @@ class RunLocationSettings(BaseSettings):
 
 
 class Settings(RunLocationSettings):
+    export_trajectory: bool = False
     openai_api_key: str
     openai_base_url: str
     model_limits_file: Path = Path("config/model_limits.toml")

@@ -478,6 +478,8 @@ def export_engine():
                         "exit_code": process.returncode,
                         "group_ended": True,
                         "issuer_ended": True,
+                        "stdout_eof": True,
+                        "stderr_eof": True,
                     },
                 )
             except (EOFError, BrokenPipeError, ConnectionResetError):
@@ -507,4 +509,8 @@ def export_engine():
     thread.join(5)
 
 
-pytest_plugins = ["tests.support.cli.fixtures", "tests.support.dashboard.fixtures"]
+pytest_plugins = [
+    "tests.support.runtime.persistence",
+    "tests.support.cli.fixtures",
+    "tests.support.dashboard.fixtures",
+]

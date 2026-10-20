@@ -89,11 +89,11 @@ def print_application_result(
         typer.echo(f"Trajectory: {outcome.ref.uri}")
     elif outcome.status == "failed":
         typer.echo(
-            f"Trajectory export failed [{outcome.code}]: {outcome.message}"[:4096],
+            f"TRAJECTORY_EXPORT_FAILED [{outcome.code}]: {outcome.message}"[:4096],
             err=True,
         )
     elif outcome.status == "skipped":
-        typer.echo(f"Trajectory export skipped: {outcome.reason}"[:4096], err=True)
+        typer.echo(f"TRAJECTORY_EXPORT_SKIPPED: {outcome.reason}"[:4096], err=True)
     run_succeeded = result.run_result.status is RunStatus.SUCCEEDED
     if not run_succeeded:
         _print_finalization_errors(result)
@@ -164,5 +164,5 @@ def print_resume_rejection(rejection: ResumeRejection) -> None:
 
 def print_trajectory_exception(exc: BaseException) -> None:
     for note in getattr(exc, "__notes__", ()):
-        if note.startswith("Trajectory"):
+        if note.startswith(("Trajectory", "TRAJECTORY_EXPORT_")):
             typer.echo(note[:4096], err=not note.startswith("Trajectory: "))

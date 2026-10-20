@@ -185,6 +185,9 @@ async def encode_trajectory(
                 "model_requested",
                 "compaction_requested",
                 "tool_execution_start",
+                "candidate_submission_started",
+                "diagnostic_finalization_started",
+                "evaluation_start",
             ):
                 if attempt is None or attempt in attempts:
                     raise TrajectoryExportError(
