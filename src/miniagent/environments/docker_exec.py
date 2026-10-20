@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 from pydantic import JsonValue
 
+from miniagent.artifacts.contracts import ArtifactPersistenceError
 from miniagent.environments.contracts import (
     Command,
     ExecutionResult,
@@ -25,6 +26,7 @@ from miniagent.environments.docker_exec_helper import (
     encode_frame,
 )
 from miniagent.environments.docker_supervisor import encode_command, encode_guest_frame
+from miniagent.environments.evidence import CommandEvidence
 from miniagent.environments.managed_execution import (
     DockerExecIdentity,
     ExecutionEvidence,
@@ -33,6 +35,7 @@ from miniagent.environments.managed_execution import (
     HostProcessIdentity,
     ManagedExecutionError,
 )
+from miniagent.environments.output_capture import OutputCapture
 from miniagent.environments.process import (
     identify_host_process,
     inspect_host_execution,
@@ -179,6 +182,7 @@ async def run_docker_exec_output(
     deadline: float,
     max_output_bytes: int | None = 1024 * 1024,
     stdin_bytes: bytes | None = None,
+    output_capture: OutputCapture | None = None,
 ) -> DockerExecOutput:
     if observer.attempt_id != attempt_id:
         raise ManagedExecutionError("Docker observer attempt mismatch")
@@ -196,6 +200,8 @@ async def run_docker_exec_output(
         attempt_id=attempt_id,
     )
     remote = None
+    closed = False
+    allow_partial_capture = False
     try:
         await observer.identified(helper.identity, permission="create_exec")
         observer.check_permission()
@@ -285,7 +291,15 @@ async def run_docker_exec_output(
                             guest_frame.body.get("guest")
                         )
                         remote = remote.model_copy(update={"guest": guest})
-                        await observer.identified(remote)
+                        await observer.identified(
+                            remote,
+                            command=CommandEvidence(
+                                argv=tuple(command.argv),
+                                cwd=command.cwd,
+                                timeout_seconds=command.timeout_seconds,
+                            ),
+                        )
+                        allow_partial_capture = True
                         observer.check_permission()
                         await write_guest(
                             encode_guest_frame(
@@ -311,6 +325,10 @@ async def run_docker_exec_output(
                             )
                         output = stdout if number == 1 else stderr
                         chunk = base64.b64decode(output_content, validate=True)
+                        if output_capture is not None:
+                            await output_capture.write(
+                                "stdout" if number == 1 else "stderr", chunk
+                            )
                         remaining = (
                             len(chunk)
                             if max_output_bytes is None
@@ -332,6 +350,8 @@ async def run_docker_exec_output(
                             completion.get("group_ended") is not True
                             or completion.get("issuer_ended") is not True
                             or status not in ("success", "error", "timeout")
+                            or type(completion.get("stdout_eof")) is not bool
+                            or type(completion.get("stderr_eof")) is not bool
                         ):
                             raise ManagedExecutionError(
                                 "Guest whole group end is unconfirmed"
@@ -365,6 +385,7 @@ async def run_docker_exec_output(
                     raise ManagedExecutionError(
                         "Docker helper whole group end is unconfirmed"
                     )
+                allow_partial_capture = False
                 await observer.ended(evidence)
                 await observer.ended(
                     ExecutionEvidence(
@@ -378,7 +399,19 @@ async def run_docker_exec_output(
                 )
                 exit_code = completion.get("exit_code")
                 assert exit_code is None or isinstance(exit_code, int)
+                captured = None
+                if output_capture is not None:
+                    captured = await output_capture.finish(
+                        execution_id=remote.execution_id,
+                        stdout_eof=completion["stdout_eof"] is True,
+                        stderr_eof=completion["stderr_eof"] is True,
+                        reason="guest stream drain stopped"
+                        if completion["status"] == "timeout"
+                        else None,
+                    )
+                    await observer.output_recorded(captured)
                 result = ExecutionResult(
+                    output_evidence=captured,
                     status=ExecutionStatus(completion["status"]),
                     exit_code=exit_code,
                     stdout=stdout.decode(errors="replace"),
@@ -390,13 +423,36 @@ async def run_docker_exec_output(
                 return DockerExecOutput(result, bytes(stdout), bytes(stderr))
             else:
                 raise ManagedExecutionError("Docker helper protocol state is invalid")
-    except (TimeoutError, OSError, ValueError) as exc:
-        raise ManagedExecutionError(
-            "Docker execution completion is unconfirmed"
-        ) from exc
-    finally:
+    except BaseException as exc:
+        closed = True
         helper.deadline = deadline
         await helper.close()
+        if (
+            output_capture is not None
+            and allow_partial_capture
+            and not isinstance(exc, ArtifactPersistenceError)
+        ):
+            assert remote is not None
+            output = await output_capture.finish(
+                execution_id=remote.execution_id,
+                stdout_eof=False,
+                stderr_eof=False,
+                reason=type(exc).__name__,
+            )
+            await observer.output_recorded(output)
+        if isinstance(exc, (TimeoutError, OSError, ValueError)):
+            raise ManagedExecutionError(
+                "Docker execution completion is unconfirmed"
+            ) from exc
+        raise
+    finally:
+        try:
+            if not closed:
+                helper.deadline = deadline
+                await helper.close()
+        finally:
+            if output_capture is not None:
+                await output_capture.abort()
 
 
 async def run_docker_exec(

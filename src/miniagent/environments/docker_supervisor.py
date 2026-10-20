@@ -327,6 +327,8 @@ def run_supervisor() -> int:
                     "completed",
                     {
                         "status": "timeout",
+                        "stdout_eof": 1 not in streams.values(),
+                        "stderr_eof": 2 not in streams.values(),
                         "exit_code": None,
                         "group_ended": True,
                         "issuer_ended": True,
@@ -349,6 +351,8 @@ def run_supervisor() -> int:
                         "completed",
                         {
                             "status": "success" if code == 0 else "error",
+                            "stdout_eof": True,
+                            "stderr_eof": True,
                             "exit_code": code,
                             "group_ended": True,
                             "issuer_ended": True,

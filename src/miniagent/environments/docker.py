@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 from miniagent.artifacts import ArtifactStore, ArtifactWrite
+from miniagent.artifacts.contracts import ArtifactPersistenceError
 from miniagent.environments.attachment import (
     AttachmentFacts,
     AttachmentProblem,
@@ -43,11 +44,14 @@ from miniagent.environments.docker_connection import (
     resolve_docker_connection,
 )
 from miniagent.environments.docker_exec import run_docker_exec_output
+from miniagent.environments.evidence import CommandOutputEvidence
 from miniagent.environments.managed_execution import (
     ManagedExecutionError,
     MemoryExecutionObserver,
+    current_cleanup_deadline,
     current_execution_observer,
 )
+from miniagent.environments.output_capture import OutputCapture
 from miniagent.environments.process import (
     decode_output,
     identify_host_process,
@@ -101,6 +105,7 @@ class DockerCommandResult:
     duration_ms: int
     stdout_truncated: bool = False
     stderr_truncated: bool = False
+    output_evidence: CommandOutputEvidence | None = None
 
 
 class DockerWorkspaceBackend:
@@ -504,6 +509,7 @@ class DockerWorkspaceBackend:
         max_output_bytes: int | None = None,
         capture_all: bool = False,
         cleanup_deadline: float | None = None,
+        output_capture: OutputCapture | None = None,
     ) -> DockerCommandResult:
         command = ["container", "exec"]
         if stdin is not None:
@@ -514,6 +520,7 @@ class DockerWorkspaceBackend:
         command.extend((container_id, *argv))
         return await self._run(
             command,
+            output_capture=output_capture,
             stdin=stdin,
             timeout_seconds=timeout_seconds,
             max_output_bytes=max_output_bytes,
@@ -586,9 +593,14 @@ class DockerWorkspaceBackend:
         max_output_bytes: int | None = None,
         capture_all: bool = False,
         cleanup_deadline: float | None = None,
+        output_capture: OutputCapture | None = None,
     ) -> DockerCommandResult:
         started_at = monotonic()
-        observer = current_execution_observer() or MemoryExecutionObserver()
+        observer = current_execution_observer() or (
+            MemoryExecutionObserver(attempt_id=output_capture.attempt_id)
+            if output_capture
+            else MemoryExecutionObserver()
+        )
         if argv[:2] == ["container", "exec"]:
             if self.connection is None:
                 self.connection = await resolve_docker_connection(
@@ -625,6 +637,7 @@ class DockerWorkspaceBackend:
                 attempt_id=observer.attempt_id,
                 deadline=deadline,
                 stdin_bytes=stdin,
+                output_capture=output_capture,
                 max_output_bytes=None
                 if capture_all
                 else (
@@ -640,6 +653,7 @@ class DockerWorkspaceBackend:
             assert output.result.exit_code is not None
             return DockerCommandResult(
                 exit_code=output.result.exit_code,
+                output_evidence=output.result.output_evidence,
                 stdout=output.stdout,
                 stderr=output.stderr,
                 duration_ms=output.result.duration_ms,
@@ -817,10 +831,18 @@ class DockerWorkspace:
         async with self._operation_lock:
             self._require_active()
             started_at = monotonic()
+            observer = current_execution_observer()
+            capture = await OutputCapture.open(
+                store=self.backend.artifact_store,
+                run_id=self.run_id,
+                attempt_id=observer.attempt_id if observer else uuid4(),
+                deadline=current_cleanup_deadline(),
+            )
             try:
                 result = await self.backend._exec(
                     self.container_id,
                     command.argv,
+                    output_capture=capture,
                     cwd=self._resolve_cwd(command.cwd),
                     environment=command.environment,
                     stdin=command.stdin.encode() if command.stdin is not None else None,
@@ -831,12 +853,19 @@ class DockerWorkspace:
                 await self.backend._kill_container(self.container_id)
                 return ExecutionResult(
                     status=ExecutionStatus.TIMEOUT,
+                    output_evidence=capture.output,
                     duration_ms=int((monotonic() - started_at) * 1000),
                 )
             except asyncio.CancelledError:
                 self.state = DockerWorkspaceState.BROKEN
                 await asyncio.shield(self.backend._kill_container(self.container_id))
                 raise
+            except (ArtifactPersistenceError, ManagedExecutionError):
+                self.state = DockerWorkspaceState.BROKEN
+                await asyncio.shield(self.backend._kill_container(self.container_id))
+                raise
+            finally:
+                await capture.abort()
 
             return ExecutionResult(
                 status=(
@@ -845,6 +874,7 @@ class DockerWorkspace:
                     else ExecutionStatus.ERROR
                 ),
                 exit_code=result.exit_code,
+                output_evidence=result.output_evidence,
                 stdout=decode_output(result.stdout, result.stdout_truncated),
                 stderr=decode_output(result.stderr, result.stderr_truncated),
                 stdout_truncated=result.stdout_truncated,

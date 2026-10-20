@@ -26,6 +26,17 @@ def engine():
             self.output_gate = threading.Event()
             self.running = False
             self.guest_completes = True
+            self.output_chunks = [(1, b"helper-output")]
+            self.completion = {
+                "status": "success",
+                "exit_code": 0,
+                "group_ended": True,
+                "issuer_ended": True,
+                "stdout_eof": True,
+                "stderr_eof": True,
+            }
+            self.wrong_scope = False
+            self.duplicate_completion = False
             self.delay_start = False
             self.start_received = threading.Event()
             self.start_gate = threading.Event()
@@ -96,25 +107,22 @@ def engine():
                             },
                         )
                         assert receive()["type"] == "permit_command"
-                        send(
-                            opening,
-                            "data",
-                            {
-                                "stream": 1,
-                                "content": base64.b64encode(b"helper-output").decode(),
-                            },
-                        )
-                        if state.guest_completes:
+                        for number, chunk in state.output_chunks:
+                            scope = dict(opening)
+                            if state.wrong_scope:
+                                scope["attempt_id"] = str(uuid4())
                             send(
-                                opening,
-                                "completed",
+                                scope,
+                                "data",
                                 {
-                                    "status": "success",
-                                    "exit_code": 0,
-                                    "group_ended": True,
-                                    "issuer_ended": True,
+                                    "stream": number,
+                                    "content": base64.b64encode(chunk).decode(),
                                 },
                             )
+                        if state.guest_completes:
+                            send(opening, "completed", state.completion)
+                            if state.duplicate_completion:
+                                send(opening, "completed", state.completion)
                     except (BrokenPipeError, ConnectionResetError, EOFError):
                         pass
                 self.close_connection = True
@@ -153,9 +161,13 @@ class Observer:
         self.engine = engine
         self.fail = fail
         self.facts = []
+        self.commands = {}
+        self.outputs = {}
 
     async def identified(self, identity, *, permission="observe", command=None):
         self.facts.append((identity, permission, monotonic()))
+        if command is not None:
+            self.commands[identity.execution_id] = command
         if permission == self.fail:
             raise RunPersistenceError(
                 run_id=uuid4(), operation="identity", last_confirmed_sequence=1
@@ -164,6 +176,7 @@ class Observer:
             self.engine.output_gate.set()
 
     async def output_recorded(self, output):
+        self.outputs[output.execution_id] = output
         self.facts.append((output, "output", monotonic()))
 
     async def ended(self, evidence):

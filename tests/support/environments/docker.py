@@ -1,6 +1,8 @@
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from uuid import uuid4
 
-from miniagent.artifacts import ArtifactStore, ArtifactWrite
+from miniagent.artifacts import ArtifactWrite, FileArtifactStore
 from miniagent.artifacts.contracts import ArtifactRef
 from miniagent.environments import (
     DockerOptions,
@@ -9,9 +11,14 @@ from miniagent.environments import (
     ResourceLimits,
 )
 from miniagent.environments.docker import DockerCommandResult
+from miniagent.environments.output_capture import OutputCapture
 
 
-class UnusedArtifactStore(ArtifactStore):
+class UnusedArtifactStore(FileArtifactStore):
+    def __init__(self) -> None:
+        self.directory = TemporaryDirectory(prefix="miniagent-test-artifacts-")
+        super().__init__(Path(self.directory.name))
+
     async def put(
         self, request: ArtifactWrite, content: bytes, *, deadline: float | None = None
     ) -> ArtifactRef:
@@ -36,6 +43,7 @@ class ScriptedDockerBackend(DockerWorkspaceBackend):
         max_output_bytes: int | None = None,
         capture_all: bool = False,
         cleanup_deadline: float | None = None,
+        output_capture: OutputCapture | None = None,
     ) -> DockerCommandResult:
         self.commands.append(argv)
         response = self.responses.pop(0)
