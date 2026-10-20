@@ -285,7 +285,12 @@ def read_run_page(
             (str(run_id), boundary.as_of_sequence),
         ).fetchone()
         evaluation = (
-            _load_event(connection, evaluation_row, budget)
+            _load_event(
+                connection,
+                evaluation_row,
+                budget,
+                through_sequence=boundary.as_of_sequence,
+            )
             if evaluation_row is not None
             else None
         )
@@ -377,7 +382,14 @@ def read_workspace_page(
             (str(run_id), boundary.as_of_sequence),
         ).fetchall()
         events = tuple(
-            _load_event(connection, item, budget) for item in reversed(rows[:200])
+            _load_event(
+                connection,
+                item,
+                budget,
+                through_sequence=boundary.as_of_sequence,
+                load_body=index >= max(0, min(len(rows), 200) - 16),
+            )
+            for index, item in enumerate(reversed(rows[:200]))
         )
         return RunPageRead(
             run,

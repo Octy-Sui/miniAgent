@@ -1,5 +1,6 @@
 import sqlite3
 from collections import deque
+from dataclasses import replace
 from importlib.resources import files
 from pathlib import Path
 from uuid import UUID
@@ -49,6 +50,7 @@ def _load_event(
     budget: ReadBudget,
     *,
     load_body: bool = True,
+    through_sequence: int,
 ) -> StoredEvent:
     budget.check()
     event = None
@@ -63,8 +65,8 @@ def _load_event(
         issues.append(ReadIssue("read_limit_exceeded", "事件正文超出读取上限"))
     else:
         body = connection.execute(
-            "SELECT * FROM run_events WHERE run_id=? AND event_id=?",
-            (row["run_id"], row["event_id"]),
+            "SELECT * FROM run_events WHERE run_id=? AND event_id=? AND sequence<=?",
+            (row["run_id"], row["event_id"], through_sequence),
         ).fetchone()
         try:
             raw = parse_json(body["payload_json"], budget=budget)
@@ -119,7 +121,13 @@ def _read_events(
         ),
     ).fetchall()
     items = tuple(
-        _load_event(connection, row, budget, load_body=index < 16)
+        _load_event(
+            connection,
+            row,
+            budget,
+            load_body=index < 16,
+            through_sequence=boundary.as_of_sequence,
+        )
         for index, row in enumerate(rows[:limit])
     )
     return EventBatch(items, items[-1].sequence if len(rows) > limit else None)
@@ -173,10 +181,23 @@ def locate_event(
             f"SELECT {_EVENT_COLUMNS} FROM run_events WHERE run_id=? AND sequence>? AND sequence<=? ORDER BY sequence LIMIT 20",
             (str(boundary.run_id), target["sequence"], boundary.as_of_sequence),
         ).fetchall()
+        rows = [*reversed(previous), target, *following]
+        body_ids = {
+            row["event_id"]
+            for row in sorted(
+                rows, key=lambda row: abs(row["sequence"] - target["sequence"])
+            )[:16]
+        }
         return EventBatch(
             tuple(
-                _load_event(connection, row, budget)
-                for row in [*reversed(previous), target, *following]
+                _load_event(
+                    connection,
+                    row,
+                    budget,
+                    through_sequence=boundary.as_of_sequence,
+                    load_body=row["event_id"] in body_ids,
+                )
+                for row in rows
             ),
             None,
         )
@@ -193,6 +214,7 @@ def read_tool_facts(
     if len(keys) > 200:
         raise ReadFailure(422, "tool_keys_invalid")
     events: list[StoredEvent] = []
+    loaded_bodies = 0
     counts: dict[tuple[int, str, str], int] = {}
     issues: list[ReadIssue] = []
     with read_transaction(database, budget, connect=connect) as connection:
@@ -210,7 +232,16 @@ def read_tool_facts(
                     f"SELECT {_EVENT_COLUMNS} FROM run_events WHERE {predicate} AND type=? ORDER BY sequence LIMIT 2",
                     (*values, role),
                 ).fetchall()
-                events.extend(_load_event(connection, row, budget) for row in rows)
+                for row in rows:
+                    item = _load_event(
+                        connection,
+                        row,
+                        budget,
+                        through_sequence=boundary.as_of_sequence,
+                        load_body=loaded_bodies < 16,
+                    )
+                    loaded_bodies += int(item.event is not None)
+                    events.append(item)
     if any(event.event is None for event in events):
         issues.append(ReadIssue("not_loaded", "部分工具事实未完成读取"))
     return ToolFacts(tuple(events), counts, tuple(issues))
@@ -307,18 +338,28 @@ def read_scope_facts(
                 )
             )
             loaded = []
+            bodies_validated = True
             for role in counts:
                 rows = connection.execute(
                     f"SELECT {_EVENT_COLUMNS} FROM run_events WHERE {predicate} AND type=? ORDER BY sequence LIMIT 2",
                     (*values, role),
                 ).fetchall()
-                loaded.extend(_load_event(connection, row, budget) for row in rows)
+                for row in rows:
+                    item = _load_event(
+                        connection,
+                        row,
+                        budget,
+                        through_sequence=boundary.as_of_sequence,
+                    )
+                    bodies_validated = bodies_validated and item.event is not None
+                    loaded.append(replace(item, event=None))
+                    del item
             scopes[span_id] = ScopeFacts(
                 span_id,
                 tuple(loaded),
                 sum(counts.get(role, 0) for role in starts),
                 sum(counts.get(role, 0) for role in ends),
-                all(item.event is not None for item in loaded),
+                bodies_validated,
             )
             for parent in dict.fromkeys(
                 item.parent_span_id
@@ -374,6 +415,48 @@ def read_compaction_sources(
     }
     snapshots: dict[int, StoredSnapshot] = {}
     source_events: dict[UUID, StoredEvent] = {}
+    loaded_bodies = 0
+    for event_id, item in events.items():
+        if (
+            item.event is not None
+            and item.type != "compaction_completed"
+            and loaded_bodies >= 16
+        ):
+            events[event_id] = replace(
+                item,
+                event=None,
+                issues=(
+                    *item.issues,
+                    ReadIssue("not_loaded", "本页正文数量超过读取上限"),
+                ),
+            )
+        else:
+            loaded_bodies += int(
+                item.event is not None and item.type != "compaction_completed"
+            )
+
+    def load_compaction_event(
+        connection: sqlite3.Connection, row: sqlite3.Row
+    ) -> StoredEvent:
+        nonlocal loaded_bodies
+        event_id = UUID(row["event_id"])
+        existing = events.get(event_id) or source_events.get(event_id)
+        if existing is not None and (
+            existing.event is not None or row["type"] != "compaction_completed"
+        ):
+            return existing
+        item = _load_event(
+            connection,
+            row,
+            budget,
+            through_sequence=boundary.as_of_sequence,
+            load_body=row["type"] == "compaction_completed" or loaded_bodies < 16,
+        )
+        loaded_bodies += int(
+            item.event is not None and item.type != "compaction_completed"
+        )
+        return item
+
     unloaded = []
     unloaded_events = []
     issues = []
@@ -414,7 +497,7 @@ def read_compaction_sources(
                         )
                     )
                 break
-            loaded = [_load_event(connection, row, budget) for row in rows]
+            loaded = [load_compaction_event(connection, row) for row in rows]
             events.update((item.event_id, item) for item in loaded)
             if len(loaded) != 1:
                 issues.append(ReadIssue("compaction_duplicate", "压缩版本重复记录"))
@@ -506,7 +589,7 @@ def read_compaction_sources(
             for row in rows[:200]:
                 event_id = UUID(row["event_id"])
                 if event_id not in events:
-                    events[event_id] = _load_event(connection, row, budget)
+                    events[event_id] = load_compaction_event(connection, row)
         states = []
         if version is None and run is not None and run.record is not None:
             states.append(run.record.state)
@@ -564,7 +647,7 @@ def read_compaction_sources(
                         )
                     )
                     continue
-                loaded = _load_event(connection, row, budget)
+                loaded = load_compaction_event(connection, row)
                 source_events[event_id] = loaded
                 if loaded.event is None:
                     unloaded_events.append(event_id)
