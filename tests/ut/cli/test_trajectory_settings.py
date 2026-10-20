@@ -20,20 +20,21 @@ def test_export_settings(tmp_path, monkeypatch, value, expected):
     )
 
 
-def test_dotenv_and_environment_precedence(tmp_path, monkeypatch):
+@pytest.mark.parametrize(("value", "expected"), [("true", True), ("false", False)])
+def test_dotenv_and_environment_precedence(tmp_path, monkeypatch, value, expected):
     env = tmp_path / ".env"
-    env.write_text("EXPORT_TRAJECTORY=true\n")
+    env.write_text(f"EXPORT_TRAJECTORY={value}\n")
     monkeypatch.delenv("EXPORT_TRAJECTORY", raising=False)
     assert (
         Settings(
             _env_file=env, openai_api_key="test", openai_base_url="https://example.test"
         ).export_trajectory
-        is True
+        is expected
     )
-    monkeypatch.setenv("EXPORT_TRAJECTORY", "false")
+    monkeypatch.setenv("EXPORT_TRAJECTORY", str(not expected).lower())
     assert (
         Settings(
             _env_file=env, openai_api_key="test", openai_base_url="https://example.test"
         ).export_trajectory
-        is False
+        is not expected
     )

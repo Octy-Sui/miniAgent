@@ -195,3 +195,125 @@ async def test_repeated_signal_drains_export_before_releasing_run_lock(
     } == frozen_files
     with RunLock(worker.root / "runs.sqlite3", run_id):
         pass
+
+
+async def test_failed_summary_then_later_compaction_survives_process_reopen(
+    tmp_path, monkeypatch, provider_endpoint
+):
+    import asyncio
+    import os
+    import sys
+
+    from miniagent.artifacts import ArtifactRef
+    from miniagent.storage import SQLiteRunStore
+
+    root = tmp_path / "summary-history"
+
+    async def run(*arguments, environment=None):
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            *arguments,
+            env=environment,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), 60)
+        assert process.returncode == 0, stderr.decode() + stdout.decode()
+        return stdout
+
+    await run(
+        "-m",
+        "tests.support.trajectory.history",
+        str(root),
+        "512",
+        "1024",
+        "--soft-summary-failure",
+    )
+    exported = json.loads(
+        await run("-m", "tests.support.trajectory.resource_worker", str(root), "export")
+    )
+    first_ref = ArtifactRef.model_validate(exported["ref"])
+    artifacts = FileArtifactStore(root / "artifacts")
+    first_bytes = await artifacts.read(first_ref)
+    first = json.loads(first_bytes)
+    failed = next(
+        event
+        for event in first["events"]
+        if event["payload"]["type"] == "compaction_failed"
+    )
+    completed = [
+        event
+        for event in first["events"]
+        if event["payload"]["type"] == "compaction_completed"
+    ]
+    assert completed and all(
+        event["sequence"] > failed["sequence"] for event in completed
+    )
+    attempts = [
+        event
+        for event in first["events"]
+        if event["payload"]["type"] == "compaction_attempt_recorded"
+    ]
+    assert (
+        attempts[0]["payload"]["response"]["message"]["content"]
+        == "invalid summary body"
+    )
+    assert first["coverage"]["status"] == "complete"
+    run_id = UUID(first["run_id"])
+    before = await SQLiteRunStore(root / "runs.db").get(run_id)
+    environment = dict(
+        os.environ,
+        OPENAI_API_KEY="resource-fixture",
+        OPENAI_BASE_URL=provider_endpoint.url,
+    )
+    await run(
+        "-m",
+        "miniagent.cli.main",
+        "resume",
+        "--run-id",
+        str(run_id),
+        "--database",
+        str(root / "runs.db"),
+        environment=environment,
+    )
+    after = await SQLiteRunStore(root / "runs.db").get(run_id)
+    assert after.state.usage.input_tokens == before.state.usage.input_tokens + 10
+    assert after.state.usage.output_tokens == before.state.usage.output_tokens + 5
+    assert await artifacts.read(first_ref) == first_bytes
+    exports = [
+        record
+        for record in (await artifacts.list_records_for_run(run_id)).records
+        if record.type == "run_trajectory"
+    ]
+    assert len(exports) == 2
+    second_ref = next(
+        record.reference()
+        for record in exports
+        if record.artifact_id != first_ref.artifact_id
+    )
+    second = json.loads(await artifacts.read(second_ref))
+    assert (
+        second["boundary"]["through_sequence"] > first["boundary"]["through_sequence"]
+    )
+    assert len(
+        [
+            event
+            for event in second["events"]
+            if event["payload"]["type"] == "compaction_attempt_recorded"
+        ]
+    ) == len(attempts)
+    evidence = Path(".superpowers/sdd/2026-10-20-trajectory")
+    (evidence / "offline-summary-review.json").write_text(
+        json.dumps(
+            {
+                "first_ref": first_ref.model_dump(mode="json"),
+                "second_ref": second_ref.model_dump(mode="json"),
+                "failed_sequence": failed["sequence"],
+                "completed_sequences": [event["sequence"] for event in completed],
+                "attempt_ids": [event["payload"]["attempt_id"] for event in attempts],
+                "summary_calls_not_repeated": True,
+                "human_acceptance": "NOT_ACCEPTED",
+            },
+            indent=2,
+        )
+    )

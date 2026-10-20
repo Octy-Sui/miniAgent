@@ -8,11 +8,11 @@ from tests.support.resume.processes import spawn_worker
 __all__ = ["spawn_worker"]
 
 
-@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("enabled", [None, False, True])
 async def test_evidence_is_always_captured_and_survives_workspace_cleanup(
     spawn_worker, enabled
 ):
-    worker = await spawn_worker(trajectory=enabled)
+    worker = await spawn_worker(trajectory=enabled, export_env_false=enabled is False)
     code, output = await worker.finish()
     assert code == 0, output
     from tests.support.resume.local import stored
@@ -27,7 +27,7 @@ async def test_evidence_is_always_captured_and_survives_workspace_cleanup(
     store = FileArtifactStore(worker.root / "artifacts")
     catalog = (await store.list_records_for_run(record.state.identity.run_id)).records
     trajectories = [item for item in catalog if item.type == "run_trajectory"]
-    assert len(trajectories) == int(enabled)
+    assert len(trajectories) == int(bool(enabled))
     outputs = [
         item for item in catalog if item.type in ("command_stdout", "command_stderr")
     ]
@@ -133,13 +133,18 @@ def test_forbidden_provider_fields_do_not_enter_evidence(
     assert len(provider_endpoint.requests) == 1
 
 
+@pytest.mark.parametrize("enabled", [False, True])
 @pytest.mark.parametrize("size", [8 * 1024 * 1024, 64 * 1024 * 1024])
-async def test_complete_output_is_independent_of_json_limit(spawn_worker, size):
+async def test_complete_output_is_independent_of_json_limit(
+    spawn_worker, size, enabled
+):
     import hashlib
 
     from tests.support.resume.local import stored
 
-    worker = await spawn_worker(trajectory=True, output_bytes=size)
+    worker = await spawn_worker(
+        trajectory=enabled, no_trajectory=not enabled, output_bytes=size
+    )
     code, output = await worker.finish(timeout=20)
     assert code == 0, output
     record, _events = await stored(worker.root)
@@ -152,6 +157,16 @@ async def test_complete_output_is_independent_of_json_limit(spawn_worker, size):
     )
     assert stdout.sha256 == hashlib.sha256(b"x" * size).hexdigest()
     assert await store.read(stdout.reference()) == b"x" * size
+    stderr = next(
+        item
+        for item in records
+        if item.type == "command_stderr" and item.size_bytes >= size
+    )
+    assert (await store.read(stderr.reference())).endswith(b"y" * size)
+    assert len([event for event in _events if event.type.value == "tool_end"]) == 3
+    if not enabled:
+        assert not any(item.type == "run_trajectory" for item in records)
+        return
     trajectory = next(item for item in records if item.type == "run_trajectory")
     document = json.loads(await store.read(trajectory.reference()))
     assert trajectory.size_bytes < 67_108_864
@@ -161,3 +176,81 @@ async def test_complete_output_is_independent_of_json_limit(spawn_worker, size):
         and item["relation"] == "event_referenced"
         for item in document["artifacts"]
     )
+
+
+@pytest.mark.parametrize("fault", ["export_storage", "boundary_unavailable"])
+async def test_cli_displays_export_diagnostic_without_replacing_original_error(
+    configured_host, provider_endpoint, fault
+):
+    import asyncio
+    import os
+    import sqlite3
+    import sys
+    import threading
+    from pathlib import Path
+
+    from tests.support.cli.bootstrap import create_source_repository
+
+    root = Path.cwd()
+    source = create_source_repository(configured_host / "source")
+    provider_endpoint.before_response = threading.Event()
+    provider_endpoint.release_response = threading.Event()
+    environment = dict(
+        os.environ,
+        OPENAI_BASE_URL=provider_endpoint.url,
+        PYTHONPATH=str(root / "src"),
+        MODEL_LIMITS_FILE=str(root / "config/model_limits.toml"),
+        MODEL_PRICING_FILE=str(root / "config/model_pricing.toml"),
+    )
+    database = configured_host / "journal.sqlite3"
+    saved = configured_host / "saved.db"
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "miniagent.cli.main",
+        "task",
+        "--trajectory",
+        cwd=source,
+        env=environment,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        assert await asyncio.to_thread(provider_endpoint.before_response.wait, 5)
+        with sqlite3.connect(database) as connection:
+            assert (
+                connection.execute(
+                    "SELECT COUNT(*) FROM run_events WHERE type='model_requested'"
+                ).fetchone()[0]
+                == 1
+            )
+            if fault == "export_storage":
+                connection.execute(
+                    "CREATE TRIGGER fail_response BEFORE INSERT ON run_events WHEN NEW.type='model_responded' BEGIN SELECT RAISE(ABORT, 'original commit fault'); END"
+                )
+        connection.close()
+        if fault == "export_storage":
+            artifact_root = configured_host / "artifacts"
+            artifact_root.mkdir(exist_ok=True)
+            (artifact_root / "staging").write_text("export staging unavailable")
+        else:
+            database.rename(saved)
+    finally:
+        provider_endpoint.release_response.set()
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), 10)
+        assert process.returncode == 1, stderr.decode()
+        assert b"Failed to persist run" in stderr
+        assert (
+            b"TRAJECTORY_EXPORT_FAILED"
+            if fault == "export_storage"
+            else b"TRAJECTORY_EXPORT_SKIPPED"
+        ) in stderr
+        assert b"Trajectory: " not in stdout
+        assert len(provider_endpoint.requests) == 1
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+        if saved.exists():
+            saved.rename(database)

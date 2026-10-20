@@ -88,6 +88,9 @@ async def run(args, channel) -> int:
         RUN_DATABASE_PATH=str(database),
         MODEL_PRICING_FILE=str(prices),
     )
+    os.environ.pop("EXPORT_TRAJECTORY", None)
+    if args.export_env_false:
+        os.environ["EXPORT_TRAJECTORY"] = "false"
 
     def log(name, value):
         with (root / name).open("a") as stream:
@@ -147,9 +150,7 @@ async def run(args, channel) -> int:
                     import shlex
                     import sys
 
-                    program = (
-                        f"import sys;sys.stdout.buffer.write(b'x'*{args.output_bytes})"
-                    )
+                    program = f"import sys;sys.stdout.buffer.write(b'x'*{args.output_bytes});sys.stderr.buffer.write(b'y'*{args.output_bytes})"
                     command = (
                         f"{shlex.quote(sys.executable)} -c {shlex.quote(program)}; "
                         + command
@@ -487,11 +488,14 @@ def main():
     parser.add_argument("--channel-fd", type=int, required=True)
     parser.add_argument("--label", default="initial")
     parser.add_argument("--run-id")
+    parser.add_argument("--export-env-false", action="store_true")
     parser.add_argument("--output-bytes", type=int, default=0)
     parser.add_argument("--trajectory-gate", choices=("encoding", "body", "manifest"))
     parser.add_argument("--before-response", action="store_true")
     parser.add_argument("--transaction-event")
-    parser.add_argument("--trajectory", action="store_true", default=None)
+    parser.add_argument(
+        "--trajectory", action=argparse.BooleanOptionalAction, default=None
+    )
     parser.add_argument("--gate-call", type=int, default=-1)
     parser.add_argument("--gate-finalization", action="store_true")
     parser.add_argument("--deadline-probe", action="store_true")

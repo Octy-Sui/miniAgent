@@ -118,9 +118,50 @@ def test_option_precedence_through_real_entrypoints(
         context = json.loads(
             connection.execute("SELECT recovery_context_json FROM runs").fetchone()[0]
         )
+        state = json.loads(
+            connection.execute("SELECT state_json FROM runs").fetchone()[0]
+        )
     assert context["application"]["payload"]["export_trajectory"] is expected
     assert ("Trajectory: " in result.stdout) is expected
     assert "TRAJECTORY_EXPORT_FAILED" not in result.stderr
+    if expected:
+        from urllib.parse import urlparse
+
+        manifests = [
+            json.loads(path.read_text())
+            for path in (configured_host / "artifacts/manifests").rglob("*.json")
+        ]
+        trajectory = next(
+            item for item in manifests if item["type"] == "run_trajectory"
+        )
+        document = json.loads(Path(urlparse(trajectory["uri"]).path).read_bytes())
+        projected, frozen = document["definition"], context["application"]["payload"]
+        assert projected["task"] == state["identity"]["task"]
+        assert projected["agent"] == state["definition"]["agent_spec"]
+        assert projected["tools"] == state["definition"]["tool_definitions"]
+        assert projected["budgets"] == state["definition"]["config"]
+        assert projected["model_limits"] == frozen["model_limits"]
+        assert projected["pricing"] == frozen["pricing"]
+        assert (
+            projected["provider_endpoint_identity"]
+            == frozen["provider"]["endpoint_identity"]
+        )
+        assert projected["workspace_kind"] == (
+            "docker" if entry == "trigger" else "local"
+        )
+        assert projected["base_revision"] == context["attachment"]["base_revision"]
+        assert projected["evaluator"] == frozen["evaluator"]["kind"]
+        if entry == "trigger":
+            evaluator = frozen["evaluator"]
+            assert projected["benchmark"] == {
+                "instance_id": "django__django-11477",
+                "task_digest": evaluator["record_sha256"],
+                "manifest_sha256": evaluator["manifest_sha256"],
+                "tasks_sha256": evaluator["tasks_sha256"],
+                "harness_version": "5.0.2",
+            }
+        else:
+            assert projected["benchmark"] is None
 
 
 @pytest.mark.parametrize("frozen", [False, True])

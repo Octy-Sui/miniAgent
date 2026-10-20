@@ -13,6 +13,8 @@ class ProviderEndpoint:
         default_factory=lambda: {"role": "assistant", "content": "done"}
     )
     requests: list[dict] = field(default_factory=list)
+    before_response: threading.Event | None = None
+    release_response: threading.Event | None = None
 
 
 @pytest.fixture
@@ -27,6 +29,11 @@ def provider_endpoint():
             endpoint.requests.append(
                 json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             )
+            if endpoint.before_response is not None:
+                endpoint.before_response.set()
+                assert endpoint.release_response is not None
+                if not endpoint.release_response.wait(10):
+                    raise TimeoutError("Provider response barrier was not released")
             body = json.dumps(
                 {
                     "id": "request",

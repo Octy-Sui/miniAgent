@@ -112,6 +112,12 @@ async def test_raw_size_boundaries_and_exact_final_observation(tmp_path, size):
         record.state.identity.run_id, step_number=1
     )
     assert queried[0].result == ended.result
+    snapshot = await SQLiteRunStore(tmp_path / "runs.db").load_latest(
+        record.state.identity.run_id
+    )
+    assert snapshot is not None
+    assert original.content not in snapshot.model_dump_json()
+    assert len(snapshot.model_dump_json().encode()) < size
 
 
 @pytest.mark.parametrize("variant", ["wrong_id", "wrong_code"])
@@ -362,3 +368,14 @@ async def test_raw_publication_obeys_late_cleanup_deadline(tmp_path, monkeypatch
     ):
         await run_return(tmp_path, sized_result(200000))
     assert not list((tmp_path / "artifacts").rglob("*.json"))
+
+
+async def test_allowed_tool_body_preserves_sensitive_looking_text(tmp_path):
+    sentinel = "api_key=synthetic-only; <thinking>ordinary tool text</thinking>"
+    original = ToolResult(
+        tool_call_id="call", status=ToolStatus.SUCCESS, content=sentinel
+    )
+    _, _, ended, _, _ = await run_return(tmp_path, original)
+    assert ended.raw_result.kind == "inline"
+    assert ended.raw_result.result.content == sentinel
+    assert ToolResult.model_validate_json(ended.observation.content).content == sentinel

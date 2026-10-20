@@ -32,9 +32,10 @@ async def application(tmp_path, monkeypatch, *, enabled=True, failed=False):
             agent=DEFAULT_AGENT,
             task="task",
             source_dir=create_source_repository(tmp_path / "source"),
+            trajectory=enabled,
         )
     )
-    return Application(replace(app.dependencies, export_trajectory=enabled))
+    return app
 
 
 @pytest.mark.parametrize("failed", [False, True])
@@ -364,3 +365,291 @@ async def test_total_budget_spans_all_manifest_pages(
     assert outcome.status == "failed"
     page = await deps.artifact_store.list_records_for_run(deps.run_id, limit=1000)
     assert not any(record.type == "run_trajectory" for record in page.records)
+
+
+@pytest.mark.parametrize("original", ["success", "failed", "exception"])
+@pytest.mark.parametrize("failure", ["storage", "timeout"])
+async def test_export_failure_preserves_all_original_outcomes(
+    tmp_path, monkeypatch, capsys, original, failure
+):
+    import os
+    import sqlite3
+    import time
+    from pathlib import Path
+
+    from miniagent.artifacts import ArtifactWrite
+    from miniagent.cli.rendering import print_trajectory_exception
+    from miniagent.runtime.recording import RunPersistenceError
+
+    app = await application(tmp_path, monkeypatch, failed=original == "failed")
+    await app.dependencies.artifact_store.put(
+        ArtifactWrite(run_id=app.dependencies.run_id, type="report"), b"report"
+    )
+    if original == "exception":
+        with sqlite3.connect(app.dependencies.run_store.path) as connection:
+            connection.execute(
+                "CREATE TRIGGER fail_original BEFORE INSERT ON run_events WHEN NEW.type='model_responded' BEGIN SELECT RAISE(ABORT, 'original failure'); END"
+            )
+    if failure == "storage":
+        original_replace = os.replace
+
+        def fail_manifest(source, target):
+            if (
+                str(target).endswith(".json")
+                and json.loads(Path(source).read_bytes()).get("type")
+                == "run_trajectory"
+            ):
+                raise OSError("export disk unavailable")
+            return original_replace(source, target)
+
+        monkeypatch.setattr(os, "replace", fail_manifest)
+    else:
+        app = Application(
+            replace(app.dependencies, artifact_collection_timeout_seconds=0.02)
+        )
+        read_text = Path.read_text
+        reads = [0]
+
+        def slow_export_catalog(path, *args, **kwargs):
+            if "manifests" in path.parts:
+                reads[0] += 1
+                # The exception path skips original finalization, so its first read is export.
+                if reads[0] >= (1 if original == "exception" else 2):
+                    time.sleep(0.05)
+            return read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", slow_export_catalog)
+    if original == "exception":
+        with pytest.raises(RunPersistenceError) as caught:
+            await app.run(CancellationToken())
+        print_trajectory_exception(caught.value)
+        assert "TRAJECTORY_EXPORT_FAILED" in capsys.readouterr().err
+        assert caught.value.__cause__ is not None
+    else:
+        result = await app.run(CancellationToken())
+        assert result.run_result.status == (
+            RunStatus.SUCCEEDED if original == "success" else RunStatus.FAILED
+        )
+        assert result.trajectory_export.status == "failed"
+        assert result.finalization_errors == ()
+    from miniagent.environments import LocalWorkspace
+
+    workspace = app.dependencies.workspace
+    assert isinstance(workspace, LocalWorkspace)
+    assert workspace.root.exists() == (original != "success")
+
+
+async def test_managed_execution_exception_exports_without_diagnostic_commands(
+    tmp_path, monkeypatch
+):
+    from datetime import UTC, datetime
+
+    import psutil
+
+    from miniagent.environments.managed_execution import ManagedExecutionError
+    from miniagent.models.protocol import ModelUsage
+    from miniagent.policy import ApprovalOutcome, ApprovalResolution
+    from tests.support.runtime.runtime import QueueProvider, tool_response
+
+    app = await application(tmp_path, monkeypatch)
+
+    class Human:
+        async def resolve(self, request, decision):
+            return ApprovalResolution(
+                approval_id=request.approval_id,
+                outcome=ApprovalOutcome.APPROVED,
+                actor_kind="human",
+                actor_id="fixture",
+                reason="owned command",
+                resolved_at=datetime.now(UTC),
+            )
+
+    provider = QueueProvider(
+        [
+            tool_response(
+                name="shell", arguments={"command": "printf should-not-run"}
+            ).model_copy(
+                update={
+                    "usage": ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2)
+                }
+            )
+        ]
+    )
+    app = Application(
+        replace(app.dependencies, provider=provider, approval_handler=Human())
+    )
+
+    def unavailable_birth_identity(self):
+        raise OSError("OS birth identity unavailable")
+
+    monkeypatch.setattr(psutil.Process, "create_time", unavailable_birth_identity)
+    with pytest.raises(ManagedExecutionError) as caught:
+        await app.run(CancellationToken())
+    assert any(note.startswith("Trajectory: ") for note in caught.value.__notes__)
+    events = await app.dependencies.run_store.list_events(app.dependencies.run_id)
+    assert not any(
+        event.type.value == "diagnostic_finalization_started" for event in events
+    )
+    assert len(provider.requests) == 1
+    from miniagent.environments import LocalWorkspace
+
+    workspace = app.dependencies.workspace
+    assert isinstance(workspace, LocalWorkspace)
+    assert workspace.root.exists()
+
+
+async def test_patch_interruption_exports_original_terminal_boundary(
+    tmp_path, monkeypatch
+):
+    import os
+
+    from miniagent.runtime import InterruptionToken
+
+    app = await application(tmp_path, monkeypatch)
+    (app.dependencies.workspace.root / "source.txt").write_text("changed\n")
+    token = InterruptionToken()
+    read = os.read
+    reached = [False]
+
+    def request_after_patch_bytes(fd, size):
+        content = read(fd, size)
+        if b"diff --git" in content and not reached[0]:
+            reached[0] = True
+            token.request(2)
+        return content
+
+    monkeypatch.setattr(os, "read", request_after_patch_bytes)
+    result = await app.run(CancellationToken(), interruption_token=token)
+    assert reached[0], "Patch receive barrier was not reached"
+    assert result.run_result.status == RunStatus.SUCCEEDED
+    assert any(
+        error.code == "FINALIZATION_INTERRUPTED" for error in result.finalization_errors
+    )
+    assert result.trajectory_export.status == "exported"
+    assert app.dependencies.workspace.root.exists()
+
+
+async def test_effective_definition_uses_frozen_values_after_ambient_config_changes(
+    tmp_path, monkeypatch
+):
+    from decimal import Decimal
+
+    from miniagent.agents import AgentSpec
+    from miniagent.cli import bootstrap as composition
+    from miniagent.cli.run_definition import (
+        freeze_application_definition,
+        parse_application_definition,
+    )
+    from miniagent.cli.trajectory import try_export_trajectory
+    from miniagent.models.config import GenerationOptions, ModelTarget
+    from miniagent.runtime.state import RunDefinition
+    from miniagent.storage import SQLiteRunStore
+    from miniagent.storage.run_lock import RunLock
+
+    configure_settings(tmp_path, monkeypatch)
+    limits, prices = tmp_path / "limits.toml", tmp_path / "prices.toml"
+    limits.write_text(
+        '[[models]]\nprovider="qwen"\nmodel="deepseek-v4-pro-0813"\ncontext_window_tokens=12345\nmax_output_tokens=2048\n'
+    )
+    prices.write_text(
+        '[[models]]\nprovider="qwen"\nmodel="deepseek-v4-pro-0813"\ninput_per_unit="3"\noutput_per_unit="7"\n'
+    )
+    monkeypatch.setenv("MODEL_LIMITS_FILE", str(limits))
+    monkeypatch.setenv("MODEL_PRICING_FILE", str(prices))
+    monkeypatch.setattr(
+        composition,
+        "build_provider",
+        lambda agent, settings: StaticProvider(FinishReason.STOP),
+    )
+    spec = AgentSpec(
+        name="frozen-agent",
+        system_prompt="frozen instruction",
+        model=ModelTarget(provider="qwen", model="deepseek-v4-pro-0813"),
+        generation=GenerationOptions(max_output_tokens=321, temperature=0.2),
+        allowed_tools=("shell",),
+    )
+    app = await bootstrap(
+        BootstrapConfig(
+            agent=spec,
+            task="frozen task",
+            source_dir=create_source_repository(tmp_path / "source"),
+            trajectory=True,
+        )
+    )
+    deps = app.dependencies
+    assert isinstance(deps.run_store, SQLiteRunStore)
+    assert deps.recovery_context.application is not None
+    old_definition = RunDefinition(
+        agent_spec=deps.agent,
+        config=deps.config,
+        tool_definitions=tuple(deps.tools.definitions(spec.allowed_tools)),
+        tool_contract_metadata=tuple(
+            deps.tools.contract_metadata(name) for name in spec.allowed_tools
+        ),
+    )
+    frozen = parse_application_definition(
+        deps.recovery_context.application, old_definition
+    )
+    config = deps.config.model_copy(
+        update={"max_steps": 17, "approval_timeout_seconds": 12}
+    )
+    new_definition = old_definition.model_copy(update={"config": config})
+    context = deps.recovery_context.model_copy(
+        update={"application": freeze_application_definition(frozen, new_definition)}
+    )
+    assert context.attachment is not None
+    app = Application(replace(deps, config=config, recovery_context=context))
+    with RunLock(deps.run_store.path, deps.run_id):
+        result = await app.run(CancellationToken())
+    assert result.trajectory_export.status == "exported"
+    monkeypatch.setenv(
+        "MODEL_LIMITS_FILE", str(tmp_path / "unavailable-current-limits")
+    )
+    monkeypatch.setenv(
+        "MODEL_PRICING_FILE", str(tmp_path / "unavailable-current-pricing")
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "forbidden-current-credential")
+    monkeypatch.setenv("EXPORT_TRAJECTORY", "false")
+    with RunLock(deps.run_store.path, deps.run_id):
+        outcome = await try_export_trajectory(
+            enabled=True,
+            run_id=deps.run_id,
+            run_store=deps.run_store,
+            artifact_store=deps.artifact_store,
+            definition=frozen,
+            timeout_seconds=30,
+            cleanup_deadline=None,
+        )
+    assert outcome.status == "exported"
+    content = await deps.artifact_store.read(outcome.ref)
+    projected = json.loads(content)["definition"]
+    assert projected["task"] == "frozen task"
+    assert projected["agent"]["name"] == "frozen-agent"
+    assert projected["agent"]["system_prompt"] == "frozen instruction"
+    assert projected["agent"]["model"] == {
+        "provider": "qwen",
+        "model": "deepseek-v4-pro-0813",
+    }
+    assert projected["agent"]["generation"]["max_output_tokens"] == 2048
+    assert projected["agent"]["generation"]["temperature"] == 0.2
+    assert projected["tools"][0]["name"] == "shell"
+    assert (
+        projected["tools"][0]["input_schema"]["properties"]["command"]["type"]
+        == "string"
+    )
+    assert projected["budgets"]["max_steps"] == 17
+    assert projected["budgets"]["approval_timeout_seconds"] == 12
+    assert projected["model_limits"] == {
+        "context_window_tokens": 12345,
+        "max_output_tokens": 2048,
+    }
+    assert Decimal(projected["pricing"]["models"][0]["input_per_token"]) == Decimal(
+        "0.000003"
+    )
+    assert Decimal(projected["pricing"]["models"][0]["output_per_token"]) == Decimal(
+        "0.000007"
+    )
+    assert projected["workspace_kind"] == "local"
+    assert projected["base_revision"] == context.attachment.base_revision
+    assert projected["evaluator"] == "pass_through" and projected["benchmark"] is None
+    assert b"forbidden-current-credential" not in content
