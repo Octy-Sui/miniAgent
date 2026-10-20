@@ -157,15 +157,33 @@ Do not flag stylistic preferences or unrelated minor improvements.
 
 ## Components
 
-Use these component names for scoped commits:
+Use these component names for scoped commits. Choose the component by the behavior being changed; the paths identify its usual implementation location.
 
-* `models` — model interfaces and providers such as litellm, anthropic, openai, portkey, and openrouter.
-* `agents` — agent classes such as default, interactive, and multimodal agents.
-* `env` — execution environments such as docker, local, singularity, bubblewrap, and swerex.
-* `config` — configuration files and configuration handling.
-* `run` — run scripts such as mini and hello_world.
-* `benchmarks` — benchmark runners such as swebench and inspector.
-* `cli` — CLI argument parsing and behavior.
-* `deps` — dependency maintenance.
+| Component | Responsibility | Main paths |
+| --- | --- | --- |
+| `runtime` | Step loop, Run lifecycle, interruption/resume, context compaction, journal orchestration, and tracing contracts | `src/miniagent/runtime/` |
+| `agents` | Agent specifications, default instructions, and model/tool selection | `src/miniagent/agents/` |
+| `models` | Provider-independent model interfaces, messages, and request/response contracts | `src/miniagent/models/` |
+| `providers` | Qwen/OpenAI-compatible API integration and provider protocol translation | `src/miniagent/providers/` |
+| `tools` | Tool contracts, registry, argument validation, execution adapters, and result rendering | `src/miniagent/tools/` |
+| `policy` | Tool permission decisions, rules, and approval contracts | `src/miniagent/policy/` |
+| `env` | Local/Docker Workspace lifecycle, execution supervision, attach, and patch export | `src/miniagent/environments/` |
+| `storage` | SQLite persistence, queries, migrations, transactions, and Run locks | `src/miniagent/storage/` |
+| `artifacts` | Artifact content storage, manifests, and publication contracts | `src/miniagent/artifacts/` |
+| `evaluation` | Independent evaluation, SWE-bench task data, harness execution, reports, and cleanup | `src/miniagent/evaluation/` |
+| `metering` | Usage accounting, model pricing, and cost calculation | `src/miniagent/metering/` |
+| `cli` | Command parsing, application composition, settings integration, signals, resume entrypoints, and delivery | `src/miniagent/cli/`, `trigger` |
+| `dashboard` | Read-only dashboard entrypoint, HTTP routes, projections, templates, and static assets | `src/miniagent/dashboard/` |
+| `config` | Repository configuration files, configuration formats, and loading/validation of those formats | `config/`, `src/miniagent/cli/model_limits.py` |
+| `deps` | Runtime, optional, build, and development dependency maintenance | `pyproject.toml`, `uv.lock` |
+
+Boundary rules:
+
+* Use `runtime` for Run behavior and `cli` for command entrypoints and application assembly. Use `evaluation` for SWE-bench behavior. Replace the old `run` and `benchmarks` scopes in new commits with the owning component; historical messages need no changes.
+* Use `models` for shared model contracts and `providers` for external API adaptation. Use `config` for configuration formats and loading, and `metering` for pricing and accounting behavior.
+* Use `dashboard` for its CLI entrypoint as well as its server and UI. Use `env` for Workspace execution and `evaluation` for evaluator-owned Docker harness execution and cleanup.
+* Tests that accompany a production change use that change's type and component. Test-only changes use `test:`, including cases under `tests/{ut,it,sit,e2e}/` and shared fixtures under `tests/support/`; test levels are not component names.
+* Development tools such as `coverage.py` and agent instructions use `dev:`; documentation uses `docs:`; CI configuration uses `ci:`. These retain the unscoped formats defined above.
+* Dependency-only changes use `chore(deps):`. A dependency update required by a feature or fix may be included in that change's commit; changing `pyproject.toml` alone does not determine the component.
 
 For changes spanning multiple components, use the component that best represents the intent of the change rather than listing multiple components. Split unrelated changes into separate commits when practical.
