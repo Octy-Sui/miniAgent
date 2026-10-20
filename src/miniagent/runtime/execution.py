@@ -668,6 +668,7 @@ class RunExecution:
                 finish_reason="error",
                 tool_call_count=0,
                 error_code=code,
+                cost_status="usage_missing",
             )
         )
         trace.end_model()

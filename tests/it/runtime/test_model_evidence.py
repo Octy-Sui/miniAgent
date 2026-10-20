@@ -346,3 +346,45 @@ async def test_accepted_tool_response_preserves_evidence_and_charges_once(
     assert result.usage.cost_usd == Decimal("0.000040")
     assert tool.executions == 1
     assert result.output == "done"
+
+
+@pytest.mark.parametrize("priced", [False, True])
+async def test_no_response_explains_missing_usage_without_fabricating_zero_usage(
+    tmp_path, runtime_persistence, priced
+):
+    from miniagent.models.protocol import ModelContextLimitError
+
+    store = runtime_persistence.store
+    pricing = (
+        PriceConfig(
+            models=[
+                ModelPrice(
+                    provider="test",
+                    model="test-model",
+                    input_per_token=Decimal("0.000001"),
+                    output_per_token=Decimal("0.000002"),
+                )
+            ]
+        )
+        if priced
+        else None
+    )
+    runtime = AgentRuntime(
+        provider=QueueProvider(
+            [ModelContextLimitError("context capacity unavailable")]
+        ),
+        tools=ToolRegistry([]),
+        run_store=store,
+        artifact_store=runtime_persistence.artifacts,
+        pricing=pricing,
+    )
+    result = await runtime.run(agent(), "task")
+    responded = next(
+        event.payload
+        for event in await store.list_events(result.run_id)
+        if isinstance(event.payload, ModelResponded)
+    )
+    assert responded.response is None and responded.normalization_failure is None
+    assert responded.request_cost is None
+    assert responded.cost_status == "usage_missing"
+    assert result.usage.unconfirmed_model_requests == 1
