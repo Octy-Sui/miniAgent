@@ -94,6 +94,7 @@ class SWEbenchDefinition(_Definition):
 
 
 class CLIApplicationDefinition(_Definition):
+    export_trajectory: bool = False
     schema_version: Literal[1] = 1
     pricing: PriceConfig
     pricing_sha256: Digest

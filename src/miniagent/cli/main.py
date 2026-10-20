@@ -20,6 +20,7 @@ from miniagent.cli.rendering import (
     print_application_result,
     print_resume_plan,
     print_resume_rejection,
+    print_trajectory_exception,
 )
 from miniagent.cli.resume import ResumeConfig, resume_application
 from miniagent.cli.settings import RunLocationSettings
@@ -95,9 +96,11 @@ async def main(
         typer.echo(str(exc)[:4096], err=True)
         raise typer.Exit(code=1) from None
     except RunPersistenceError as exc:
+        print_trajectory_exception(exc)
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from None
-    except ManagedExecutionError:
+    except ManagedExecutionError as exc:
+        print_trajectory_exception(exc)
         typer.echo(
             "WORKSPACE_BUSY: execution end is unconfirmed; original workspace retained",
             err=True,
@@ -174,6 +177,7 @@ async def _resume_main(config: ResumeConfig) -> None:
         )
         raise typer.Exit(code=1) from None
     except RunPersistenceError as exc:
+        print_trajectory_exception(exc)
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from None
     except _ForcedSignalCancellation as exc:
@@ -182,7 +186,8 @@ async def _resume_main(config: ResumeConfig) -> None:
         raise typer.Exit(code=_signal_exit_code(exc.received_signal)) from None
     except asyncio.CancelledError:
         raise typer.Exit(code=130) from None
-    except (OSError, ValueError, ManagedExecutionError):
+    except (OSError, ValueError, ManagedExecutionError) as exc:
+        print_trajectory_exception(exc)
         typer.echo(
             "WORKSPACE_UNAVAILABLE: recovery could not continue; original workspace retained",
             err=True,

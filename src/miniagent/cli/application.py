@@ -11,6 +11,13 @@ from miniagent.agents import AgentSpec
 from miniagent.artifacts import ArtifactNotFoundError, ArtifactRef, ArtifactStore
 from miniagent.cli.candidate_submission import CandidateSubmission, SubmissionResult
 from miniagent.cli.diagnostic_finalization import finalize_diagnostic
+from miniagent.cli.run_definition import parse_application_definition
+from miniagent.cli.trajectory import (
+    TrajectoryDisabled,
+    TrajectoryExportOutcome,
+    TrajectorySkipped,
+    try_export_trajectory,
+)
 from miniagent.environments import Workspace
 from miniagent.environments.managed_execution import (
     ManagedExecutionError,
@@ -54,6 +61,7 @@ class FinalizationError(BaseModel):
 class ApplicationResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    trajectory_export: TrajectoryExportOutcome = TrajectoryDisabled()
     run_result: RunResult | RunSuspension
     artifacts: tuple[ArtifactRef, ...] = ()
     finalization_errors: tuple[FinalizationError, ...] = ()
@@ -77,6 +85,7 @@ class ApplicationDependencies:
     evaluator: Evaluator = field(default_factory=PassThroughEvaluator)
     candidate_submission: CandidateSubmission | None = None
     artifact_collection_timeout_seconds: float = 30.0
+    export_trajectory: bool = False
 
 
 class Application:
@@ -123,6 +132,26 @@ class Application:
             )
 
     async def _execute(
+        self,
+        cancellation_token: CancellationToken,
+        *,
+        interruption_token: InterruptionToken | None = None,
+        on_record_created: Callable[[RunRecord], None] | None = None,
+        record: RunRecord | None = None,
+    ) -> ApplicationResult:
+        try:
+            return await self._execute_run(
+                cancellation_token,
+                interruption_token=interruption_token,
+                on_record_created=on_record_created,
+                record=record,
+            )
+        except BaseException as exc:
+            outcome = await self._export_trajectory(interruption_token)
+            self._note_export(exc, outcome)
+            raise
+
+    async def _execute_run(
         self,
         cancellation_token: CancellationToken,
         *,
@@ -183,7 +212,9 @@ class Application:
                         message="Finalization interrupted; original workspace retained",
                     )
                 )
+                outcome = await self._export_trajectory(interruption_token)
                 return ApplicationResult(
+                    trajectory_export=outcome,
                     run_result=run_result,
                     artifacts=tuple(artifacts),
                     finalization_errors=tuple(errors),
@@ -192,8 +223,10 @@ class Application:
             artifacts, errors = await self._finalize_patch(
                 deadline=interruption_token.deadline if interruption_token else None
             )
+        outcome = await self._export_trajectory(interruption_token)
         if isinstance(run_result, RunSuspension):
             return ApplicationResult(
+                trajectory_export=outcome,
                 run_result=run_result,
                 artifacts=tuple(artifacts),
                 finalization_errors=tuple(errors),
@@ -210,9 +243,47 @@ class Application:
                     )
                 )
         return ApplicationResult(
+            trajectory_export=outcome,
             run_result=run_result,
             artifacts=tuple(artifacts),
             finalization_errors=tuple(errors),
+        )
+
+    @staticmethod
+    def _note_export(exc: BaseException, outcome: TrajectoryExportOutcome) -> None:
+        if outcome.status == "exported":
+            exc.add_note(f"Trajectory: {outcome.ref.uri}")
+        elif outcome.status == "failed":
+            exc.add_note(
+                f"Trajectory export failed [{outcome.code}]: {outcome.message}"
+            )
+        elif outcome.status == "skipped":
+            exc.add_note(f"Trajectory export skipped: {outcome.reason}")
+
+    async def _export_trajectory(
+        self, token: InterruptionToken | None
+    ) -> TrajectoryExportOutcome:
+        deps = self.dependencies
+        if not deps.export_trajectory:
+            return TrajectoryDisabled()
+        envelope = deps.recovery_context.application
+        if envelope is None:
+            return TrajectorySkipped(reason="Frozen application definition unavailable")
+        try:
+            record = await deps.run_store.get(deps.run_id)
+            definition = parse_application_definition(envelope, record.state.definition)
+        except Exception as exc:  # noqa: BLE001 -- Export failures cannot replace the Run outcome.
+            return TrajectorySkipped(
+                reason=f"Frozen boundary unavailable: {type(exc).__name__}: {exc}"
+            )
+        return await try_export_trajectory(
+            enabled=True,
+            run_id=deps.run_id,
+            run_store=deps.run_store,
+            artifact_store=deps.artifact_store,
+            definition=definition,
+            timeout_seconds=deps.artifact_collection_timeout_seconds,
+            cleanup_deadline=token.deadline if token else None,
         )
 
     async def _finalize_patch(
@@ -264,10 +335,23 @@ class Application:
         )
         try:
             async with asyncio.timeout_at(deadline):
-                records = await self.dependencies.artifact_store.list_for_run(
-                    self.dependencies.run_id
-                )
-            refs = {record.artifact_id: record.reference() for record in records}
+                refs: dict[UUID, ArtifactRef] = {}
+                cursor = None
+                while True:
+                    page = await self.dependencies.artifact_store.list_records_for_run(
+                        self.dependencies.run_id, cursor=cursor, limit=100
+                    )
+                    refs.update(
+                        (record.artifact_id, record.reference())
+                        for record in page.records
+                    )
+                    if page.next_cursor is None:
+                        break
+                    cursor = page.next_cursor
+                if submission.patch_ref is not None:
+                    await self.dependencies.artifact_store.get_record(
+                        submission.patch_ref
+                    )
             if (
                 submission.patch_ref is not None
                 and refs.get(submission.patch_ref.artifact_id) != submission.patch_ref

@@ -25,6 +25,7 @@ from miniagent.cli.run_definition import (
     parse_application_definition,
 )
 from miniagent.cli.settings import load_provider_credentials
+from miniagent.cli.trajectory import try_export_trajectory
 from miniagent.environments import (
     DockerWorkspace,
     DockerWorkspaceBackend,
@@ -791,7 +792,16 @@ async def resume_application(
             suspended = await execution.suspend(
                 interruption_token.interruption, deadline=interruption_token.deadline
             )
-            return ApplicationResult(run_result=suspended)
+            outcome = await try_export_trajectory(
+                enabled=inspected.definition.export_trajectory,
+                run_id=config.run_id,
+                run_store=store,
+                artifact_store=FileArtifactStore(inspected.definition.artifact_root),
+                definition=inspected.definition,
+                timeout_seconds=inspected.definition.artifact_collection_timeout_seconds,
+                cleanup_deadline=interruption_token.deadline,
+            )
+            return ApplicationResult(run_result=suspended, trajectory_export=outcome)
         return await application.resume(
             completed.record, cancellation_token, interruption_token=interruption_token
         )
