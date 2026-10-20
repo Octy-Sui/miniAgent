@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from miniagent.artifacts.contracts import (
     ArtifactNotFoundError,
     ArtifactRecord,
+    ArtifactRecordPage,
     ArtifactRef,
     ArtifactWrite,
 )
@@ -61,6 +62,46 @@ class FileArtifactStore:
             )
         await asyncio.to_thread(self._validate_content, record)
         return record
+
+    async def list_records_for_run(
+        self, run_id: UUID, *, cursor: str | None = None, limit: int = 100
+    ) -> ArtifactRecordPage:
+        if limit <= 0:
+            raise ValueError("Artifact page limit must be positive")
+        after = ""
+        if cursor is not None:
+            parts = cursor.split(":")
+            if len(parts) != 2 or parts[0] != run_id.hex:
+                raise ValueError("Invalid artifact cursor")
+            try:
+                artifact_id = UUID(parts[1])
+            except ValueError as exc:
+                raise ValueError("Invalid artifact cursor") from exc
+            if parts[1] != str(artifact_id):
+                raise ValueError("Invalid artifact cursor")
+            after = f"{artifact_id}.json"
+        directory = self.manifest_root / run_id.hex
+        paths = await asyncio.to_thread(
+            lambda: sorted(
+                path for path in directory.glob("*.json") if path.name > after
+            )
+        )
+        records = []
+        for path in paths[:limit]:
+            record = await asyncio.to_thread(self._load_manifest, path)
+            if record.run_id != run_id or path.name != f"{record.artifact_id}.json":
+                raise ArtifactNotFoundError(
+                    "Artifact manifest is outside its recorded run"
+                )
+            records.append(record)
+        return ArtifactRecordPage(
+            records=tuple(records),
+            next_cursor=(
+                f"{run_id.hex}:{records[-1].artifact_id}"
+                if len(paths) > limit
+                else None
+            ),
+        )
 
     async def list_for_run(self, run_id: UUID) -> list[ArtifactRecord]:
         directory = self.manifest_root / run_id.hex

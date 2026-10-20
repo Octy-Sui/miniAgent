@@ -61,7 +61,18 @@ class ArtifactRecord(BaseModel):
         )
 
 
+class ArtifactRecordPage(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    records: tuple[ArtifactRecord, ...]
+    next_cursor: str | None = None
+
+
 class ArtifactStore(Protocol):
+    async def list_records_for_run(
+        self, run_id: UUID, *, cursor: str | None = None, limit: int = 100
+    ) -> ArtifactRecordPage: ...
+
     async def open_writer(
         self, request: ArtifactWrite, *, deadline: float | None = None
     ) -> "ArtifactWriter": ...
