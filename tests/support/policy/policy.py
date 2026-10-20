@@ -9,6 +9,7 @@ from miniagent.models.protocol import (
     ModelProvider,
     ModelRequest,
     ModelResponse,
+    ModelUsage,
 )
 from miniagent.policy import (
     ApprovalOutcome,
@@ -109,6 +110,7 @@ def shell_response() -> ModelResponse:
             ],
         ),
         finish_reason=FinishReason.TOOL_CALL,
+        usage=ModelUsage(input_tokens=10, output_tokens=5, total_tokens=15),
     )
 
 
@@ -116,6 +118,7 @@ def final_response() -> ModelResponse:
     return ModelResponse(
         message=AssistantMessage(content="done"),
         finish_reason=FinishReason.STOP,
+        usage=ModelUsage(input_tokens=10, output_tokens=5, total_tokens=15),
     )
 
 

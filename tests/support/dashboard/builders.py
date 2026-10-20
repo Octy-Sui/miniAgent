@@ -203,7 +203,9 @@ def memory_example(
             ),
         )
 
-    a, b, c = attempt(1, "0.10"), attempt(2, "0.20"), attempt(1, "0.40")
+    a = attempt(1, "0.10").model_copy(update={"attempt_id": UUID(int=21)})
+    b = attempt(2, "0.20").model_copy(update={"attempt_id": UUID(int=22)})
+    c = attempt(1, "0.40").model_copy(update={"attempt_id": UUID(int=81)})
     events = []
     for version, sequence, source, new, covered, steps, attempts in [
         (1, 40, 1, 2, (2, 3), (1,), (a, b)),
