@@ -202,9 +202,11 @@ class StoreBoundary:
         )
 
     async def list_tool_results(
-        self, run_id: UUID, *, step_number: int
+        self, run_id: UUID, *, step_number: int, through_sequence: int | None = None
     ) -> list[ToolResultFact]:
-        return await self.store.list_tool_results(run_id, step_number=step_number)
+        return await self.store.list_tool_results(
+            run_id, step_number=step_number, through_sequence=through_sequence
+        )
 
     async def get_approval(self, approval_id: UUID) -> StoredApproval:
         return await self.store.get_approval(approval_id)

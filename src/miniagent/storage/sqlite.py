@@ -10,6 +10,8 @@ from time import monotonic, sleep
 from typing import TypeVar
 from uuid import UUID, uuid4
 
+from pydantic import ValidationError
+
 from miniagent.environments.managed_execution import current_cleanup_deadline
 from miniagent.policy import ApprovalOutcome, ApprovalResolution, PolicyRequest
 from miniagent.runtime.events import (
@@ -52,6 +54,7 @@ from miniagent.storage.codecs import (
     decode_run,
     decode_snapshot,
     encode_artifacts,
+    require_supported_version,
 )
 from miniagent.storage.codecs import (
     encode_datetime as _timestamp,
@@ -73,7 +76,11 @@ from miniagent.storage.queries.approvals import (
 from miniagent.storage.queries.approvals import (
     resolve_approval as resolve_approval_row,
 )
-from miniagent.storage.queries.events import insert_event, select_events
+from miniagent.storage.queries.events import (
+    insert_event,
+    select_events,
+    select_tool_results,
+)
 from miniagent.storage.queries.runs import (
     insert_run,
     latest_positions,
@@ -235,8 +242,10 @@ class SQLiteRunStore:
         return await self._in_thread(self._list_pending_approvals_sync)
 
     async def list_tool_results(
-        self, run_id: UUID, *, step_number: int
+        self, run_id: UUID, *, step_number: int, through_sequence: int | None = None
     ) -> list[ToolResultFact]:
+        if through_sequence is not None and through_sequence < 0:
+            raise ValueError("through_sequence must be non-negative")
         if step_number < 1:
             raise ValueError("step_number must be positive")
 
@@ -244,7 +253,33 @@ class SQLiteRunStore:
             with closing(self._connect()) as connection:
                 connection.execute("BEGIN")
                 record = self._get_record(connection, run_id)
-                execution = record.state.execution
+                latest = connection.execute(
+                    "SELECT MAX(sequence) FROM run_events WHERE run_id=?",
+                    (str(run_id),),
+                ).fetchone()[0]
+                if latest is not None and latest > record.last_event_sequence:
+                    raise CorruptStoredDataError(
+                        "Tool result history exceeds committed Run boundary"
+                    )
+                boundary = (
+                    record.last_event_sequence
+                    if through_sequence is None
+                    else through_sequence
+                )
+                if boundary > record.last_event_sequence:
+                    raise ValueError("Tool result boundary is beyond committed history")
+                state = record.state
+                if boundary < record.last_event_sequence:
+                    snapshot_row = connection.execute(
+                        "SELECT * FROM run_snapshots WHERE run_id=? AND event_sequence=? ORDER BY version DESC LIMIT 1",
+                        (str(run_id), boundary),
+                    ).fetchone()
+                    if snapshot_row is None:
+                        raise CorruptStoredDataError(
+                            "Tool result boundary state is unavailable"
+                        )
+                    state = decode_snapshot(snapshot_row).state
+                execution = state.execution
                 if (
                     execution.current_step is not None
                     and execution.current_step.step_number == step_number
@@ -256,7 +291,7 @@ class SQLiteRunStore:
                     completed = next(
                         (
                             step
-                            for step in record.state.conversation.completed_steps
+                            for step in state.conversation.completed_steps
                             if step.step_number == step_number
                         ),
                         None,
@@ -265,7 +300,7 @@ class SQLiteRunStore:
                         raise CorruptStoredDataError(
                             "Tool result batch scope is unavailable"
                         )
-                    messages = record.state.conversation.messages[
+                    messages = state.conversation.messages[
                         completed.message_start : completed.message_end
                     ]
                     calls = next(
@@ -278,17 +313,23 @@ class SQLiteRunStore:
                     )
                     expected_count = len(calls)
                 facts = []
-                for row in select_events(
-                    connection, run_id, after_sequence=0, limit=None
+                for row in select_tool_results(
+                    connection,
+                    run_id,
+                    step_number=step_number,
+                    through_sequence=boundary,
                 ):
-                    event = decode_event(row)
-                    payload = event.payload
-                    if (
-                        event.step_number != step_number
-                        or not isinstance(payload, ToolEnded)
-                        or payload.result is None
-                    ):
-                        continue
+                    require_supported_version("event", row["schema_version"])
+                    try:
+                        payload = ToolEnded.model_validate_json(
+                            row["effective_payload"]
+                        )
+                    except ValidationError as exc:
+                        raise CorruptStoredDataError(
+                            "Invalid stored effective tool result"
+                        ) from exc
+                    if payload.result is None:
+                        raise CorruptStoredDataError("Tool result is missing")
                     if (
                         payload.call_index >= expected_count
                         or payload.tool_call_id != calls[payload.call_index].id
@@ -303,7 +344,7 @@ class SQLiteRunStore:
                             call_index=payload.call_index,
                             tool_call_id=payload.tool_call_id,
                             result=payload.result,
-                            event_sequence=event.sequence,
+                            event_sequence=row["sequence"],
                         )
                     )
                 if sorted(fact.call_index for fact in facts) != list(
@@ -320,42 +361,48 @@ class SQLiteRunStore:
         def read() -> list[StoredApproval]:
             with closing(self._connect()) as connection:
                 connection.execute("BEGIN")
-                self._get_record(connection, run_id)
+                record = self._get_record(connection, run_id)
                 approvals = [
                     decode_approval(row)
                     for row in select_uninvalidated_approvals(connection, run_id)
                 ]
-                executions = [
-                    decode_event(row)
-                    for row in select_events(
-                        connection, run_id, after_sequence=0, limit=None
-                    )
-                ]
-                return [
-                    stored
-                    for stored in approvals
-                    if not any(
-                        isinstance(event.payload, ToolExecutionStarted)
-                        and event.sequence
-                        > next(
-                            (
-                                request_event.sequence
-                                for request_event in executions
-                                if request_event.event_id == stored.request_event_id
-                            ),
-                            0,
+                unconsumed = []
+                for stored in approvals:
+                    request = stored.approval.decision.request
+                    request_row = connection.execute(
+                        "SELECT sequence FROM run_events WHERE run_id=? AND event_id=?",
+                        (str(run_id), str(stored.request_event_id)),
+                    ).fetchone()
+                    request_sequence = request_row[0] if request_row is not None else 0
+                    consumed = False
+                    cursor = request_sequence
+                    while not consumed:
+                        rows = select_events(
+                            connection,
+                            run_id,
+                            after_sequence=cursor,
+                            limit=16,
+                            types=(RunEventType.TOOL_EXECUTION_START,),
+                            through_sequence=record.last_event_sequence,
                         )
-                        and event.step_number
-                        == stored.approval.decision.request.step_number
-                        and event.payload.call_index
-                        == stored.approval.decision.request.call_index
-                        and event.payload.tool_call_id
-                        == stored.approval.decision.request.tool_call_id
-                        and event.payload.tool_name
-                        == stored.approval.decision.request.tool_name
-                        for event in executions
-                    )
-                ]
+                        if not rows:
+                            break
+                        for row in rows:
+                            event = decode_event(row)
+                            cursor = event.sequence
+                            payload = event.payload
+                            assert isinstance(payload, ToolExecutionStarted)
+                            if (
+                                event.step_number == request.step_number
+                                and payload.call_index == request.call_index
+                                and payload.tool_call_id == request.tool_call_id
+                                and payload.tool_name == request.tool_name
+                            ):
+                                consumed = True
+                                break
+                    if not consumed:
+                        unconsumed.append(stored)
+                return unconsumed
 
         return await self._in_thread(read)
 

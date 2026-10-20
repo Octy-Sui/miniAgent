@@ -101,6 +101,7 @@ def _read_events(
 ) -> EventBatch:
     if not 1 <= limit <= 200 or not 0 <= after_sequence <= boundary.as_of_sequence:
         raise ReadFailure(422, "event_range_invalid")
+    limit = min(limit, 16)
     conditions, values = _event_conditions(filters)
     rows = connection.execute(
         f"SELECT {_EVENT_COLUMNS} FROM run_events WHERE run_id=? AND sequence>? AND sequence<=? AND {conditions} ORDER BY sequence LIMIT ?",
@@ -207,7 +208,7 @@ def read_tool_facts(
     return ToolFacts(tuple(events), counts, tuple(issues))
 
 
-_PAYLOAD = "CASE WHEN json_valid(payload_json) AND length(CAST(payload_json AS BLOB))<=1048576 THEN payload_json ELSE '{}' END"
+_PAYLOAD = "CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END"
 _TOOL_TYPES = (
     "tool_start",
     "tool_end",

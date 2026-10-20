@@ -133,7 +133,9 @@ async def _inspect(config: ResumeConfig) -> _Inspection | ResumeRejection:
         results = (
             tuple(
                 await store.list_tool_results(
-                    config.run_id, step_number=step.step_number
+                    config.run_id,
+                    step_number=step.step_number,
+                    through_sequence=record.last_event_sequence,
                 )
             )
             if step and record.state.execution.tool_batch is not None
