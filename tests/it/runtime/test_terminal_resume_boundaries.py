@@ -6,7 +6,7 @@ import pytest
 
 from miniagent.metering.pricing import ModelPrice, PriceConfig
 from miniagent.models.messages import AssistantMessage
-from miniagent.models.protocol import FinishReason, ModelResponse
+from miniagent.models.protocol import FinishReason, ModelResponse, ModelUsage
 from miniagent.runtime import AgentRuntime, RunStatus, RuntimeConfig, TerminationReason
 from miniagent.runtime.events import RunEventType
 from miniagent.runtime.execution import RunExecution
@@ -26,6 +26,7 @@ from tests.support.runtime.runtime import (
 )
 from tests.support.runtime.runtime_resume import completed_protocol
 from tests.support.runtime.tool_batch_resume import LineTool
+from tests.support.trajectory.fixtures import request_for
 
 
 async def reopen(store, tools):
@@ -63,6 +64,7 @@ async def test_failed_step_stop_survives_lost_completion_ack(tmp_path):
             )
         ),
         finish_reason=FinishReason.TOOL_CALL,
+        usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
     runtime = AgentRuntime(
         provider=QueueProvider([response]),
@@ -88,7 +90,9 @@ async def test_fatal_model_failure_survives_lost_closure_ack(tmp_path, failure):
     boundary = StoreBoundary(
         store,
         action="applied_then_error",
-        event_type=RunEventType.OPERATION_INTERRUPTED,
+        event_type=RunEventType.OPERATION_INTERRUPTED
+        if failure == "provider_exception"
+        else RunEventType.MODEL_RESPONDED,
     )
     prices = (
         PriceConfig(
@@ -107,7 +111,7 @@ async def test_fatal_model_failure_survives_lost_closure_ack(tmp_path, failure):
     response = (
         RuntimeError("offline")
         if failure == "provider_exception"
-        else final_response("unpriced")
+        else final_response("unpriced").model_copy(update={"usage": None})
     )
     runtime = AgentRuntime(
         provider=QueueProvider([response]),
@@ -137,7 +141,9 @@ async def test_exhausted_context_retry_survives_confirmed_failure_reopen(tmp_pat
     # Publish a summary and consume the original single business retry.
     runtime.provider = QueueProvider([summary_response()])
     await runtime._prepare_request(execution, force=True)
-    await execution.begin_model_retry(context_retry=True)
+    await execution.begin_model_retry(
+        context_retry=True, request=request_for(execution.state)
+    )
     record = await store.get(execution.state.identity.run_id)
     execution = RunExecution.attach(
         record, RunJournal.attach(RunRecorder.attach(boundary, record), [])

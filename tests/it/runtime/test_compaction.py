@@ -5,6 +5,7 @@ from uuid import uuid4
 import pytest
 
 from miniagent.models.messages import AssistantMessage
+from miniagent.models.protocol import ModelUsage
 from miniagent.runtime.context import validate_compaction_record
 from miniagent.runtime.execution import ContinueRun
 from miniagent.runtime.journal import RunJournal
@@ -109,7 +110,9 @@ async def test_normal_append_preserves_context_progress(tmp_path) -> None:
     advanced = accept_model_response(
         state,
         ModelResponse(
-            message=AssistantMessage(content="next"), finish_reason=FinishReason.STOP
+            message=AssistantMessage(content="next"),
+            finish_reason=FinishReason.STOP,
+            usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
         ),
         None,
         disposition=CandidateDisposition(text="next"),
@@ -267,6 +270,7 @@ async def test_compaction_continues_same_run_before_business_step(tmp_path) -> N
             tool_calls=(ToolCall(id="reused", name="ok", arguments={}),)
         ),
         finish_reason=FinishReason.TOOL_CALL,
+        usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
     provider = QueueProvider(
         [tool_response] * 4
@@ -275,6 +279,7 @@ async def test_compaction_continues_same_run_before_business_step(tmp_path) -> N
             ModelResponse(
                 message=AssistantMessage(content="done"),
                 finish_reason=FinishReason.STOP,
+                usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
             ),
         ]
     )
@@ -400,7 +405,9 @@ async def test_context_limit_retries_same_step_once(tmp_path, second_rejects) ->
         ModelContextLimitError("again")
         if second_rejects
         else ModelResponse(
-            message=AssistantMessage(content="done"), finish_reason=FinishReason.STOP
+            message=AssistantMessage(content="done"),
+            finish_reason=FinishReason.STOP,
+            usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
         ),
     ]
     outcome = await runtime._request_model(

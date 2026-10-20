@@ -79,11 +79,11 @@ async def run(mode: str, root: Path) -> int:
     boundary.setattr(composition, "build_provider", provider)
 
     class GateArtifacts(FileArtifactStore):
-        async def put(self, request, content):
+        async def put(self, request, content, *, deadline=None):
             if mode == "finalization":
                 ready()
                 await asyncio.Event().wait()
-            return await super().put(request, content)
+            return await super().put(request, content, deadline=deadline)
 
     boundary.setattr(composition, "FileArtifactStore", GateArtifacts)
 

@@ -24,6 +24,7 @@ from miniagent.runtime.recording import RunPersistenceError, RunRecorder
 from miniagent.storage import SQLiteRunStore
 from tests.support.resume_helpers import StoreBoundary
 from tests.support.runtime.runtime import agent, final_response
+from tests.support.trajectory.fixtures import request_for
 
 
 async def scope_for(evaluator, request, tmp_path):
@@ -46,7 +47,9 @@ async def scope_for(evaluator, request, tmp_path):
             RunRecorder(run_id=request.run_id, store=store, recovery_context=None)
         ),
     )
-    await execution.begin_step(provider="test", model="test-model")
+    await execution.begin_step(
+        provider="test", model="test-model", request=request_for(execution.state)
+    )
     await execution.record_model_response(
         final_response(request.candidate.text),
         None,

@@ -44,12 +44,18 @@ length(CAST(payload_json AS BLOB)) AS payload_bytes,length(CAST(artifacts_json A
 
 
 def _load_event(
-    connection: sqlite3.Connection, row: sqlite3.Row, budget: ReadBudget
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+    budget: ReadBudget,
+    *,
+    load_body: bool = True,
 ) -> StoredEvent:
     budget.check()
     event = None
     issues: list[ReadIssue] = []
-    if max(
+    if not load_body:
+        issues.append(ReadIssue("not_loaded", "本页正文数量超过读取上限"))
+    elif max(
         row["payload_bytes"], row["artifacts_bytes"]
     ) > LIMITS.event_bytes or not budget.reserve(
         row["payload_bytes"] + row["artifacts_bytes"]
@@ -101,7 +107,6 @@ def _read_events(
 ) -> EventBatch:
     if not 1 <= limit <= 200 or not 0 <= after_sequence <= boundary.as_of_sequence:
         raise ReadFailure(422, "event_range_invalid")
-    limit = min(limit, 16)
     conditions, values = _event_conditions(filters)
     rows = connection.execute(
         f"SELECT {_EVENT_COLUMNS} FROM run_events WHERE run_id=? AND sequence>? AND sequence<=? AND {conditions} ORDER BY sequence LIMIT ?",
@@ -113,7 +118,10 @@ def _read_events(
             limit + 1,
         ),
     ).fetchall()
-    items = tuple(_load_event(connection, row, budget) for row in rows[:limit])
+    items = tuple(
+        _load_event(connection, row, budget, load_body=index < 16)
+        for index, row in enumerate(rows[:limit])
+    )
     return EventBatch(items, items[-1].sequence if len(rows) > limit else None)
 
 

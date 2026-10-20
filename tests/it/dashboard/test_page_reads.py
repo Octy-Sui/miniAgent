@@ -9,6 +9,7 @@ from miniagent.dashboard.parameters import EventFilters
 from miniagent.dashboard.queries.events import read_events
 from miniagent.dashboard.queries.runs import read_run_page
 from miniagent.dashboard.reads import ReadBudget
+from miniagent.models.protocol import ModelRequest
 from miniagent.runtime.events import (
     EvaluationCompleted,
     ModelRequested,
@@ -204,7 +205,9 @@ async def test_actual_returned_structured_bytes_never_exceed_request_budget(
     from uuid import UUID
 
     run_id = await make_run(database, 1)
-    payload = ModelRequested(provider="test", model="")
+    payload = ModelRequested(
+        provider="test", model="", request=ModelRequest(model="", messages=())
+    )
     payload = payload.model_copy(
         update={"model": "x" * (1048576 - len(payload.model_dump_json().encode()))}
     )
@@ -231,8 +234,6 @@ async def test_actual_returned_structured_bytes_never_exceed_request_budget(
         connect=connect,
     )
     assert len(page.events.items) == 65
-    assert sum(item.event is not None for item in page.events.items) == 63
+    assert sum(item.event is not None for item in page.events.items) == 16
     assert observed[0].structured_bytes <= 67108864
-    assert "read_limit_exceeded" in {
-        issue.code for issue in page.events.items[-1].issues
-    }
+    assert "not_loaded" in {issue.code for issue in page.events.items[-1].issues}

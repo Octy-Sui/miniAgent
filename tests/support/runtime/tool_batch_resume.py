@@ -21,6 +21,7 @@ from miniagent.tools.contracts import (
     ToolStatus,
 )
 from tests.support.runtime.runtime import agent
+from tests.support.trajectory.fixtures import request_for
 
 
 class LineArguments(ToolArguments):
@@ -57,7 +58,9 @@ class LineTool(Tool[LineArguments]):
 
 
 async def accept(execution, calls):
-    await execution.begin_step(provider="test", model="test-model")
+    await execution.begin_step(
+        provider="test", model="test-model", request=request_for(execution.state)
+    )
     await execution.record_model_response(
         ModelResponse(
             message=AssistantMessage(tool_calls=tuple(calls)),

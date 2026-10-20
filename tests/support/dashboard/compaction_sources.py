@@ -2,11 +2,12 @@ import json
 from dataclasses import replace
 from hashlib import sha256
 from importlib.resources import files
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from jinja2 import Environment
 
 from miniagent.models.messages import AssistantMessage
+from miniagent.models.protocol import ModelRequest
 from miniagent.runtime.context import VerifiedEvidence
 from tests.support.dashboard.builders import memory_example
 
@@ -216,6 +217,8 @@ def chain_example(count: int):
             attempt=1,
             source_snapshot_version=2 * n - 1,
             covered_messages=(2, end),
+            request=ModelRequest(model="test", messages=()),
+            attempt_id=uuid4(),
         )
         completed = template_event.payload.model_copy(
             update={

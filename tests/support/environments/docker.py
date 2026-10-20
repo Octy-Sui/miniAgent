@@ -12,7 +12,9 @@ from miniagent.environments.docker import DockerCommandResult
 
 
 class UnusedArtifactStore(ArtifactStore):
-    async def put(self, request: ArtifactWrite, content: bytes) -> ArtifactRef:
+    async def put(
+        self, request: ArtifactWrite, content: bytes, *, deadline: float | None = None
+    ) -> ArtifactRef:
         raise AssertionError("Artifact store should not be used")
 
     async def read(self, ref: ArtifactRef) -> bytes:

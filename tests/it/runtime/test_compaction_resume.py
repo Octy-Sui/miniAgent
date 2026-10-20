@@ -6,6 +6,7 @@ from miniagent.models.protocol import (
     ModelContextLimitError,
     ModelProviderError,
     ModelResponse,
+    ModelUsage,
 )
 from miniagent.runtime.events import (
     CompactionCompleted,
@@ -18,6 +19,7 @@ from tests.support.runtime.compaction import PipelineEstimator
 from tests.support.runtime.compaction_resume import failed_summary
 from tests.support.runtime.context import summary_response
 from tests.support.runtime.runtime import QueueProvider
+from tests.support.trajectory.fixtures import request_for
 
 
 @pytest.mark.parametrize(("used", "expected_count"), [(0, 2), (1, 1), (2, 0)])
@@ -30,6 +32,7 @@ async def test_summary_retry_balance_is_exact(tmp_path, used, expected_count):
             ModelResponse(
                 message=AssistantMessage(content="candidate"),
                 finish_reason=FinishReason.STOP,
+                usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
             ),
         ]
         if used < 2
@@ -67,6 +70,7 @@ async def test_business_context_retry_is_not_refreshed(tmp_path, reject_again):
             else ModelResponse(
                 message=AssistantMessage(content="candidate"),
                 finish_reason=FinishReason.STOP,
+                usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
             ),
         ]
     )
@@ -91,7 +95,9 @@ async def test_published_summary_and_business_retry_survive_reopen(
     runtime.provider = QueueProvider([summary_response()])
     await runtime._prepare_request(execution, force=True)
     if authorized:
-        await execution.begin_model_retry(context_retry=True)
+        await execution.begin_model_retry(
+            context_retry=True, request=request_for(execution.state)
+        )
     record = await store.get(execution.state.identity.run_id)
     execution = RunExecution.attach(
         record, RunJournal.attach(RunRecorder.attach(store, record), [])

@@ -30,6 +30,7 @@ from miniagent.models.protocol import (
     ModelProvider,
     ModelProviderError,
     ModelRequest,
+    ModelResponseNormalizationError,
 )
 from miniagent.policy import (
     ApprovalHandler,
@@ -192,8 +193,6 @@ class AgentRuntime:
             raise InterruptionRequested("Run interrupted before initial record")
         self._validate_agent_tools(agent)
         self.config.validate_output_limit(agent.generation.max_output_tokens)
-        if self.pricing is not None:
-            self.pricing.price_for(agent.model.provider, agent.model.model)
 
         now = datetime.now(UTC)
         state = create_run_state(
@@ -566,8 +565,14 @@ class AgentRuntime:
                 raise CancellationRequested
             raise_if_interrupted()
             await execution.begin_compaction_attempt(
-                plan, number, branch="forced_compaction" if force else "boundary"
+                plan,
+                number,
+                request=summary_request,
+                branch="forced_compaction" if force else "boundary",
             )
+            operation = execution.state.execution.active_operation
+            assert operation is not None
+            attempt_id = operation.attempt_id
             try:
                 response = await await_with_stop(
                     asyncio.wait_for(
@@ -580,7 +585,9 @@ class AgentRuntime:
             except InterruptionRequested:
                 raise
             except CancellationRequested:
-                attempt = CompactionAttempt(attempt=number, error_code="CANCELLED")
+                attempt = CompactionAttempt(
+                    attempt=number, attempt_id=attempt_id, error_code="CANCELLED"
+                )
                 attempts.append(attempt)
                 await execution.record_compaction_attempt(attempt)
                 await execution.fail_compaction(
@@ -590,7 +597,7 @@ class AgentRuntime:
             except Exception as exc:  # noqa: BLE001
                 failure = f"{type(exc).__name__}: {exc}"
                 attempt = CompactionAttempt(
-                    attempt=number, error_code=type(exc).__name__
+                    attempt=number, attempt_id=attempt_id, error_code=type(exc).__name__
                 )
                 attempts.append(attempt)
                 retryable = (
@@ -600,6 +607,9 @@ class AgentRuntime:
                 )
                 await execution.record_compaction_attempt(
                     attempt,
+                    normalization_failure=exc.evidence
+                    if isinstance(exc, ModelResponseNormalizationError)
+                    else None,
                     failure=RunError(
                         code=type(exc).__name__, message=failure, retryable=retryable
                     ),
@@ -621,6 +631,7 @@ class AgentRuntime:
                 )
             attempt = CompactionAttempt(
                 attempt=number,
+                attempt_id=attempt_id,
                 usage=response.usage,
                 request_cost=cost,
                 provider_request_id=response.provider_request_id,
@@ -629,6 +640,7 @@ class AgentRuntime:
             attempts.append(attempt)
             await execution.record_compaction_attempt(
                 attempt,
+                response=response,
                 failure=RunError(
                     code=response.error.code,
                     message=response.error.message,
@@ -715,7 +727,7 @@ class AgentRuntime:
                 raise CancellationRequested
             raise_if_interrupted()
             await execution.begin_step(
-                provider=agent.model.provider, model=agent.model.model
+                provider=agent.model.provider, model=agent.model.model, request=request
             )
         else:
             if execution.state.execution.active_operation is not None:
@@ -727,12 +739,13 @@ class AgentRuntime:
                 request = await self._prepare_request(execution, force=True)
                 if isinstance(request, RunTermination):
                     return TerminateRun(request)
-                await execution.begin_model_retry(context_retry=True)
+                await execution.begin_model_retry(request=request, context_retry=True)
             else:
                 request = self._build_request(execution.state)
                 await execution.begin_model_retry(
+                    request=request,
                     context_retry=progress.branch == "business"
-                    and progress.retry_pending
+                    and progress.retry_pending,
                 )
         while True:
             try:
@@ -765,8 +778,23 @@ class AgentRuntime:
                 if self.cancellation_token.is_cancelled:
                     raise CancellationRequested
                 request = retry_request
-                await execution.begin_model_retry(context_retry=True)
+                await execution.begin_model_retry(request=request, context_retry=True)
                 continue
+            except ModelResponseNormalizationError as exc:
+                await execution.record_model_response(
+                    None,
+                    None,
+                    normalization_failure=exc.evidence,
+                    cost_status="invalid_usage",
+                    disposition=TerminateDisposition(
+                        decision=TerminationDecision(
+                            status="failed",
+                            reason=TerminationReason.MODEL_FAILED,
+                            error=RunError(code=exc.code, message=str(exc)),
+                        )
+                    ),
+                )
+                return ContinueRun()
             except Exception as exc:  # noqa: BLE001
                 decision = TerminationDecision(
                     status="failed",
@@ -788,9 +816,12 @@ class AgentRuntime:
         ):
             self.estimator.observe(request, response.usage.input_tokens)
         request_cost = None
-        if self.pricing is not None:
-            if response.usage is None:
-                decision = TerminationDecision(
+        cost_status = "not_configured"
+        decision = None
+        if response.usage is None:
+            cost_status = "usage_missing"
+            disposition = TerminateDisposition(
+                decision=TerminationDecision(
                     status="failed",
                     reason=TerminationReason.MODEL_FAILED,
                     error=RunError(
@@ -798,8 +829,32 @@ class AgentRuntime:
                         message="Provider response did not include token usage",
                     ),
                 )
-                await execution.interrupt_operation(
-                    unconfirmed=True, termination=decision
+            )
+            await execution.record_model_response(
+                response, None, disposition=disposition, cost_status=cost_status
+            )
+            return ContinueRun()
+        if self.pricing is not None:
+            if not any(
+                price.provider == agent.model.provider
+                and price.model == agent.model.model
+                for price in self.pricing.models
+            ):
+                disposition = TerminateDisposition(
+                    decision=TerminationDecision(
+                        status="failed",
+                        reason=TerminationReason.MODEL_FAILED,
+                        error=RunError(
+                            code="MODEL_PRICING_UNAVAILABLE",
+                            message="No pricing configured for response model",
+                        ),
+                    )
+                )
+                await execution.record_model_response(
+                    response,
+                    None,
+                    disposition=disposition,
+                    cost_status="calculation_failed",
                 )
                 return ContinueRun()
             request_cost = calculate_request_cost(
@@ -808,6 +863,7 @@ class AgentRuntime:
                 usage=response.usage,
                 pricing=self.pricing,
             )
+            cost_status = "calculated"
         decision = evaluate_model_response(response)
         if decision is None:
             disposition = ToolsDisposition()
@@ -824,7 +880,7 @@ class AgentRuntime:
                 )
             )
         await execution.record_model_response(
-            response, request_cost, disposition=disposition
+            response, request_cost, disposition=disposition, cost_status=cost_status
         )
         return ContinueRun()
 

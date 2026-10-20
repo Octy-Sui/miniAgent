@@ -125,16 +125,20 @@ def begin_step(state: RunState) -> RunState:
 
 def accept_model_response(
     state: RunState,
-    response: ModelResponse,
+    response: ModelResponse | None,
     request_cost: RequestCost | None,
     *,
     disposition: ResponseDisposition,
 ) -> RunState:
     usage = state.usage
-    if response.usage is not None:
+    if response is not None and response.usage is not None:
         usage = add_request_usage(usage, response.usage, request_cost)
     conversation = state.conversation.model_copy(
-        update={"messages": (*state.conversation.messages, response.message)}
+        update={
+            "messages": (*state.conversation.messages, response.message)
+            if response is not None
+            else state.conversation.messages
+        }
     )
     changes: dict[str, object] = {
         "response_disposition": disposition,
@@ -142,6 +146,7 @@ def accept_model_response(
     }
     lifecycle = state.lifecycle
     if isinstance(disposition, ToolsDisposition):
+        assert response is not None
         changes.update(
             tool_batch=ToolBatch(calls=response.message.tool_calls),
             cursor=RunCursor.EXECUTE_TOOL_CALLS,

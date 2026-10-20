@@ -10,6 +10,7 @@ from miniagent.dashboard.cursors import PageBoundary
 from miniagent.dashboard.projections.spans import project_spans
 from miniagent.dashboard.queries.events import read_scope_facts
 from miniagent.dashboard.reads import ReadBudget
+from miniagent.models.protocol import ModelRequest
 from miniagent.runtime.events import (
     ApprovalRequested,
     ApprovalResolved,
@@ -59,7 +60,11 @@ async def span_history(database: Path) -> tuple[PageBoundary, dict[str, str]]:
         (
             "model",
             "step",
-            ModelRequested(provider="test", model="test"),
+            ModelRequested(
+                provider="test",
+                model="test",
+                request=ModelRequest(model="test", messages=()),
+            ),
             ModelResponded(finish_reason="stop", tool_call_count=0),
         ),
         (
@@ -249,7 +254,11 @@ async def test_abnormal_parent_chain_is_bounded(database: Path, count: int) -> N
     run_id = await make_run(database, 1)
     rows = []
     for n in range(1, count + 1):
-        payload = ModelRequested(provider="test", model="test")
+        payload = ModelRequested(
+            provider="test",
+            model="test",
+            request=ModelRequest(model="test", messages=()),
+        )
         rows.append(
             (
                 str(run_id),
@@ -315,7 +324,11 @@ async def test_scope_count_is_reachable_through_two_hundred_visible_ids(
         payload = (
             RunStarted()
             if n == count
-            else ModelRequested(provider="test", model="test")
+            else ModelRequested(
+                provider="test",
+                model="test",
+                request=ModelRequest(model="test", messages=()),
+            )
         )
         parent = None if n == count else f"{min(n + 200, count):016x}"
         rows.append(

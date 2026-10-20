@@ -10,6 +10,7 @@ from miniagent.runtime.journal import RunJournal
 from miniagent.runtime.recording import RunRecorder
 from miniagent.storage import SQLiteRunStore
 from tests.support.runtime.runtime import agent
+from tests.support.trajectory.fixtures import request_for
 
 
 async def started(tmp_path):
@@ -34,7 +35,9 @@ async def started(tmp_path):
             )
         ),
     )
-    await execution.begin_step(provider="test", model="test-model")
+    await execution.begin_step(
+        provider="test", model="test-model", request=request_for(execution.state)
+    )
     return store, execution
 
 

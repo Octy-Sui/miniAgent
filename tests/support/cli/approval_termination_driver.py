@@ -18,6 +18,7 @@ from miniagent.storage import SQLiteRunStore
 from miniagent.tools.contracts import ToolCall
 from tests.support.runtime.runtime import agent
 from tests.support.storage.sqlite import make_decision
+from tests.support.trajectory.fixtures import request_for
 
 
 async def run(root: Path, mode: str) -> int:
@@ -35,7 +36,9 @@ async def run(root: Path, mode: str) -> int:
                 )
             ),
         )
-        await execution.begin_step(provider="test", model="test-model")
+        await execution.begin_step(
+            provider="test", model="test-model", request=request_for(execution.state)
+        )
         call = ToolCall(id="call-1", name="shell", arguments={"command": "pytest"})
         await execution.record_model_response(
             ModelResponse(

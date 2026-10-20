@@ -12,6 +12,7 @@ from miniagent.models.protocol import (
     ModelProvider,
     ModelRequest,
     ModelResponse,
+    ModelUsage,
 )
 from miniagent.policy import PolicyEffect, PolicyEvaluation, RiskLevel
 from miniagent.runtime import (
@@ -140,6 +141,7 @@ def final_response(content: str = "finished") -> ModelResponse:
     return ModelResponse(
         message=AssistantMessage(content=content),
         finish_reason=FinishReason.STOP,
+        usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
 
 
@@ -152,6 +154,7 @@ def tool_response(
             tool_calls=[ToolCall(id="call", name=name, arguments=arguments or {})],
         ),
         finish_reason=FinishReason.TOOL_CALL,
+        usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
 
 

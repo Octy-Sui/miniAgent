@@ -18,7 +18,11 @@ from miniagent.environments.managed_execution import (
 from miniagent.evaluation import CandidateOutput, EvaluationResult
 from miniagent.metering.usage import RequestCost, add_request_usage
 from miniagent.models.messages import ToolMessage
-from miniagent.models.protocol import ModelResponse
+from miniagent.models.protocol import (
+    ModelRequest,
+    ModelResponse,
+    ProviderResponseEvidence,
+)
 from miniagent.policy import (
     ApprovalOutcome,
     ApprovalRequest,
@@ -401,6 +405,7 @@ class RunExecution:
         plan: CompactionPlan,
         attempt: int,
         *,
+        request: ModelRequest,
         branch: Literal["boundary", "forced_compaction"] = "boundary",
     ) -> None:
         progress = self.state.execution.request_progress
@@ -428,8 +433,11 @@ class RunExecution:
             }
         )
         target = state.definition.agent_spec.model
+        attempt_id = uuid4()
         event = self.trace.run_event(
             CompactionRequested(
+                request=request,
+                attempt_id=attempt_id,
                 hard_trigger=plan.hard_trigger,
                 provider=target.provider,
                 model=target.model,
@@ -445,7 +453,7 @@ class RunExecution:
                     update={
                         "active_operation": OperationRef(
                             kind="summary",
-                            attempt_id=uuid4(),
+                            attempt_id=attempt_id,
                             started_event_id=event.event_id,
                             started_sequence=record.last_event_sequence + 1
                             if record
@@ -462,8 +470,17 @@ class RunExecution:
         self.state = state
 
     async def record_compaction_attempt(
-        self, attempt: CompactionAttempt, *, failure: RunError | None = None
+        self,
+        attempt: CompactionAttempt,
+        *,
+        failure: RunError | None = None,
+        response: ModelResponse | None = None,
+        normalization_failure: ProviderResponseEvidence | None = None,
     ) -> None:
+        operation = self.state.execution.active_operation
+        if operation is None or operation.kind != "summary":
+            raise ValueError("Compaction attempt requires an active summary operation")
+        attempt = attempt.model_copy(update={"attempt_id": operation.attempt_id})
         state = self.state
         state = state.model_copy(
             update={
@@ -497,7 +514,17 @@ class RunExecution:
                 }
             )
         await self.journal.record_activity(
-            state, [self.trace.run_event(CompactionAttemptRecorded(result=attempt))]
+            state,
+            [
+                self.trace.run_event(
+                    CompactionAttemptRecorded(
+                        result=attempt,
+                        attempt_id=operation.attempt_id,
+                        response=response,
+                        normalization_failure=normalization_failure,
+                    )
+                )
+            ],
         )
         self.state = state
 
@@ -535,7 +562,9 @@ class RunExecution:
         await self.journal.compact(state, event)
         self.state = state
 
-    async def begin_step(self, *, provider: str, model: str) -> None:
+    async def begin_step(
+        self, *, provider: str, model: str, request: ModelRequest
+    ) -> None:
         next_state = advance_step(
             start_running(self.state)
             if self.state.lifecycle.status is RunStatus.PREPARING
@@ -573,7 +602,9 @@ class RunExecution:
         next_trace.begin_model()
         attempt_id = uuid4()
         model_requested = next_trace.model_event(
-            ModelRequested(provider=provider, model=model, attempt_id=attempt_id)
+            ModelRequested(
+                provider=provider, model=model, attempt_id=attempt_id, request=request
+            )
         )
         next_state = next_state.model_copy(
             update={
@@ -660,7 +691,9 @@ class RunExecution:
         await self.journal.record_activity(state, events)
         self.state, self.trace = state, trace
 
-    async def begin_model_retry(self, *, context_retry: bool = False) -> None:
+    async def begin_model_retry(
+        self, *, request: ModelRequest, context_retry: bool = False
+    ) -> None:
         trace = deepcopy(self.trace)
         trace.begin_model()
         target = self.state.definition.agent_spec.model
@@ -674,6 +707,7 @@ class RunExecution:
         attempt_id = uuid4()
         event = trace.model_event(
             ModelRequested(
+                request=request,
                 provider=target.provider,
                 model=target.model,
                 attempt=state.usage.model_requests,
@@ -723,10 +757,19 @@ class RunExecution:
 
     async def record_model_response(
         self,
-        response: ModelResponse,
+        response: ModelResponse | None,
         request_cost: RequestCost | None,
         *,
         disposition: ResponseDisposition,
+        normalization_failure: ProviderResponseEvidence | None = None,
+        cost_status: Literal[
+            "calculated",
+            "not_configured",
+            "usage_missing",
+            "invalid_usage",
+            "calculation_failed",
+        ]
+        | None = None,
     ) -> None:
         self.account_active_time()
         operation = self.state.execution.active_operation
@@ -736,7 +779,7 @@ class RunExecution:
             request_cost,
             disposition=disposition,
         )
-        if response.usage is None:
+        if response is None or response.usage is None:
             next_state = next_state.model_copy(
                 update={
                     "usage": next_state.usage.model_copy(
@@ -751,8 +794,29 @@ class RunExecution:
         event = next_trace.model_event(
             ModelResponded(
                 attempt_id=operation.attempt_id if operation else None,
-                finish_reason=response.finish_reason.value,
-                tool_call_count=len(response.message.tool_calls),
+                finish_reason=response.finish_reason.value if response else "error",
+                tool_call_count=len(response.message.tool_calls) if response else 0,
+                response=response,
+                normalization_failure=normalization_failure,
+                request_cost=request_cost,
+                cost_status=cost_status
+                or (
+                    "calculated"
+                    if request_cost is not None
+                    else "invalid_usage"
+                    if response is None
+                    else "usage_missing"
+                    if response.usage is None
+                    else "not_configured"
+                ),
+                disposition=disposition,
+                error=disposition.decision.error
+                if isinstance(disposition, TerminateDisposition)
+                else None,
+                error_code=disposition.decision.error.code
+                if isinstance(disposition, TerminateDisposition)
+                and disposition.decision.error
+                else None,
             )
         )
         next_trace.end_model()

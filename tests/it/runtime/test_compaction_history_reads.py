@@ -8,6 +8,7 @@ import pytest
 
 from miniagent.runtime.context import (
     InvalidSummaryError,
+    build_summary_request,
     validate_compaction_record,
     validate_summary,
 )
@@ -173,7 +174,12 @@ async def test_multiple_versions_use_filtered_metadata_and_point_sources(
             source_event_sequence=source.event_sequence,
         )
         conversation = await validate_summary(summary_response(), plan, store)
-        await execution.begin_compaction_attempt(plan, 1, branch="forced_compaction")
+        await execution.begin_compaction_attempt(
+            plan,
+            1,
+            branch="forced_compaction",
+            request=build_summary_request(plan.state, plan),
+        )
         await execution.record_compaction_attempt(CompactionAttempt(attempt=1))
         await execution.publish_compaction(
             conversation,

@@ -1,5 +1,7 @@
 from pathlib import Path
+from uuid import uuid4
 
+from miniagent.models.protocol import ModelRequest
 from miniagent.storage import SQLiteRunStore
 
 
@@ -216,13 +218,23 @@ def memory_example(
                     attempt=1,
                     source_snapshot_version=source,
                     covered_messages=covered,
+                    request=ModelRequest(model="test", messages=()),
+                    attempt_id=uuid4(),
                 ),
                 start,
             )
         )
         for offset, item in enumerate(attempts, 1):
             events.append(
-                stored(CompactionAttemptRecorded(result=item), start + offset)
+                stored(
+                    CompactionAttemptRecorded(
+                        result=item.model_copy(
+                            update={"attempt_id": UUID(int=start + offset)}
+                        ),
+                        attempt_id=UUID(int=start + offset),
+                    ),
+                    start + offset,
+                )
             )
         payload = CompactionCompleted(
             previous_version=None if version == 1 else 1,

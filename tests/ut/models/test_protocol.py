@@ -14,6 +14,7 @@ from miniagent.environments import (
 from miniagent.evaluation import CandidateOutput
 from miniagent.models.config import ModelTarget
 from miniagent.models.messages import AssistantMessage, Message, ToolMessage
+from miniagent.models.protocol import ModelRequest
 from miniagent.runtime import (
     EvaluationCheck,
     EvaluationPlan,
@@ -232,7 +233,11 @@ def test_step_event_requires_number_and_span_scope_is_validated() -> None:
     with pytest.raises(ValidationError, match="current span"):
         NewRunEvent(
             run_id=uuid4(),
-            payload=ModelRequested(provider="test", model="test-model"),
+            payload=ModelRequested(
+                provider="test",
+                model="test-model",
+                request=ModelRequest(model="test-model", messages=()),
+            ),
             parent_span_id="2222222222222222",
         )
 

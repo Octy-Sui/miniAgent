@@ -16,7 +16,7 @@ from miniagent.environments.managed_execution import (
     ManagedExecutionError,
 )
 from miniagent.models.messages import AssistantMessage, SystemMessage, UserMessage
-from miniagent.models.protocol import FinishReason, ModelResponse
+from miniagent.models.protocol import FinishReason, ModelResponse, ModelUsage
 from miniagent.runtime import (
     AgentRuntime,
     RunEventType,
@@ -39,6 +39,7 @@ from tests.support.runtime.runtime import (
     agent,
     final_response,
 )
+from tests.support.trajectory.fixtures import request_for
 
 
 async def evaluation_prefix(workspace, tmp_path):
@@ -61,7 +62,9 @@ async def evaluation_prefix(workspace, tmp_path):
             RunRecorder(run_id=workspace.run_id, store=store, recovery_context=None)
         ),
     )
-    await execution.begin_step(provider="test", model="test-model")
+    await execution.begin_step(
+        provider="test", model="test-model", request=request_for(execution.state)
+    )
     await execution.record_model_response(
         final_response("candidate"),
         None,
@@ -338,6 +341,7 @@ async def test_trusted_timeout_keeps_file_change_and_verified_group_end(
             )
         ),
         finish_reason=FinishReason.TOOL_CALL,
+        usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
     result = await AgentRuntime(
         provider=QueueProvider([response]),

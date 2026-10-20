@@ -16,6 +16,7 @@ from miniagent.runtime.result import RunError, TerminationReason
 from miniagent.tools.registry import ToolRegistry
 from tests.support.runtime.request_resume import reopen, started
 from tests.support.runtime.runtime import QueueProvider
+from tests.support.trajectory.fixtures import request_for
 
 
 async def test_started_request_retries_same_step_and_counts_unknown_once(tmp_path):
@@ -86,7 +87,7 @@ async def test_failure_disposition_with_nonempty_text_never_evaluates(tmp_path):
 async def test_confirmed_usage_preserves_prior_unknown_attempts(tmp_path):
     store, execution = await started(tmp_path)
     await execution.interrupt_operation(unconfirmed=True)
-    await execution.begin_model_retry()
+    await execution.begin_model_retry(request=request_for(execution.state))
     execution = await reopen(store, execution)
     await execution.interrupt_operation(unconfirmed=True)
     provider = QueueProvider(

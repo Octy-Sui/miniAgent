@@ -6,6 +6,7 @@ import pytest
 
 from miniagent.agents import AgentSpec
 from miniagent.models.config import ModelTarget
+from miniagent.models.protocol import ModelRequest
 from miniagent.policy import (
     ApprovalRequest,
     PolicyDecision,
@@ -60,7 +61,9 @@ def make_event(
     payloads: dict[RunEventType, EventPayload] = {
         RunEventType.RUN_STARTED: RunStarted(),
         RunEventType.MODEL_REQUESTED: ModelRequested(
-            provider="test", model="test-model"
+            provider="test",
+            model="test-model",
+            request=ModelRequest(model="test-model", messages=()),
         ),
         RunEventType.MODEL_RESPONDED: ModelResponded(
             finish_reason="stop", tool_call_count=0

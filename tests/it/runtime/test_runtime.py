@@ -47,6 +47,7 @@ from tests.support.runtime.runtime import (
     run_state,
     tool_response,
 )
+from tests.support.trajectory.fixtures import request_for
 
 
 class TestRunExecution:
@@ -62,7 +63,9 @@ class TestRunExecution:
                 )
             ),
         )
-        await execution.begin_step(provider="test", model="test-model")
+        await execution.begin_step(
+            provider="test", model="test-model", request=request_for(execution.state)
+        )
         response = tool_response()
         await execution.record_model_response(
             response,
@@ -444,6 +447,7 @@ class TestAgentRuntime:
         response = ModelResponse(
             message=AssistantMessage(content="partial"),
             finish_reason=FinishReason.LENGTH,
+            usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
         )
         runtime = AgentRuntime(
             provider=QueueProvider([response]),

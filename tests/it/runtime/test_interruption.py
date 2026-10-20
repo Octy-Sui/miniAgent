@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 
 from miniagent.models.messages import AssistantMessage
-from miniagent.models.protocol import FinishReason, ModelResponse
+from miniagent.models.protocol import FinishReason, ModelResponse, ModelUsage
 from miniagent.policy import ApprovalOutcome, PolicyEffect, PolicyEvaluation, RiskLevel
 from miniagent.runtime import (
     AgentRuntime,
@@ -40,6 +40,7 @@ async def test_interruption_suspends_without_fabricated_tool_result(tmp_path):
             tool_calls=(ToolCall(id="call", name="block", arguments={}),)
         ),
         finish_reason=FinishReason.TOOL_CALL,
+        usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
     runtime = AgentRuntime(
         provider=QueueProvider([response]),
@@ -127,6 +128,7 @@ async def test_trusted_result_commits_before_pause_only_with_budget(tmp_path, ex
             tool_calls=(ToolCall(id="call", name="block", arguments={}),)
         ),
         finish_reason=FinishReason.TOOL_CALL,
+        usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
     runtime = AgentRuntime(
         provider=QueueProvider([response]),
@@ -185,6 +187,7 @@ async def test_pending_approval_is_invalidated_atomically_with_suspension(tmp_pa
             tool_calls=(ToolCall(id="call", name="block", arguments={}),)
         ),
         finish_reason=FinishReason.TOOL_CALL,
+        usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
     runtime = AgentRuntime(
         provider=QueueProvider([response]),

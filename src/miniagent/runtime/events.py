@@ -12,14 +12,21 @@ from miniagent.environments.managed_execution import (
 )
 from miniagent.evaluation.contracts import EvaluationError, EvaluationResult
 from miniagent.metering.usage import RequestCost
-from miniagent.models.protocol import ModelUsage
+from miniagent.models.protocol import (
+    ModelRequest,
+    ModelResponse,
+    ModelUsage,
+    ProviderResponseEvidence,
+)
 from miniagent.policy import PolicyDecision
 from miniagent.runtime.progress import (
     BusinessStatus,
     ExecutionPhase,
     InterruptionInfo,
+    ResponseDisposition,
     TerminationDecision,
 )
+from miniagent.runtime.result import RunError
 from miniagent.runtime.tracing import SpanId
 from miniagent.tools.contracts import ToolResult
 
@@ -137,6 +144,7 @@ class TerminationDecided(_Payload):
 
 
 class ModelRequested(_Payload):
+    request: ModelRequest
     attempt_id: UUID | None = None
     type: Literal[RunEventType.MODEL_REQUESTED] = RunEventType.MODEL_REQUESTED
     provider: str
@@ -145,6 +153,32 @@ class ModelRequested(_Payload):
 
 
 class ModelResponded(_Payload):
+    response: ModelResponse | None = None
+    normalization_failure: ProviderResponseEvidence | None = None
+    request_cost: RequestCost | None = None
+    cost_status: Literal[
+        "calculated",
+        "not_configured",
+        "usage_missing",
+        "invalid_usage",
+        "calculation_failed",
+    ] = "not_configured"
+    disposition: ResponseDisposition | None = None
+    error: RunError | None = None
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> "ModelResponded":
+        if self.response is not None and self.normalization_failure is not None:
+            raise ValueError(
+                "Response and normalization failure are mutually exclusive"
+            )
+        if self.response is not None and (
+            self.finish_reason != self.response.finish_reason.value
+            or self.tool_call_count != len(self.response.message.tool_calls)
+        ):
+            raise ValueError("Response metadata differs from evidence")
+        return self
+
     attempt_id: UUID | None = None
     type: Literal[RunEventType.MODEL_RESPONDED] = RunEventType.MODEL_RESPONDED
     finish_reason: str
@@ -375,6 +409,7 @@ class RunFinished(_Payload):
 
 
 class CompactionAttempt(_Payload):
+    attempt_id: UUID | None = None
     attempt: int = Field(ge=1)
     usage: ModelUsage | None = None
     request_cost: RequestCost | None = None
@@ -383,6 +418,8 @@ class CompactionAttempt(_Payload):
 
 
 class CompactionRequested(_Payload):
+    request: ModelRequest
+    attempt_id: UUID
     hard_trigger: bool = False
     type: Literal[RunEventType.COMPACTION_REQUESTED] = RunEventType.COMPACTION_REQUESTED
     provider: str
@@ -393,6 +430,20 @@ class CompactionRequested(_Payload):
 
 
 class CompactionAttemptRecorded(_Payload):
+    attempt_id: UUID
+    response: ModelResponse | None = None
+    normalization_failure: ProviderResponseEvidence | None = None
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> "CompactionAttemptRecorded":
+        if self.response is not None and self.normalization_failure is not None:
+            raise ValueError(
+                "Response and normalization failure are mutually exclusive"
+            )
+        if self.result.attempt_id != self.attempt_id:
+            raise ValueError("Compaction attempt identity differs")
+        return self
+
     type: Literal[RunEventType.COMPACTION_ATTEMPT_RECORDED] = (
         RunEventType.COMPACTION_ATTEMPT_RECORDED
     )

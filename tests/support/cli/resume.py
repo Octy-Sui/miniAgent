@@ -6,6 +6,7 @@ from miniagent.runtime.journal import RunJournal
 from miniagent.runtime.recording import RunRecorder
 from miniagent.runtime.state import create_run_state
 from tests.support.runtime.runtime import QueueProvider, final_response
+from tests.support.trajectory.fixtures import request_for
 
 
 async def retained(configured_local, monkeypatch, *, old_contract=False):
@@ -101,6 +102,8 @@ async def retained(configured_local, monkeypatch, *, old_contract=False):
         ),
     )
     await execution.begin_step(
-        provider=deps.agent.model.provider, model=deps.agent.model.model
+        provider=deps.agent.model.provider,
+        model=deps.agent.model.model,
+        request=request_for(execution.state),
     )
     return application, execution, provider

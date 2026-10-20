@@ -16,6 +16,7 @@ from miniagent.artifacts.contracts import ArtifactWrite
 from miniagent.dashboard.app import create_app
 from miniagent.dashboard.config import DashboardSettings
 from miniagent.dashboard.workers import HeavyWorkPool
+from miniagent.models.protocol import ModelRequest
 from miniagent.runtime.events import ModelRequested, NewRunEvent
 from miniagent.storage import SQLiteRunStore
 from tests.support.dashboard.builders import make_run, persist_memory
@@ -38,7 +39,12 @@ async def display_fixture(database: Path, root: Path):
         connection.commit()
     await SQLiteRunStore(database).append(
         NewRunEvent(
-            run_id=RUN_ID, payload=ModelRequested(provider="test", model=DISPLAY)
+            run_id=RUN_ID,
+            payload=ModelRequested(
+                provider="test",
+                model=DISPLAY,
+                request=ModelRequest(model=DISPLAY, messages=()),
+            ),
         ),
         expected_sequence=100,
     )

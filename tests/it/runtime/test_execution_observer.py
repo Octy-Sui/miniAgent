@@ -10,7 +10,7 @@ from miniagent.environments.managed_execution import (
     current_execution_observer,
 )
 from miniagent.models.messages import AssistantMessage
-from miniagent.models.protocol import FinishReason, ModelResponse
+from miniagent.models.protocol import FinishReason, ModelResponse, ModelUsage
 from miniagent.policy import ApprovalOutcome, ApprovalResolution
 from miniagent.runtime import AgentRuntime
 from miniagent.runtime.events import RunEventType
@@ -43,6 +43,7 @@ async def test_observer_commit_failure_stops_tool_runner(tmp_path, action):
             tool_calls=(ToolCall(id="c0", name="observed", arguments={}),)
         ),
         finish_reason=FinishReason.TOOL_CALL,
+        usage=ModelUsage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
     runtime = AgentRuntime(
         provider=QueueProvider([response]),
