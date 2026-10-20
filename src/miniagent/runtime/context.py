@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from dataclasses import dataclass
 from hashlib import sha256
 from importlib.resources import files
@@ -19,7 +20,8 @@ from pydantic import (
 from miniagent.models.config import GenerationOptions
 from miniagent.models.messages import AssistantMessage, ToolMessage, UserMessage
 from miniagent.models.protocol import FinishReason, ModelRequest, ModelResponse
-from miniagent.runtime.events import CompactionCompleted
+from miniagent.runtime.events import CompactionCompleted, RunEventType
+from miniagent.runtime.history import iter_run_events
 from miniagent.runtime.state import ConversationState, RunCursor, RunState, RunStatus
 from miniagent.runtime.store_contracts import RunRecord, RuntimeStore
 
@@ -303,34 +305,75 @@ def build_summary_request(state: RunState, plan: CompactionPlan) -> ModelRequest
     )
 
 
-async def _source_ranges(
-    plan: CompactionPlan, sources: RuntimeStore
+@dataclass(frozen=True, slots=True)
+class CompactionSourceFacts:
+    current_version: int
+    previous_version: int | None
+    event_id: UUID
+    sequence: int
+    source_snapshot_id: UUID | None
+    source_snapshot_version: int | None
+    source_event_sequence: int
+    new_snapshot_id: UUID | None
+    new_snapshot_version: int | None
+    event_sequence: int | None
+    covered_messages: tuple[int, int]
+    covered_steps: tuple[int, ...]
+    retained_first_step: int
+    summary_sha256: str
+
+
+async def load_compaction_sources(
+    store: RuntimeStore, run_id: UUID, *, through_sequence: int
+) -> dict[int, CompactionSourceFacts]:
+    completed: dict[int, CompactionSourceFacts] = {}
+    async for event in iter_run_events(
+        store,
+        run_id,
+        through_sequence=through_sequence,
+        types=(RunEventType.COMPACTION_COMPLETED,),
+    ):
+        payload = event.payload
+        assert isinstance(payload, CompactionCompleted)
+        if payload.current_version in completed:
+            raise ValueError("compaction versions are duplicated")
+        completed[payload.current_version] = CompactionSourceFacts(
+            current_version=payload.current_version,
+            previous_version=payload.previous_version,
+            event_id=event.event_id,
+            sequence=event.sequence,
+            source_snapshot_id=payload.source_snapshot_id,
+            source_snapshot_version=payload.source_snapshot_version,
+            source_event_sequence=payload.source_event_sequence,
+            new_snapshot_id=payload.new_snapshot_id,
+            new_snapshot_version=payload.new_snapshot_version,
+            event_sequence=payload.event_sequence,
+            covered_messages=payload.covered_messages,
+            covered_steps=payload.covered_steps,
+            retained_first_step=payload.retained_first_step,
+            summary_sha256=payload.summary_sha256,
+        )
+    return completed
+
+
+def _source_ranges(
+    plan: CompactionPlan, completed: dict[int, CompactionSourceFacts]
 ) -> dict[int, tuple[int, int]]:
     ranges = (
         {}
         if plan.source_snapshot_version is None
         else {plan.source_snapshot_version: plan.covered_messages}
     )
-    version = getattr(getattr(plan.state, "context", None), "current_version", None)
-    if version is None:
-        return ranges
-    events = await sources.list_events(plan.state.identity.run_id)
-    completed = {
-        event.payload.model_dump().get("current_version"): event
-        for event in events
-        if event.type.value == "compaction_completed"
-    }
+    version = plan.state.context.current_version
     seen: set[int] = set()
     while version is not None:
         if version in seen or version not in completed:
             raise InvalidSummaryError("source version chain is invalid")
         seen.add(version)
-        payload = completed[version].payload.model_dump()
-        if payload["source_snapshot_version"] is not None:
-            ranges[payload["source_snapshot_version"]] = tuple(
-                payload["covered_messages"]
-            )
-        version = payload["previous_version"]
+        payload = completed[version]
+        if payload.source_snapshot_version is not None:
+            ranges[payload.source_snapshot_version] = payload.covered_messages
+        version = payload.previous_version
     return ranges
 
 
@@ -339,6 +382,7 @@ async def _verify_evidence(
     plan: CompactionPlan,
     sources: RuntimeStore | None,
     ranges: dict[int, tuple[int, int]],
+    allowed_steps: set[int],
 ) -> None:
     source = evidence.source
     if source.run_id != plan.state.identity.run_id or sources is None:
@@ -361,17 +405,9 @@ async def _verify_evidence(
             ]
         ]
     else:
-        events = await sources.list_events(source.run_id)
-        found = next(
-            (event for event in events if event.event_id == source.event_id), None
+        found = await sources.get_event(
+            source.run_id, source.event_id, through_sequence=plan.source_event_sequence
         )
-        allowed_steps = set(plan.covered_steps)
-        for event in events:
-            if (
-                event.type.value == "compaction_completed"
-                and event.payload.model_dump().get("source_snapshot_version") in ranges
-            ):
-                allowed_steps.update(event.payload.model_dump()["covered_steps"])
         if (
             found is None
             or found.sequence > plan.source_event_sequence
@@ -383,14 +419,15 @@ async def _verify_evidence(
         data = found.payload.model_dump(mode="json")
     if evidence.excerpt is not None:
         # Checking leaf strings avoids treating serialized keys as evidence.
-        def leaves(value: JsonValue) -> list[str]:
+        def leaves(value: JsonValue) -> Iterator[str]:
             if isinstance(value, str):
-                return [value]
-            if isinstance(value, list):
-                return [leaf for item in value for leaf in leaves(item)]
-            if isinstance(value, dict):
-                return [leaf for item in value.values() for leaf in leaves(item)]
-            return []
+                yield value
+            elif isinstance(value, list):
+                for item in value:
+                    yield from leaves(item)
+            elif isinstance(value, dict):
+                for item in value.values():
+                    yield from leaves(item)
 
         if (
             not evidence.excerpt.strip()
@@ -434,9 +471,25 @@ async def validate_summary(
         )
     except ValidationError as exc:
         raise InvalidSummaryError(f"invalid summary contract: {exc}") from exc
-    ranges = await _source_ranges(plan, sources) if sources is not None else {}
+    try:
+        completed = (
+            await load_compaction_sources(
+                sources,
+                plan.state.identity.run_id,
+                through_sequence=plan.source_event_sequence,
+            )
+            if sources is not None
+            else {}
+        )
+        ranges = _source_ranges(plan, completed)
+    except ValueError as exc:
+        raise InvalidSummaryError("source version chain is invalid") from exc
+    allowed_steps = set(plan.covered_steps)
+    for facts in completed.values():
+        if facts.source_snapshot_version in ranges:
+            allowed_steps.update(facts.covered_steps)
     for evidence in summary.verified_evidence:
-        await _verify_evidence(evidence, plan, sources, ranges)
+        await _verify_evidence(evidence, plan, sources, ranges, allowed_steps)
     template = Environment(
         undefined=StrictUndefined, autoescape=False, keep_trailing_newline=True
     ).from_string(
@@ -466,13 +519,11 @@ async def validate_summary(
 async def validate_compaction_record(record: RunRecord, store: RuntimeStore) -> None:
     state = record.state
     version = state.context.current_version
-    events = await store.list_events(state.identity.run_id)
-    completed = [
-        (event, event.payload)
-        for event in events
-        if isinstance(event.payload, CompactionCompleted)
-    ]
-    if completed and (version is None or version != completed[-1][1].current_version):
+    completed = await load_compaction_sources(
+        store, state.identity.run_id, through_sequence=record.last_event_sequence
+    )
+    latest = max(completed.values(), key=lambda facts: facts.sequence, default=None)
+    if latest is not None and (version is None or version != latest.current_version):
         raise ValueError("compaction current version does not match committed history")
     if version is None:
         return
@@ -483,20 +534,18 @@ async def validate_compaction_record(record: RunRecord, store: RuntimeStore) -> 
         or not messages[2].content
     ):
         raise ValueError("compaction active summary is missing")
-    if len({payload.current_version for event, payload in completed}) != len(completed):
-        raise ValueError("compaction versions are duplicated")
-    chain = {payload.current_version: (event, payload) for event, payload in completed}
+    chain = completed
     seen = set()
     active_hash = sha256(messages[2].content.encode()).hexdigest()
     while version is not None:
         if version in seen or version not in chain:
             raise ValueError("compaction version chain is invalid")
         seen.add(version)
-        event, payload = chain[version]
+        payload = chain[version]
         if (
-            event.sequence > record.last_event_sequence
+            payload.sequence > record.last_event_sequence
             or payload.current_version != (payload.previous_version or 0) + 1
-            or payload.event_sequence != event.sequence
+            or payload.event_sequence != payload.sequence
         ):
             raise ValueError("compaction event version/sequence is invalid")
         if (
@@ -523,7 +572,7 @@ async def validate_compaction_record(record: RunRecord, store: RuntimeStore) -> 
             or source.version >= new.version
             or new.version > record.latest_snapshot_version
             or source.event_sequence != payload.source_event_sequence
-            or new.event_sequence != event.sequence
+            or new.event_sequence != payload.sequence
         ):
             raise ValueError("compaction snapshot identity/sequence mismatch")
         if (
@@ -577,3 +626,4 @@ async def validate_compaction_record(record: RunRecord, store: RuntimeStore) -> 
         ):
             raise ValueError("compaction snapshot summary hash mismatch")
         version = payload.previous_version
+        del source, new, old_messages, new_messages, retained
