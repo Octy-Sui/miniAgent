@@ -1,13 +1,14 @@
 import asyncio
+import hashlib
 import json
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from time import monotonic
 from uuid import UUID
 
-from pydantic import JsonValue
+from pydantic import BaseModel, JsonValue
 
-from miniagent.artifacts.contracts import ArtifactStore
+from miniagent.artifacts.contracts import ArtifactRef, ArtifactStore
 from miniagent.runtime.events import RunEvent
 from miniagent.runtime.history import iter_run_events
 from miniagent.runtime.state import TERMINAL_STATUSES, RunStatus
@@ -81,6 +82,34 @@ def _event_value(event: RunEvent) -> dict[str, JsonValue]:
         "payload": payload,
         "artifacts": [ref.model_dump(mode="json") for ref in event.artifacts],
     }
+
+
+def _fingerprint(value: JsonValue) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+
+
+def _tool_scope(data: dict[str, JsonValue]) -> tuple[int, str, str]:
+    index, call_id, name = data["call_index"], data["tool_call_id"], data["tool_name"]
+    assert isinstance(index, int) and isinstance(call_id, str) and isinstance(name, str)
+    return index, _fingerprint(call_id), _fingerprint(name)
+
+
+def _artifact_ids(value: object) -> Iterator[UUID]:
+    if isinstance(value, ArtifactRef):
+        yield value.artifact_id
+    elif isinstance(value, BaseModel):
+        for field in type(value).model_fields:
+            yield from _artifact_ids(getattr(value, field))
+    elif isinstance(value, dict):
+        for child in value.values():
+            yield from _artifact_ids(child)
+    elif isinstance(value, (tuple, list)):
+        for child in value:
+            yield from _artifact_ids(child)
 
 
 async def encode_trajectory(
@@ -169,7 +198,12 @@ async def encode_trajectory(
     responses: set[str] = set()
     commands: dict[str, tuple[int, UUID]] = {}
     outputs: set[str] = set()
-    interrupted: set[str] = set()
+    expected_calls: dict[tuple[int | None, int], tuple[str, str, str]] = {}
+    announced_calls: dict[tuple[int | None, int], tuple[str, str, str]] = {}
+    closed_calls: set[tuple[int | None, int]] = set()
+    attempt_calls: dict[str, tuple[int | None, int, str, str]] = {}
+    missing_call_steps: set[int | None] = set()
+    execution_identities: dict[str, dict[str, JsonValue]] = {}
     last_sequence = 0
     try:
         async for event in iter_run_events(
@@ -188,12 +222,30 @@ async def encode_trajectory(
                 "candidate_submission_started",
                 "diagnostic_finalization_started",
                 "evaluation_start",
+                "evaluation_attempt_started",
             ):
-                if attempt is None or attempt in attempts:
+                evaluation_alias = (
+                    kind == "evaluation_attempt_started"
+                    and attempt in attempts
+                    and attempts[attempt][0] == "evaluation_start"
+                )
+                if attempt is None or attempt in attempts and not evaluation_alias:
                     raise TrajectoryExportError(
                         "TRAJECTORY_STRUCTURE", "Missing or duplicate attempt identity"
                     )
-                attempts[attempt] = (kind, event.step_number)
+                if not evaluation_alias:
+                    attempts[attempt] = (kind, event.step_number)
+                if kind == "tool_execution_start":
+                    index, call_id, name = _tool_scope(data)
+                    if announced_calls.get((event.step_number, index), ())[:2] != (
+                        call_id,
+                        name,
+                    ):
+                        raise TrajectoryExportError(
+                            "TRAJECTORY_STRUCTURE",
+                            "Tool execution differs from announced call",
+                        )
+                    attempt_calls[attempt] = (event.step_number, index, call_id, name)
             elif kind in ("model_responded", "compaction_attempt_recorded"):
                 expected = (
                     "model_requested"
@@ -210,6 +262,33 @@ async def encode_trajectory(
                         "Response attempt conflicts with request",
                     )
                 responses.add(attempt)
+                disposition = data.get("disposition")
+                if (
+                    kind == "model_responded"
+                    and isinstance(disposition, dict)
+                    and disposition.get("kind") == "tools"
+                ):
+                    response = data.get("response")
+                    if isinstance(response, dict):
+                        message = response["message"]
+                        assert isinstance(message, dict) and isinstance(
+                            message["tool_calls"], list
+                        )
+                        for index, call in enumerate(message["tool_calls"]):
+                            assert isinstance(call, dict)
+                            key = (event.step_number, index)
+                            if key in expected_calls:
+                                raise TrajectoryExportError(
+                                    "TRAJECTORY_STRUCTURE",
+                                    "Multiple accepted tool batches in one Step",
+                                )
+                            expected_calls[key] = (
+                                _fingerprint(call["id"]),
+                                _fingerprint(call["name"]),
+                                _fingerprint(call["arguments"]),
+                            )
+                    else:
+                        missing_call_steps.add(event.step_number)
                 if (
                     data.get("response") is None
                     and data.get("normalization_failure") is None
@@ -222,9 +301,58 @@ async def encode_trajectory(
                             reason="No final response evidence was produced",
                         )
                     )
-            elif kind == "operation_interrupted" and attempt:
-                interrupted.add(attempt)
+            elif kind == "tool_start":
+                index, call_id, name = _tool_scope(data)
+                key = (event.step_number, index)
+                announced = (call_id, name, _fingerprint(data["arguments"]))
+                if (
+                    key in closed_calls
+                    or (key in expected_calls and expected_calls[key] != announced)
+                    or (
+                        key not in expected_calls
+                        and event.step_number not in missing_call_steps
+                    )
+                    or (key in announced_calls and announced_calls[key] != announced)
+                ):
+                    raise TrajectoryExportError(
+                        "TRAJECTORY_STRUCTURE",
+                        "Tool call arguments or scope differ from accepted response",
+                    )
+                announced_calls[key] = announced
+            elif kind == "tool_execution_end":
+                index, call_id, name = _tool_scope(data)
+                if attempt not in attempt_calls or attempt_calls[attempt] != (
+                    event.step_number,
+                    index,
+                    call_id,
+                    name,
+                ):
+                    raise TrajectoryExportError(
+                        "TRAJECTORY_STRUCTURE",
+                        "Tool execution end has conflicting attempt scope",
+                    )
+            elif kind == "operation_interrupted":
+                if attempt not in attempts:
+                    raise TrajectoryExportError(
+                        "TRAJECTORY_STRUCTURE", "Interrupted operation has no start"
+                    )
             elif kind == "tool_end":
+                index, call_id, name = _tool_scope(data)
+                key = (event.step_number, index)
+                if (
+                    key in closed_calls
+                    or announced_calls.get(key, ())[:2] != (call_id, name)
+                    or (
+                        attempt
+                        and attempt_calls.get(attempt)
+                        != (event.step_number, index, call_id, name)
+                    )
+                ):
+                    raise TrajectoryExportError(
+                        "TRAJECTORY_STRUCTURE",
+                        "Tool result differs from announced scope",
+                    )
+                closed_calls.add(key)
                 if attempt and (
                     attempt not in attempts
                     or attempts[attempt] != ("tool_execution_start", event.step_number)
@@ -247,21 +375,63 @@ async def encode_trajectory(
             elif kind in (
                 "operation_execution_identified",
                 "diagnostic_finalization_execution_identified",
-            ) and data.get("command"):
+            ):
                 identity = data["identity"]
                 assert isinstance(identity, dict)
+                if attempt not in attempts or str(identity["attempt_id"]) != attempt:
+                    raise TrajectoryExportError(
+                        "TRAJECTORY_STRUCTURE",
+                        "Execution identity has no matching attempt",
+                    )
                 if (
-                    attempt is None
-                    or attempt not in attempts
-                    and kind == "operation_execution_identified"
+                    kind == "diagnostic_finalization_execution_identified"
+                    and attempts[attempt][0] != "diagnostic_finalization_started"
                 ):
                     raise TrajectoryExportError(
-                        "TRAJECTORY_STRUCTURE", "Command has no execution attempt"
+                        "TRAJECTORY_STRUCTURE",
+                        "Diagnostic identity has conflicting owner",
                     )
-                commands[str(identity["execution_id"])] = (
-                    event.sequence,
-                    UUID(attempt),
-                )
+                execution_id = str(identity["execution_id"])
+                previous = execution_identities.get(execution_id)
+                if previous is not None:
+                    mutable = (
+                        {"start_permitted", "started_observed", "guest"}
+                        if identity["role"] == "docker_exec"
+                        else set()
+                    )
+                    if {
+                        key: value
+                        for key, value in previous.items()
+                        if key not in mutable
+                    } != {
+                        key: value
+                        for key, value in identity.items()
+                        if key not in mutable
+                    }:
+                        raise TrajectoryExportError(
+                            "TRAJECTORY_STRUCTURE", "Execution birth identity changed"
+                        )
+                execution_identities[execution_id] = identity
+                if data.get("command"):
+                    commands.setdefault(execution_id, (event.sequence, UUID(attempt)))
+            elif kind in (
+                "operation_execution_ended",
+                "diagnostic_finalization_execution_ended",
+            ):
+                evidence = data["evidence"]
+                assert isinstance(evidence, dict)
+                identity = evidence["identity"]
+                assert isinstance(identity, dict)
+                if (
+                    attempt not in attempts
+                    or str(identity["attempt_id"]) != attempt
+                    or execution_identities.get(str(evidence["execution_id"]))
+                    != identity
+                ):
+                    raise TrajectoryExportError(
+                        "TRAJECTORY_STRUCTURE",
+                        "Execution end differs from identified execution",
+                    )
             elif kind == "operation_output_recorded":
                 output = data["output"]
                 assert isinstance(output, dict)
@@ -311,6 +481,8 @@ async def encode_trajectory(
                         "TRAJECTORY_STRUCTURE", "Compaction source exceeds boundary"
                     )
             referenced.update(ref.artifact_id for ref in event.artifacts)
+            for field in _PAYLOAD_FIELDS[kind][1]:
+                referenced.update(_artifact_ids(getattr(event.payload, field)))
             if last_sequence:
                 encoding.append(b",")
             await encoding.value(projected)

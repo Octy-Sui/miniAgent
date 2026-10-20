@@ -1,7 +1,9 @@
 import json
 import sqlite3
 from datetime import UTC, datetime
+from hashlib import sha256
 from time import monotonic
+from uuid import uuid4
 
 import pytest
 
@@ -17,12 +19,13 @@ from miniagent.trajectory import (
 from tests.support.runtime.runtime import QueueProvider, agent, final_response
 
 
-async def exported(tmp_path, *, corrupt=False):
+async def exported(tmp_path, *, corrupt=False, config=None):
     store = SQLiteRunStore(tmp_path / "run.db")
     await store.initialize()
     artifacts = FileArtifactStore(tmp_path / "artifacts")
     result = await AgentRuntime(
         provider=QueueProvider([final_response("final 汉字")]),
+        config=config,
         tools=ToolRegistry([]),
         run_store=store,
         artifact_store=artifacts,
@@ -32,6 +35,7 @@ async def exported(tmp_path, *, corrupt=False):
     await artifacts.put(
         ArtifactWrite(run_id=result.run_id, type="run_trajectory"), b"old"
     )
+    await artifacts.put(ArtifactWrite(run_id=uuid4(), type="report"), b"other Run")
     if corrupt:
         with sqlite3.connect(store.path) as connection:
             connection.execute("DROP TRIGGER run_events_no_delete")
@@ -119,6 +123,15 @@ async def test_exact_total_json_limit_including_header_and_escaping(tmp_path):
         record, store, artifacts, producer_version=version[:-1]
     )
     assert len(one_less) == 67_108_863
+    for payload in (one_less, content):
+        ref = await artifacts.put(
+            ArtifactWrite(run_id=record.state.identity.run_id, type="run_trajectory"),
+            payload,
+        )
+        manifest = await artifacts.get_record(ref)
+        assert manifest.size_bytes == len(payload)
+        assert manifest.sha256 == sha256(payload).hexdigest()
+        assert await artifacts.read(ref) == payload
     del one_less
     assert json.loads(content)["producer_version"] == version
     del content
@@ -212,9 +225,12 @@ async def test_wrong_attempt_is_structural_failure(tmp_path):
 async def test_registered_metadata_does_not_verify_body(tmp_path):
     _, record, store = await exported(tmp_path)
     artifacts = FileArtifactStore(tmp_path / "artifacts")
-    for body in (tmp_path / "artifacts" / "objects").rglob("*"):
+    deleted = 0
+    for body in (tmp_path / "artifacts" / "content").rglob("*"):
         if body.is_file():
             body.unlink()
+            deleted += 1
+    assert deleted > 0
     document = json.loads(await encode_existing(record, store, artifacts))
     assert document["artifacts"][0]["body_verified"] is False
     assert document["artifacts"][0]["relation"] == "registered_only"
@@ -293,12 +309,12 @@ async def test_frozen_definition_positive_whitelist_and_credential_exclusion(tmp
                 )
             ]
         ),
-        model_limits={"context_window_tokens": 12345},
+        model_limits={"context_window_tokens": 12345, "max_output_tokens": 2048},
         workspace_kind="local",
         workspace_id="workspace-positive",
         base_revision="base-positive",
         evaluator="pass_through",
-        benchmark={"instance_id": "benchmark-positive"},
+        benchmark={"instance_id": "benchmark-positive", "task_digest": "a" * 64},
         provider_endpoint_identity="https://endpoint.test/v1",
     )
     content = await encode_existing(
@@ -473,3 +489,179 @@ async def test_suspended_unknown_request_is_complete_without_fabricated_response
     assert not any(
         e["payload"]["type"] == "model_responded" for e in document["events"]
     )
+
+
+async def test_snapshot_after_boundary_is_rejected(tmp_path):
+    _, record, store = await exported(tmp_path)
+    snapshot = await store.load_version(
+        record.state.identity.run_id, record.latest_snapshot_version
+    )
+    future = snapshot.model_copy(
+        update={"event_sequence": record.last_event_sequence + 1}
+    )
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("DROP TRIGGER run_snapshots_no_update")
+        connection.execute(
+            "UPDATE run_snapshots SET event_sequence=?,snapshot_json=? WHERE version=?",
+            (future.event_sequence, future.model_dump_json(), future.version),
+        )
+    with pytest.raises(TrajectoryExportError, match="STRUCTURE"):
+        await encode_existing(record, store, FileArtifactStore(tmp_path / "artifacts"))
+
+
+async def test_sequence_order_survives_nonmonotonic_timestamps(tmp_path):
+    _, record, store = await exported(tmp_path)
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("DROP TRIGGER run_events_no_update")
+        connection.execute(
+            "UPDATE run_events SET occurred_at='2099-01-01T00:00:00Z' WHERE sequence=1"
+        )
+    document = json.loads(
+        await encode_existing(record, store, FileArtifactStore(tmp_path / "artifacts"))
+    )
+    assert document["events"][0]["occurred_at"] > document["events"][1]["occurred_at"]
+    assert [event["sequence"] for event in document["events"]] == list(
+        range(1, record.last_event_sequence + 1)
+    )
+
+
+async def test_multi_page_metadata_escaping_counts_against_real_limit(tmp_path):
+    _, record, store = await exported(tmp_path)
+    artifacts = FileArtifactStore(tmp_path / "artifacts")
+    text = "汉" * 60_000
+    for _ in range(201):
+        await artifacts.put(
+            ArtifactWrite(
+                run_id=record.state.identity.run_id,
+                type="report",
+                metadata={"text": text},
+            ),
+            b"",
+        )
+    assert len(text.encode()) * 201 < 67_108_864
+    with pytest.raises(TrajectoryExportError, match="TOO_LARGE"):
+        await encode_existing(record, store, artifacts)
+
+
+async def test_catalog_includes_typed_evaluation_check_references(tmp_path):
+    from uuid import uuid4
+
+    from miniagent.evaluation import EvaluationCheck, EvaluationResult
+
+    run_id = uuid4()
+    store = SQLiteRunStore(tmp_path / "run.db")
+    await store.initialize()
+    artifacts = FileArtifactStore(tmp_path / "artifacts")
+    report = await artifacts.put(
+        ArtifactWrite(run_id=run_id, type="evaluation_report"), b"report"
+    )
+
+    class Evaluator:
+        async def evaluate(self, request):
+            return EvaluationResult(
+                passed=True,
+                checks=[EvaluationCheck(name="check", passed=True, artifact=report)],
+            )
+
+    await AgentRuntime(
+        provider=QueueProvider([final_response()]),
+        tools=ToolRegistry([]),
+        run_store=store,
+        artifact_store=artifacts,
+        evaluator=Evaluator(),
+    ).run(agent(), "task", run_id=run_id)
+    record = await store.get(run_id)
+    document = json.loads(await encode_existing(record, store, artifacts))
+    item = next(
+        item
+        for item in document["artifacts"]
+        if item["artifact_id"] == str(report.artifact_id)
+    )
+    assert item["relation"] == "event_referenced"
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "execution_attempt",
+        "tool_arguments",
+        "ended_identity",
+        "missing_response",
+        "missing_output",
+        "partial_stream",
+    ],
+)
+async def test_execution_references_and_explicit_partial_evidence(
+    tmp_path, submission_case, variant
+):
+    from uuid import uuid4
+
+    from miniagent.runtime import RuntimeConfig
+    from miniagent.tools.shell import ShellTool
+    from tests.support.runtime.runtime import AllowPolicyEngine, tool_response
+
+    workspace, artifacts = submission_case
+    store = SQLiteRunStore(tmp_path / "run.db")
+    await store.initialize()
+    result = await AgentRuntime(
+        provider=QueueProvider(
+            [tool_response(name="shell", arguments={"command": "printf done"})]
+        ),
+        tools=ToolRegistry([ShellTool(workspace)]),
+        config=RuntimeConfig(max_steps=1),
+        run_store=store,
+        artifact_store=artifacts,
+        policy_engine=AllowPolicyEngine(),
+    ).run(agent(allowed_tools=["shell"]), "task", run_id=workspace.run_id)
+    record = await store.get(result.run_id)
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("DROP TRIGGER run_events_no_update")
+        if variant == "execution_attempt":
+            connection.execute(
+                "UPDATE run_events SET payload_json=json_set(payload_json,'$.attempt_id',?) WHERE type='tool_execution_end'",
+                (str(uuid4()),),
+            )
+        elif variant == "tool_arguments":
+            connection.execute(
+                "UPDATE run_events SET payload_json=json_set(payload_json,'$.arguments.command','printf forged') WHERE type='tool_start'"
+            )
+        elif variant == "ended_identity":
+            connection.execute(
+                "UPDATE run_events SET payload_json=json_set(payload_json,'$.evidence.identity.pid',1) WHERE type='operation_execution_ended'"
+            )
+        elif variant == "missing_response":
+            connection.execute(
+                "UPDATE run_events SET payload_json=json_set(payload_json,'$.response',NULL) WHERE type='model_responded'"
+            )
+        elif variant == "missing_output":
+            connection.execute(
+                "UPDATE run_events SET type='provider_identity_changed',payload_json=? WHERE type='operation_output_recorded'",
+                (
+                    json.dumps(
+                        {
+                            "type": "provider_identity_changed",
+                            "original_endpoint_identity": "https://old.test",
+                            "current_endpoint_identity": "https://new.test",
+                        }
+                    ),
+                ),
+            )
+        else:
+            connection.execute(
+                "UPDATE run_events SET payload_json=json_set(payload_json,'$.output.stdout.status','partial','$.output.stdout.eof_observed',json('false'),'$.output.stdout.reason','drain interrupted') WHERE type='operation_output_recorded'"
+            )
+    if variant in ("execution_attempt", "tool_arguments", "ended_identity"):
+        with pytest.raises(TrajectoryExportError, match="STRUCTURE"):
+            await encode_existing(record, store, artifacts)
+    else:
+        document = json.loads(await encode_existing(record, store, artifacts))
+        expected = {
+            "missing_response": "RESPONSE_MISSING",
+            "missing_output": "OUTPUT_MISSING",
+            "partial_stream": "STREAM_PARTIAL",
+        }[variant]
+        assert document["coverage"]["status"] == "partial"
+        issue = next(
+            item for item in document["coverage"]["issues"] if item["code"] == expected
+        )
+        assert issue["sequence"] > 0 and issue["attempt_id"] and issue["reason"]

@@ -1,8 +1,9 @@
 from datetime import datetime
 from typing import Literal
+from urllib.parse import urlsplit
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
 from miniagent.agents import AgentSpec
 from miniagent.metering.pricing import PriceConfig
@@ -14,19 +15,50 @@ class _Contract(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class TrajectoryModelLimits(_Contract):
+    context_window_tokens: int = Field(gt=0)
+    max_output_tokens: int = Field(gt=0)
+
+
+class TrajectoryBenchmark(_Contract):
+    instance_id: str = Field(min_length=1)
+    task_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    tasks_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    harness_version: str | None = None
+
+
 class TrajectoryDefinition(_Contract):
     task: str
     agent: AgentSpec
     tools: tuple[ToolDefinition, ...] = ()
     budgets: RuntimeConfig
-    model_limits: dict[str, JsonValue] | None = None
+    model_limits: TrajectoryModelLimits | None = None
     pricing: PriceConfig | None = None
     provider_endpoint_identity: str | None = None
     workspace_kind: str | None = None
     workspace_id: str | None = None
     base_revision: str | None = None
     evaluator: str | None = None
-    benchmark: dict[str, JsonValue] | None = None
+    benchmark: TrajectoryBenchmark | None = None
+
+    @field_validator("provider_endpoint_identity")
+    @classmethod
+    def nonsecret_endpoint(cls, value: str | None) -> str | None:
+        if value is not None:
+            parsed = urlsplit(value)
+            if (
+                parsed.scheme not in ("http", "https")
+                or not parsed.hostname
+                or parsed.username
+                or parsed.password
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError(
+                    "provider_endpoint_identity must be a nonsecret HTTP endpoint"
+                )
+        return value
 
 
 class TrajectoryBoundary(_Contract):
