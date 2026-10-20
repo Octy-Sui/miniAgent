@@ -1246,11 +1246,15 @@ class RunExecution:
             return InlineToolResultEvidence(
                 result=ToolResult.model_validate_json(encoded)
             )
+
         def deadline() -> float | None:
             token = current_interruption_token()
             deadlines = [
                 value
-                for value in (current_cleanup_deadline(), token.deadline if token else None)
+                for value in (
+                    current_cleanup_deadline(),
+                    token.deadline if token else None,
+                )
                 if value is not None
             ]
             return min(deadlines) if deadlines else None

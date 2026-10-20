@@ -356,7 +356,9 @@ async def test_raw_publication_obeys_late_cleanup_deadline(tmp_path, monkeypatch
         return written
 
     monkeypatch.setattr(os, "write", expire_after_write)
-    with cleanup_deadline_scope(lambda: deadline[0]):
-        with pytest.raises(TimeoutError, match="deadline"):
-            await run_return(tmp_path, sized_result(200000))
+    with (
+        cleanup_deadline_scope(lambda: deadline[0]),
+        pytest.raises(TimeoutError, match="deadline"),
+    ):
+        await run_return(tmp_path, sized_result(200000))
     assert not list((tmp_path / "artifacts").rglob("*.json"))
