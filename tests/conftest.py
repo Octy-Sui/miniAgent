@@ -505,3 +505,6 @@ def export_engine():
     server.shutdown()
     server.server_close()
     thread.join(5)
+
+
+pytest_plugins = ["tests.support.cli.fixtures", "tests.support.dashboard.fixtures"]

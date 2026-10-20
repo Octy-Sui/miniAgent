@@ -1,0 +1,522 @@
+{
+  "as_of": "2026-10-20",
+  "counting": {
+    "cases": "pytest --collect-only -q; parameterized items expanded; environment-gated cases included",
+    "functions": "test functions/methods before parametrization",
+    "coverage": "case inventory, not statement/branch/requirement coverage",
+    "migration": "all 1415 original node IDs map one-to-one to the new collection; no loss or duplication"
+  },
+  "definitions": {
+    "ut": "isolated logic/contracts",
+    "it": "component collaboration and file/database/process/SDK boundaries",
+    "sit": "application/system journeys, including Local/Docker/resume/SWE-bench",
+    "e2e": "browser journeys and installed command entrypoints to user-visible outcomes"
+  },
+  "levels": {
+    "ut": {
+      "cases": 492,
+      "functions": 209
+    },
+    "it": {
+      "cases": 748,
+      "functions": 392
+    },
+    "sit": {
+      "cases": 157,
+      "functions": 85
+    },
+    "e2e": {
+      "cases": 18,
+      "functions": 16
+    }
+  },
+  "total": {
+    "cases": 1415,
+    "functions": 702
+  },
+  "modules": [
+    {
+      "module": "artifacts",
+      "cases": {
+        "ut": 0,
+        "it": 11,
+        "sit": 0,
+        "e2e": 0,
+        "total": 11
+      },
+      "functions": {
+        "ut": 0,
+        "it": 7,
+        "sit": 0,
+        "e2e": 0,
+        "total": 7
+      }
+    },
+    {
+      "module": "cli",
+      "cases": {
+        "ut": 28,
+        "it": 65,
+        "sit": 97,
+        "e2e": 1,
+        "total": 191
+      },
+      "functions": {
+        "ut": 13,
+        "it": 42,
+        "sit": 50,
+        "e2e": 1,
+        "total": 106
+      }
+    },
+    {
+      "module": "context_compaction",
+      "cases": {
+        "ut": 6,
+        "it": 10,
+        "sit": 1,
+        "e2e": 0,
+        "total": 17
+      },
+      "functions": {
+        "ut": 4,
+        "it": 5,
+        "sit": 1,
+        "e2e": 0,
+        "total": 10
+      }
+    },
+    {
+      "module": "dashboard",
+      "cases": {
+        "ut": 263,
+        "it": 283,
+        "sit": 18,
+        "e2e": 17,
+        "total": 581
+      },
+      "functions": {
+        "ut": 84,
+        "it": 118,
+        "sit": 6,
+        "e2e": 15,
+        "total": 223
+      }
+    },
+    {
+      "module": "environments",
+      "cases": {
+        "ut": 13,
+        "it": 81,
+        "sit": 3,
+        "e2e": 0,
+        "total": 97
+      },
+      "functions": {
+        "ut": 9,
+        "it": 46,
+        "sit": 3,
+        "e2e": 0,
+        "total": 58
+      }
+    },
+    {
+      "module": "evaluation",
+      "cases": {
+        "ut": 42,
+        "it": 84,
+        "sit": 2,
+        "e2e": 0,
+        "total": 128
+      },
+      "functions": {
+        "ut": 18,
+        "it": 47,
+        "sit": 2,
+        "e2e": 0,
+        "total": 67
+      }
+    },
+    {
+      "module": "metering",
+      "cases": {
+        "ut": 3,
+        "it": 3,
+        "sit": 0,
+        "e2e": 0,
+        "total": 6
+      },
+      "functions": {
+        "ut": 3,
+        "it": 3,
+        "sit": 0,
+        "e2e": 0,
+        "total": 6
+      }
+    },
+    {
+      "module": "models",
+      "cases": {
+        "ut": 16,
+        "it": 0,
+        "sit": 0,
+        "e2e": 0,
+        "total": 16
+      },
+      "functions": {
+        "ut": 15,
+        "it": 0,
+        "sit": 0,
+        "e2e": 0,
+        "total": 15
+      }
+    },
+    {
+      "module": "policy",
+      "cases": {
+        "ut": 6,
+        "it": 8,
+        "sit": 0,
+        "e2e": 0,
+        "total": 14
+      },
+      "functions": {
+        "ut": 3,
+        "it": 8,
+        "sit": 0,
+        "e2e": 0,
+        "total": 11
+      }
+    },
+    {
+      "module": "providers",
+      "cases": {
+        "ut": 0,
+        "it": 5,
+        "sit": 0,
+        "e2e": 0,
+        "total": 5
+      },
+      "functions": {
+        "ut": 0,
+        "it": 2,
+        "sit": 0,
+        "e2e": 0,
+        "total": 2
+      }
+    },
+    {
+      "module": "resume",
+      "cases": {
+        "ut": 0,
+        "it": 11,
+        "sit": 27,
+        "e2e": 0,
+        "total": 38
+      },
+      "functions": {
+        "ut": 0,
+        "it": 2,
+        "sit": 19,
+        "e2e": 0,
+        "total": 21
+      }
+    },
+    {
+      "module": "runtime",
+      "cases": {
+        "ut": 104,
+        "it": 126,
+        "sit": 0,
+        "e2e": 0,
+        "total": 230
+      },
+      "functions": {
+        "ut": 49,
+        "it": 76,
+        "sit": 0,
+        "e2e": 0,
+        "total": 125
+      }
+    },
+    {
+      "module": "scripts",
+      "cases": {
+        "ut": 0,
+        "it": 0,
+        "sit": 9,
+        "e2e": 0,
+        "total": 9
+      },
+      "functions": {
+        "ut": 0,
+        "it": 0,
+        "sit": 4,
+        "e2e": 0,
+        "total": 4
+      }
+    },
+    {
+      "module": "storage",
+      "cases": {
+        "ut": 1,
+        "it": 61,
+        "sit": 0,
+        "e2e": 0,
+        "total": 62
+      },
+      "functions": {
+        "ut": 1,
+        "it": 36,
+        "sit": 0,
+        "e2e": 0,
+        "total": 37
+      }
+    },
+    {
+      "module": "tools",
+      "cases": {
+        "ut": 10,
+        "it": 0,
+        "sit": 0,
+        "e2e": 0,
+        "total": 10
+      },
+      "functions": {
+        "ut": 10,
+        "it": 0,
+        "sit": 0,
+        "e2e": 0,
+        "total": 10
+      }
+    }
+  ],
+  "split_files": [
+    {
+      "original": "tests/acceptance/context_compaction/test_protocol.py",
+      "destinations": [
+        "tests/it/context_compaction/test_protocol.py",
+        "tests/sit/context_compaction/test_protocol.py",
+        "tests/ut/context_compaction/test_protocol.py"
+      ]
+    },
+    {
+      "original": "tests/acceptance/dashboard/test_installation.py",
+      "destinations": [
+        "tests/e2e/cli/test_installation.py",
+        "tests/e2e/dashboard/test_installation.py"
+      ]
+    },
+    {
+      "original": "tests/acceptance/resume/test_swebench.py",
+      "destinations": [
+        "tests/it/resume/test_swebench.py",
+        "tests/sit/resume/test_swebench.py"
+      ]
+    },
+    {
+      "original": "tests/cli/test_evaluation_delivery.py",
+      "destinations": [
+        "tests/it/cli/test_evaluation_delivery.py",
+        "tests/sit/cli/test_evaluation_delivery.py"
+      ]
+    },
+    {
+      "original": "tests/cli/test_main.py",
+      "destinations": [
+        "tests/it/cli/test_main.py",
+        "tests/ut/cli/test_main.py"
+      ]
+    },
+    {
+      "original": "tests/cli/test_model_limits.py",
+      "destinations": [
+        "tests/it/cli/test_model_limits.py",
+        "tests/ut/cli/test_model_limits.py"
+      ]
+    },
+    {
+      "original": "tests/cli/test_resume_main.py",
+      "destinations": [
+        "tests/it/cli/test_resume_main.py",
+        "tests/sit/cli/test_resume_main.py",
+        "tests/ut/cli/test_resume_main.py"
+      ]
+    },
+    {
+      "original": "tests/cli/test_resume_signals.py",
+      "destinations": [
+        "tests/it/cli/test_resume_signals.py",
+        "tests/sit/cli/test_resume_signals.py",
+        "tests/ut/cli/test_resume_signals.py"
+      ]
+    },
+    {
+      "original": "tests/cli/test_run_definition.py",
+      "destinations": [
+        "tests/it/cli/test_run_definition.py",
+        "tests/ut/cli/test_run_definition.py"
+      ]
+    },
+    {
+      "original": "tests/dashboard/test_compaction_sources.py",
+      "destinations": [
+        "tests/it/dashboard/test_compaction_sources.py",
+        "tests/ut/dashboard/test_compaction_sources.py"
+      ]
+    },
+    {
+      "original": "tests/dashboard/test_connection.py",
+      "destinations": [
+        "tests/it/dashboard/test_connection.py",
+        "tests/ut/dashboard/test_connection.py"
+      ]
+    },
+    {
+      "original": "tests/dashboard/test_run_projection.py",
+      "destinations": [
+        "tests/it/dashboard/test_run_projection.py",
+        "tests/ut/dashboard/test_run_projection.py"
+      ]
+    },
+    {
+      "original": "tests/dashboard/test_workspace_projection.py",
+      "destinations": [
+        "tests/it/dashboard/test_workspace_projection.py",
+        "tests/ut/dashboard/test_workspace_projection.py"
+      ]
+    },
+    {
+      "original": "tests/environments/test_docker.py",
+      "destinations": [
+        "tests/it/environments/test_docker.py",
+        "tests/sit/environments/test_docker.py",
+        "tests/ut/environments/test_docker.py"
+      ]
+    },
+    {
+      "original": "tests/environments/test_docker_attach.py",
+      "destinations": [
+        "tests/it/environments/test_docker_attach.py",
+        "tests/sit/environments/test_docker_attach.py"
+      ]
+    },
+    {
+      "original": "tests/environments/test_docker_connection.py",
+      "destinations": [
+        "tests/it/environments/test_docker_connection.py",
+        "tests/ut/environments/test_docker_connection.py"
+      ]
+    },
+    {
+      "original": "tests/environments/test_docker_exec_helper.py",
+      "destinations": [
+        "tests/it/environments/test_docker_exec_helper.py",
+        "tests/ut/environments/test_docker_exec_helper.py"
+      ]
+    },
+    {
+      "original": "tests/environments/test_managed_process.py",
+      "destinations": [
+        "tests/it/environments/test_managed_process.py",
+        "tests/sit/environments/test_managed_process.py"
+      ]
+    },
+    {
+      "original": "tests/evaluation/test_swebench_data.py",
+      "destinations": [
+        "tests/it/evaluation/test_swebench_data.py",
+        "tests/ut/evaluation/test_swebench_data.py"
+      ]
+    },
+    {
+      "original": "tests/metering/test_pricing.py",
+      "destinations": [
+        "tests/it/metering/test_pricing.py",
+        "tests/ut/metering/test_pricing.py"
+      ]
+    },
+    {
+      "original": "tests/policy/test_policy.py",
+      "destinations": [
+        "tests/it/policy/test_policy.py",
+        "tests/ut/policy/test_policy.py"
+      ]
+    },
+    {
+      "original": "tests/runtime/test_context.py",
+      "destinations": [
+        "tests/it/runtime/test_context.py",
+        "tests/ut/runtime/test_context.py"
+      ]
+    },
+    {
+      "original": "tests/runtime/test_execution_observer.py",
+      "destinations": [
+        "tests/it/runtime/test_execution_observer.py",
+        "tests/ut/runtime/test_execution_observer.py"
+      ]
+    },
+    {
+      "original": "tests/runtime/test_interruption.py",
+      "destinations": [
+        "tests/it/runtime/test_interruption.py",
+        "tests/ut/runtime/test_interruption.py"
+      ]
+    },
+    {
+      "original": "tests/runtime/test_runtime.py",
+      "destinations": [
+        "tests/it/runtime/test_runtime.py",
+        "tests/ut/runtime/test_runtime.py"
+      ]
+    },
+    {
+      "original": "tests/storage/test_sqlite.py",
+      "destinations": [
+        "tests/it/storage/test_sqlite.py",
+        "tests/ut/storage/test_sqlite.py"
+      ]
+    }
+  ],
+  "external_dependencies": {
+    "docker": "prepared images/daemon; existing MINIAGENT_* opt-ins retained",
+    "swebench": "prepared harness/data/manifests; existing opt-ins retained",
+    "browser": "Playwright Chromium",
+    "model": "system/E2E fixtures may replace the external model; no live-model claim"
+  },
+  "verification": {
+    "strategy": "full suite followed by targeted E2E/resume rerun after fixture export and helper relocation fixes; latest result per case",
+    "commands": [
+      "uv run pytest -q",
+      "uv run pytest tests/e2e tests/sit/resume -q"
+    ],
+    "results": {
+      "passed": 1396,
+      "skipped": 19
+    },
+    "by_level": {
+      "ut": {
+        "passed": 492
+      },
+      "it": {
+        "passed": 742,
+        "skipped": 6
+      },
+      "sit": {
+        "passed": 144,
+        "skipped": 13
+      },
+      "e2e": {
+        "passed": 18
+      }
+    },
+    "preservation": "1415 collected cases map one-to-one; all 702 test-function assertion ASTs preserved",
+    "checks": [
+      "ruff check tests",
+      "ruff format --check tests",
+      "ty check",
+      "git diff --check"
+    ]
+  }
+}

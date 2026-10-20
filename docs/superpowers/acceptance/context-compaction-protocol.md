@@ -11,9 +11,9 @@ U1–U6 使用确定性 Provider、真实 SQLite 和 SDK HTTP 边界验证。U7 
 从仓库根目录运行：
 
 ```sh
-UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run python tests/acceptance/context_compaction/protocol.py freeze /path/to/prepared-manifest.json
-UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run python -m tests.acceptance.context_compaction.live artifacts/context-compaction-acceptance/<protocol-id> <planned-run-id>
-UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run python tests/acceptance/context_compaction/protocol.py report artifacts/context-compaction-acceptance/<protocol-id>
+UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run python tests/support/context_compaction/protocol.py freeze /path/to/prepared-manifest.json
+UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run python -m tests.support.context_compaction.live artifacts/context-compaction-acceptance/<protocol-id> <planned-run-id>
+UV_CACHE_DIR=/private/tmp/miniagent-uv-cache uv run python tests/support/context_compaction/protocol.py report artifacts/context-compaction-acceptance/<protocol-id>
 ```
 
 live 是 opt-in，每次执行一个冻结 Run，需要 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、匹配的 model limits 和 pricing 条目、可写 Local Workspace／SQLite 设置。它核对 runner、初始源和夹具修订，保留最终工作区供复核。冻结 approval_mode=console，合法 Local shell 调用由现有 CLI 审批处理器交给人类确认；审批和拒绝均保存原始轨迹。baseline 仅将最近保留量设为 max_steps 禁用压缩，其他模型及预算配置相同；越硬预算仍拒绝发送。manifest 须记录臂差异。`wire.jsonl` 在 SDK HTTP 边界保存真实 body 与响应 status，省略认证 header。共享前检查 body 中任务凭证并脱敏，保留工具、审批、预算和用量字段。保存真实上下文拒绝 error body，受控 SDK 测试不证明线上错误形态。

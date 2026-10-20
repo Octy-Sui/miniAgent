@@ -30,12 +30,13 @@ Treat `docs/blueprint.md` as roadmap, not proof of current behavior.
 ## Start here
 
 - CLI/config/composition/finalization: `src/miniagent/cli/`
-- Dashboard reads/projections/pages: `src/miniagent/dashboard/`, `tests/dashboard/`, `tests/acceptance/dashboard/`
-- Independent evaluation/data/harness: `src/miniagent/evaluation/`, `tests/evaluation/`
+- Dashboard reads/projections/pages: `src/miniagent/dashboard/`, `tests/{ut,it,sit,e2e}/dashboard/`
+- Independent evaluation/data/harness: `src/miniagent/evaluation/`, `tests/{ut,it,sit}/evaluation/`
 - Run lifecycle/interruption/resume: `src/miniagent/runtime/`, `src/miniagent/cli/signals.py`, `src/miniagent/cli/resume.py`
 - Model protocol/provider/pricing: `src/miniagent/models/`, `src/miniagent/providers/`, `src/miniagent/metering/`
 - Workspace isolation/tools/artifacts: `src/miniagent/environments/`, `src/miniagent/tools/`, `src/miniagent/artifacts/`
-- Behavioral coverage: matching domain directory under `tests/`
+- Behavioral coverage: `tests/{ut,it,sit,e2e}/<domain>/`; shared tooling in `tests/support/`
+- Test level/module case inventory: `tests/inventory.json` (parameterized case counts, not code coverage)
 - Detailed task routes and implementation status: `docs/repository-map.md`
 
 ## Source of truth and commands

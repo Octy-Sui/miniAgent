@@ -11,3 +11,11 @@ wheels/
 
 # env
 .env
+
+# Coverage data and generated reports
+.coverage
+.coverage.*
+/coverage/
+/htmlcov/
+/coverage.xml
+/coverage.json
