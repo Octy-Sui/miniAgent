@@ -653,3 +653,123 @@ async def test_effective_definition_uses_frozen_values_after_ambient_config_chan
     assert projected["base_revision"] == context.attachment.base_revision
     assert projected["evaluator"] == "pass_through" and projected["benchmark"] is None
     assert b"forbidden-current-credential" not in content
+
+
+@pytest.mark.parametrize("fault", ["credentials", "resume_commit"])
+@pytest.mark.parametrize("entry", ["api", "cli"])
+async def test_resume_preparation_failure_exports_and_preserves_error(
+    resume_case, monkeypatch, capsys, fault, entry
+):
+    import sqlite3
+
+    import typer
+
+    from miniagent.cli.main import _resume_main
+    from miniagent.cli.resume import ResumeConfig, resume_application
+    from miniagent.cli.run_definition import (
+        freeze_application_definition,
+        parse_application_definition,
+    )
+    from miniagent.runtime.recording import RunPersistenceError
+    from miniagent.runtime.resume import ResumeRejected
+
+    app, _, provider = resume_case
+    deps = app.dependencies
+    record = await deps.run_store.get(deps.run_id)
+    frozen = parse_application_definition(
+        record.recovery_context.application, record.state.definition
+    ).model_copy(update={"export_trajectory": True})
+    context = record.recovery_context.model_copy(
+        update={
+            "application": freeze_application_definition(
+                frozen, record.state.definition
+            )
+        }
+    )
+    with sqlite3.connect(deps.run_store.path) as connection:
+        connection.execute(
+            "UPDATE runs SET recovery_context_json=? WHERE run_id=?",
+            (context.model_dump_json(), str(deps.run_id)),
+        )
+        if fault == "resume_commit":
+            connection.execute(
+                "CREATE TRIGGER fail_resume BEFORE INSERT ON run_events WHEN NEW.type='resume_started' BEGIN SELECT RAISE(ABORT,'resume commit unavailable'); END"
+            )
+    if fault == "credentials":
+        monkeypatch.setenv("OPENAI_API_KEY", "")
+    config = ResumeConfig(run_id=deps.run_id, database=deps.run_store.path)
+    if entry == "api":
+        with pytest.raises(
+            ResumeRejected if fault == "credentials" else RunPersistenceError
+        ) as caught:
+            await resume_application(config, cancellation_token=CancellationToken())
+        assert any(
+            note.startswith("Trajectory: ")
+            for note in getattr(caught.value, "__notes__", ())
+        )
+    else:
+        with pytest.raises(typer.Exit) as caught:
+            await _resume_main(config)
+        assert caught.value.exit_code == 1
+        captured = capsys.readouterr()
+        assert "Trajectory:" in captured.out + captured.err
+    records = (await deps.artifact_store.list_records_for_run(deps.run_id)).records
+    assert len([item for item in records if item.type == "run_trajectory"]) == 1
+    assert provider.requests == []
+    assert deps.workspace.root.exists()
+
+
+@pytest.mark.parametrize("stop", ["timeout", "cancel"])
+async def test_application_first_export_read_is_budgeted_and_nonfatal(
+    tmp_path, monkeypatch, stop
+):
+    import asyncio
+    import sqlite3
+    import threading
+    import time
+
+    app = await application(tmp_path, monkeypatch)
+    await app.run(CancellationToken())
+    app = Application(
+        replace(app.dependencies, artifact_collection_timeout_seconds=0.03)
+    )
+    entered, release = threading.Event(), threading.Event()
+    original = sqlite3.connect
+
+    class Connection(sqlite3.Connection):
+        def execute(self, sql, parameters=(), /):
+            if sql.startswith("SELECT * FROM runs") and not entered.is_set():
+                entered.set()
+                if stop == "timeout":
+                    time.sleep(0.12)
+                elif not release.wait(3):
+                    raise TimeoutError("read barrier not released")
+            return super().execute(sql, parameters)
+
+    def connect(*args, **kwargs):
+        return original(*args, **kwargs, factory=Connection)
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    pending = asyncio.create_task(app._export_trajectory(None))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        if stop == "cancel":
+            pending.cancel()
+    finally:
+        release.set()
+    outcome = await pending
+    assert outcome.status == "skipped"
+    assert (
+        len(
+            [
+                r
+                for r in (
+                    await app.dependencies.artifact_store.list_records_for_run(
+                        app.dependencies.run_id
+                    )
+                ).records
+                if r.type == "run_trajectory"
+            ]
+        )
+        == 1
+    )

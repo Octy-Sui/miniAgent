@@ -11,7 +11,6 @@ from miniagent.agents import AgentSpec
 from miniagent.artifacts import ArtifactNotFoundError, ArtifactRef, ArtifactStore
 from miniagent.cli.candidate_submission import CandidateSubmission, SubmissionResult
 from miniagent.cli.diagnostic_finalization import finalize_diagnostic
-from miniagent.cli.run_definition import parse_application_definition
 from miniagent.cli.trajectory import (
     TrajectoryDisabled,
     TrajectoryExportOutcome,
@@ -269,19 +268,12 @@ class Application:
         envelope = deps.recovery_context.application
         if envelope is None:
             return TrajectorySkipped(reason="Frozen application definition unavailable")
-        try:
-            record = await deps.run_store.get(deps.run_id)
-            definition = parse_application_definition(envelope, record.state.definition)
-        except Exception as exc:  # noqa: BLE001 -- Export failures cannot replace the Run outcome.
-            return TrajectorySkipped(
-                reason=f"Frozen boundary unavailable: {type(exc).__name__}: {exc}"
-            )
         return await try_export_trajectory(
             enabled=True,
             run_id=deps.run_id,
             run_store=deps.run_store,
             artifact_store=deps.artifact_store,
-            definition=definition,
+            definition=envelope,
             timeout_seconds=deps.artifact_collection_timeout_seconds,
             cleanup_deadline=token.deadline if token else None,
         )

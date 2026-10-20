@@ -8,7 +8,12 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from miniagent.artifacts import ArtifactRef, ArtifactStore, ArtifactWrite
-from miniagent.cli.run_definition import CLIApplicationDefinition, SWEbenchDefinition
+from miniagent.cli.run_definition import (
+    CLIApplicationDefinition,
+    SWEbenchDefinition,
+    parse_application_definition,
+)
+from miniagent.runtime.recovery import ApplicationDefinitionEnvelope
 from miniagent.runtime.store_contracts import RunRecord, RuntimeStore
 from miniagent.trajectory import (
     TrajectoryDefinition,
@@ -85,7 +90,7 @@ async def try_export_trajectory(
     run_id: UUID,
     run_store: RuntimeStore,
     artifact_store: ArtifactStore,
-    definition: CLIApplicationDefinition,
+    definition: CLIApplicationDefinition | ApplicationDefinitionEnvelope,
     timeout_seconds: float,
     cleanup_deadline: float | None,
 ) -> TrajectoryExportOutcome:
@@ -99,6 +104,10 @@ async def try_export_trajectory(
     try:
         async with asyncio.timeout_at(deadline):
             record = await run_store.get(run_id)
+            if isinstance(definition, ApplicationDefinitionEnvelope):
+                definition = parse_application_definition(
+                    definition, record.state.definition
+                )
     except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001 -- Read failure means no safe export boundary.
         return TrajectorySkipped(
             reason=f"Committed boundary unavailable: {type(exc).__name__}: {exc}"

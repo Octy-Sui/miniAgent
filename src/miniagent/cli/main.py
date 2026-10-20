@@ -179,6 +179,7 @@ async def _resume_main(config: ResumeConfig) -> None:
             )
         )
     except ResumeRejected as exc:
+        print_trajectory_exception(exc)
         print_resume_rejection(exc.rejection)
         raise typer.Exit(code=1) from None
     except RunInUseError:
