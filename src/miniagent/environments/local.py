@@ -574,7 +574,14 @@ class LocalWorkspaceBackend:
                 and identity is not None
                 and observer is not None
             ):
-                await observer.ended(inspect_host_execution(identity))
+                try:
+                    await observer.ended(inspect_host_execution(identity))
+                except BaseException as cleanup_error:
+                    if isinstance(exc, ArtifactPersistenceError):
+                        cleanup_error.add_note(
+                            f"Original output failure: {type(exc).__name__}: {exc}"
+                        )
+                    raise
             if not isinstance(exc, ArtifactPersistenceError):
                 await record_output(type(exc).__name__)
             raise

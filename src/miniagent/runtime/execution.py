@@ -9,12 +9,16 @@ from time import monotonic
 from typing import Literal, Protocol
 from uuid import UUID, uuid4
 
+from pydantic import JsonValue
+
+from miniagent.artifacts.contracts import ArtifactRef, ArtifactStore, ArtifactWrite
 from miniagent.environments.evidence import CommandEvidence, CommandOutputEvidence
 from miniagent.environments.managed_execution import (
     ExecutionEvidence,
     ExecutionIdentity,
     ExecutionObserver,
     ManagedExecutionError,
+    current_cleanup_deadline,
 )
 from miniagent.evaluation import CandidateOutput, EvaluationResult
 from miniagent.metering.usage import RequestCost, add_request_usage
@@ -63,7 +67,11 @@ from miniagent.runtime.events import (
     ToolStarted,
 )
 from miniagent.runtime.history import iter_run_events
-from miniagent.runtime.interruption import InterruptionRequested, raise_if_interrupted
+from miniagent.runtime.interruption import (
+    InterruptionRequested,
+    current_interruption_token,
+    raise_if_interrupted,
+)
 from miniagent.runtime.journal import RunJournal
 from miniagent.runtime.progress import (
     ComponentEnvelope,
@@ -117,7 +125,13 @@ from miniagent.runtime.transitions import (
 from miniagent.runtime.transitions import (
     suspend as suspend_state,
 )
-from miniagent.tools.contracts import ToolResult
+from miniagent.tools.contracts import (
+    ArtifactToolResultEvidence,
+    InlineToolResultEvidence,
+    ToolResult,
+    ToolResultEvidence,
+    ToolReturnValidation,
+)
 from miniagent.tools.rendering import render_tool_result
 
 
@@ -185,6 +199,7 @@ class RunExecution:
     state: RunState
     journal: RunJournal
     trace: RunTraceContext
+    artifact_store: ArtifactStore | None = None
     _active_mark: float = field(default_factory=monotonic)
     _evaluation_attempt_id: UUID | None = None
     _tool_results: dict[int, ToolResult] = field(default_factory=dict)
@@ -198,17 +213,25 @@ class RunExecution:
         journal: RunJournal,
         *,
         on_record_created: Callable[[RunRecord], None] | None = None,
+        artifact_store: ArtifactStore | None = None,
     ) -> "RunExecution":
         execution = cls(
             state=state,
             journal=journal,
             trace=RunTraceContext.create(state.identity.run_id),
+            artifact_store=artifact_store,
         )
         await execution._start(on_record_created=on_record_created)
         return execution
 
     @classmethod
-    def attach(cls, record: RunRecord, journal: RunJournal) -> "RunExecution":
+    def attach(
+        cls,
+        record: RunRecord,
+        journal: RunJournal,
+        *,
+        artifact_store: ArtifactStore | None = None,
+    ) -> "RunExecution":
         if journal.recorder.record != record:
             raise ValueError("Attached journal differs from current Run record")
         state = RunState.model_validate(record.state.model_dump(mode="python"))
@@ -232,7 +255,9 @@ class RunExecution:
                 trace.begin_tool_execution()
         if state.lifecycle.status is RunStatus.EVALUATING:
             trace.begin_evaluation()
-        return cls(state=state, journal=journal, trace=trace)
+        return cls(
+            state=state, journal=journal, trace=trace, artifact_store=artifact_store
+        )
 
     def account_active_time(self) -> None:
         now = monotonic()
@@ -1131,6 +1156,9 @@ class RunExecution:
         tool_call_id: str,
         tool_name: str,
     ) -> None:
+        batch = self.state.execution.tool_batch
+        if batch is None or not 0 <= call_index < len(batch.calls):
+            raise ValueError("Tool start requires a current batch call")
         next_trace = deepcopy(self.trace)
         correlation = ToolCorrelation(
             call_index=call_index,
@@ -1143,6 +1171,7 @@ class RunExecution:
             [
                 next_trace.tool_event(
                     ToolStarted(
+                        arguments=batch.calls[call_index].arguments,
                         call_index=call_index,
                         tool_call_id=tool_call_id,
                         tool_name=tool_name,
@@ -1152,7 +1181,9 @@ class RunExecution:
         )
         self.trace = next_trace
 
-    async def begin_tool_execution(self) -> None:
+    async def begin_tool_execution(
+        self, *, canonical_arguments: dict[str, JsonValue] | None = None
+    ) -> None:
         next_state = count_tool_execution(self.state)
         next_trace = deepcopy(self.trace)
         next_trace.begin_tool_execution()
@@ -1160,6 +1191,7 @@ class RunExecution:
         attempt_id = uuid4()
         event = next_trace.tool_execution_event(
             ToolExecutionStarted(
+                canonical_arguments=canonical_arguments,
                 attempt_id=attempt_id,
                 call_index=correlation.call_index,
                 tool_call_id=correlation.tool_call_id,
@@ -1203,23 +1235,114 @@ class RunExecution:
             raise ManagedExecutionError("Tool completion requires active attempt")
         return operation.attempt_id
 
-    async def complete_tool(self, result: ToolResult) -> None:
-        await self._require_operation_ended()
-        message = ToolMessage(
-            tool_call_id=result.tool_call_id,
-            content=render_tool_result(
-                result,
-                self.state.definition.config.tool_output_limits,
+    async def capture_tool_result(self, result: ToolResult) -> ToolResultEvidence:
+        if self.artifact_store is None:
+            raise ValueError("Tool evidence requires artifact_store")
+        operation = self.state.execution.active_operation
+        if operation is None or operation.kind != "tool":
+            raise ValueError("Tool evidence requires an active tool attempt")
+        encoded = result.model_dump_json().encode("utf-8")
+        if len(encoded) <= 65536:
+            return InlineToolResultEvidence(
+                result=ToolResult.model_validate_json(encoded)
+            )
+        def deadline() -> float | None:
+            token = current_interruption_token()
+            deadlines = [
+                value
+                for value in (current_cleanup_deadline(), token.deadline if token else None)
+                if value is not None
+            ]
+            return min(deadlines) if deadlines else None
+
+        writer = await self.artifact_store.open_writer(
+            ArtifactWrite(
+                run_id=self.state.identity.run_id,
+                type="tool_result",
+                media_type="application/json",
+                metadata={
+                    "attempt_id": str(operation.attempt_id),
+                    "tool_call_id": operation.tool_call_id,
+                    "step_number": operation.step_number,
+                    "call_index": operation.call_index,
+                },
             ),
+            deadline=deadline(),
         )
-        next_state = append_tool_result(
-            self.state,
-            message=message,
-            tool_call_id=result.tool_call_id,
-        )
+        try:
+            for offset in range(0, len(encoded), 65536):
+                limit = deadline()
+                if limit is not None and monotonic() >= limit:
+                    raise TimeoutError("Tool evidence persistence deadline exceeded")
+                await writer.write(encoded[offset : offset + 65536])
+            ref = await writer.finish(deadline=deadline())
+        except BaseException:
+            await writer.abort()
+            raise
+        return ArtifactToolResultEvidence(ref=ref)
+
+    async def complete_tool(
+        self,
+        result: ToolResult,
+        *,
+        raw_result: ToolResultEvidence | None = None,
+        return_validation: ToolReturnValidation | None = None,
+        artifacts: tuple[ArtifactRef, ...] | None = None,
+    ) -> RunTermination | None:
+        await self._require_operation_ended()
+        operation = self.state.execution.active_operation
+        result = result.model_copy(deep=True)
+        if return_validation is None:
+            if operation is not None and operation.kind == "tool":
+                raw_result = await self.capture_tool_result(result)
+                return_validation = ToolReturnValidation(disposition="accepted")
+            else:
+                return_validation = ToolReturnValidation(
+                    disposition="not_returned", reason="tool_not_executed"
+                )
+        source_artifacts = list(result.artifacts if artifacts is None else artifacts)
+        if isinstance(raw_result, ArtifactToolResultEvidence):
+            source_artifacts.append(raw_result.ref)
+        message = None
+        effective = None
+        termination = None
+        try:
+            message = ToolMessage(
+                tool_call_id=result.tool_call_id,
+                content=render_tool_result(
+                    result, self.state.definition.config.tool_output_limits
+                ),
+            )
+            effective = ToolResult.model_validate_json(message.content)
+        except (TypeError, ValueError):
+            message = None
+            termination = RunTermination(
+                status=RunStatus.FAILED,
+                reason=TerminationReason.INTERNAL_ERROR,
+                error=RunError(
+                    code="TOOL_OBSERVATION_UNAVAILABLE",
+                    message="Tool result could not be rendered for the model",
+                ),
+            )
+            decision = TerminationDecision(
+                status="failed", reason=termination.reason, error=termination.error
+            )
+            next_state = self._with_termination(self.state, decision)
+        else:
+            next_state = append_tool_result(
+                self.state, message=message, tool_call_id=result.tool_call_id
+            )
         next_trace = deepcopy(self.trace)
         correlation = next_trace.tool_correlation
         events = []
+        status = effective.status.value if effective is not None else "error"
+        error_code = (
+            effective.error.code
+            if effective is not None and effective.error
+            else termination.error.code
+            if termination and termination.error
+            else None
+        )
         if next_trace.has_tool_execution:
             events.append(
                 next_trace.tool_execution_event(
@@ -1228,10 +1351,8 @@ class RunExecution:
                         call_index=correlation.call_index,
                         tool_call_id=correlation.tool_call_id,
                         tool_name=correlation.tool_name,
-                        status=result.status.value,
-                        error_code=(
-                            result.error.code if result.error is not None else None
-                        ),
+                        status=status,
+                        error_code=error_code,
                     )
                 )
             )
@@ -1239,26 +1360,31 @@ class RunExecution:
         events.append(
             next_trace.tool_event(
                 ToolEnded(
+                    attempt_id=operation.attempt_id if operation is not None else None,
                     call_index=correlation.call_index,
                     tool_call_id=correlation.tool_call_id,
                     tool_name=correlation.tool_name,
-                    status=result.status.value,
-                    error_code=(
-                        result.error.code if result.error is not None else None
-                    ),
-                    result=result,
+                    status=status,
+                    error_code=error_code,
+                    result=effective,
+                    raw_result=raw_result,
+                    return_validation=return_validation,
+                    observation=message,
+                    observation_missing_reason="render_failed"
+                    if message is None
+                    else None,
                 )
-            )
+            ).model_copy(update={"artifacts": list(dict.fromkeys(source_artifacts))})
         )
         next_trace.end_tool()
-        await self.journal.record_activity(
-            next_state,
-            events,
-        )
-        if self.journal.recorder.store is None:
-            self._tool_results[correlation.call_index] = result.model_copy(deep=True)
+        if termination is not None:
+            events.append(next_trace.run_event(TerminationDecided(decision=decision)))
+        await self.journal.record_activity(next_state, events)
+        if self.journal.recorder.store is None and effective is not None:
+            self._tool_results[correlation.call_index] = effective.model_copy(deep=True)
         self.state = next_state
         self.trace = next_trace
+        return termination
 
     async def open_approval(
         self,
@@ -1488,6 +1614,12 @@ class RunExecution:
             events.append(
                 next_trace.tool_event(
                     ToolEnded(
+                        raw_result=None,
+                        return_validation=ToolReturnValidation(
+                            disposition="not_returned", reason="run_terminated"
+                        ),
+                        observation=None,
+                        observation_missing_reason=termination.reason.value,
                         call_index=correlation.call_index,
                         tool_call_id=correlation.tool_call_id,
                         tool_name=correlation.tool_name,

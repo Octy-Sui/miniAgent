@@ -19,6 +19,16 @@ def tool_result_from_execution(
     error: ToolError | None = None,
     metrics: dict[str, JsonValue] | None = None,
 ) -> ToolResult:
+    artifacts = list(execution.artifacts)
+    if execution.output_evidence is not None:
+        artifacts.extend(
+            stream.ref
+            for stream in (
+                execution.output_evidence.stdout,
+                execution.output_evidence.stderr,
+            )
+            if stream.ref is not None
+        )
     return ToolResult(
         tool_call_id=tool_call_id,
         status=status,
@@ -26,7 +36,7 @@ def tool_result_from_execution(
         duration_ms=execution.duration_ms,
         data=data,
         error=error,
-        artifacts=list(execution.artifacts),
+        artifacts=list(dict.fromkeys(artifacts)),
         metrics=metrics or {},
         workspace_delta=execution.workspace_delta,
         output=ToolOutputInfo(

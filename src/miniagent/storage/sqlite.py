@@ -23,7 +23,6 @@ from miniagent.runtime.events import (
     NewRunEvent,
     RunEvent,
     RunEventType,
-    ToolEnded,
     ToolExecutionStarted,
 )
 from miniagent.runtime.recovery import RunRecoveryContext
@@ -49,6 +48,7 @@ from miniagent.runtime.store_contracts import (
     UnsupportedStorageVersionError,
 )
 from miniagent.storage.codecs import (
+    EffectiveToolResult,
     decode_approval,
     decode_event,
     decode_run,
@@ -321,7 +321,7 @@ class SQLiteRunStore:
                 ):
                     require_supported_version("event", row["schema_version"])
                     try:
-                        payload = ToolEnded.model_validate_json(
+                        payload = EffectiveToolResult.model_validate_json(
                             row["effective_payload"]
                         )
                     except ValidationError as exc:

@@ -10,6 +10,7 @@ from typing import overload
 from uuid import UUID, uuid4
 
 from miniagent.agents import AgentSpec
+from miniagent.artifacts.contracts import ArtifactStore
 from miniagent.environments.managed_execution import (
     ManagedExecutionError,
     execution_scope,
@@ -121,6 +122,7 @@ class AgentRuntime:
         policy_context: PolicyContext | None = None,
         approval_handler: ApprovalHandler | None = None,
         run_store: RuntimeStore | None = None,
+        artifact_store: ArtifactStore | None = None,
         estimator: PromptTokenEstimator | None = None,
     ) -> None:
         self.provider = provider
@@ -137,6 +139,7 @@ class AgentRuntime:
         )
         self.approval_handler = approval_handler
         self.run_store = run_store
+        self.artifact_store = artifact_store
         self.estimator = estimator or QwenPromptTokenEstimator()
 
     @overload
@@ -229,6 +232,7 @@ class AgentRuntime:
                 )
             ),
             on_record_created=on_record_created,
+            artifact_store=self.artifact_store,
         )
         execution = await await_with_stop(
             starting, CancellationToken(), interruption_token
@@ -323,7 +327,8 @@ class AgentRuntime:
             await self.run_store.list_unconsumed_approvals(state.identity.run_id),
         )
         return await self._drive(
-            RunExecution.attach(record, journal), interruption_token=interruption_token
+            RunExecution.attach(record, journal, artifact_store=self.artifact_store),
+            interruption_token=interruption_token,
         )
 
     @overload

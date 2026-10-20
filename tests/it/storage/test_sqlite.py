@@ -61,7 +61,12 @@ from miniagent.runtime.transitions import (
     resolve_approval as transition_from_approval,
 )
 from miniagent.storage import SQLiteRunStore
-from miniagent.tools.contracts import ToolCall, ToolResult, ToolStatus
+from miniagent.tools.contracts import (
+    ToolCall,
+    ToolResult,
+    ToolReturnValidation,
+    ToolStatus,
+)
 from tests.support.storage.sqlite import (
     approval_event_id,
     create_approval,
@@ -123,6 +128,12 @@ async def test_tool_end_round_trips_full_result_after_reopen(
             tool_name="shell",
             status=result.status.value,
             result=result,
+            raw_result=None,
+            return_validation=ToolReturnValidation(
+                disposition="not_returned", reason="fixture_not_returned"
+            ),
+            observation=None,
+            observation_missing_reason="fixture_not_observed",
         ),
         step_number=1,
         span_id="2222222222222222",

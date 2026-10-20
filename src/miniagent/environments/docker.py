@@ -860,9 +860,18 @@ class DockerWorkspace:
                 self.state = DockerWorkspaceState.BROKEN
                 await asyncio.shield(self.backend._kill_container(self.container_id))
                 raise
-            except (ArtifactPersistenceError, ManagedExecutionError):
+            except (ArtifactPersistenceError, ManagedExecutionError) as exc:
                 self.state = DockerWorkspaceState.BROKEN
-                await asyncio.shield(self.backend._kill_container(self.container_id))
+                try:
+                    await asyncio.shield(
+                        self.backend._kill_container(self.container_id)
+                    )
+                except BaseException as cleanup_error:
+                    if isinstance(exc, ArtifactPersistenceError):
+                        cleanup_error.add_note(
+                            f"Original output failure: {type(exc).__name__}: {exc}"
+                        )
+                    raise
                 raise
             finally:
                 await capture.abort()

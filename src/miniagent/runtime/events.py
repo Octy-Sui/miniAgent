@@ -3,7 +3,14 @@ from enum import StrEnum
 from typing import Annotated, Literal, Protocol
 from uuid import UUID, uuid4
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    model_validator,
+)
 
 from miniagent.artifacts.contracts import ArtifactRef
 from miniagent.environments.evidence import CommandEvidence, CommandOutputEvidence
@@ -13,6 +20,7 @@ from miniagent.environments.managed_execution import (
 )
 from miniagent.evaluation.contracts import EvaluationError, EvaluationResult
 from miniagent.metering.usage import RequestCost
+from miniagent.models.messages import ToolMessage
 from miniagent.models.protocol import (
     ModelRequest,
     ModelResponse,
@@ -29,7 +37,11 @@ from miniagent.runtime.progress import (
 )
 from miniagent.runtime.result import RunError
 from miniagent.runtime.tracing import SpanId
-from miniagent.tools.contracts import ToolResult
+from miniagent.tools.contracts import (
+    ToolResult,
+    ToolResultEvidence,
+    ToolReturnValidation,
+)
 
 
 class EventSequenceConflictError(RuntimeError):
@@ -195,10 +207,17 @@ class ToolScopePayload(_Payload):
 
 
 class ToolStarted(ToolScopePayload):
+    arguments: dict[str, JsonValue]
     type: Literal[RunEventType.TOOL_START] = RunEventType.TOOL_START
 
 
 class ToolEnded(ToolScopePayload):
+    attempt_id: UUID | None = None
+    raw_result: ToolResultEvidence | None
+    return_validation: ToolReturnValidation
+    observation: ToolMessage | None
+    observation_missing_reason: str | None
+
     type: Literal[RunEventType.TOOL_END] = RunEventType.TOOL_END
     status: str
     error_code: str | None = None
@@ -207,6 +226,35 @@ class ToolEnded(ToolScopePayload):
 
     @model_validator(mode="after")
     def validate_result(self) -> "ToolEnded":
+        if self.return_validation.disposition == "accepted" and self.raw_result is None:
+            raise ValueError("Accepted tool return requires raw evidence")
+        if (
+            self.return_validation.disposition == "rejected"
+            and self.raw_result is None
+            and self.return_validation.reason != "unsupported_result_type"
+        ):
+            raise ValueError("Rejected ToolResult requires raw evidence")
+        if (
+            self.return_validation.disposition == "not_returned"
+            and self.raw_result is not None
+        ):
+            raise ValueError("Non-returned tool cannot have raw evidence")
+        if self.observation is not None:
+            if (
+                self.result is None
+                or ToolResult.model_validate_json(self.observation.content)
+                != self.result
+            ):
+                raise ValueError("Tool observation differs from effective result")
+            if (
+                self.observation.tool_call_id != self.tool_call_id
+                or self.observation_missing_reason is not None
+            ):
+                raise ValueError(
+                    "Tool observation scope or missing reason is inconsistent"
+                )
+        elif not self.observation_missing_reason:
+            raise ValueError("Missing tool observation requires a reason")
         if self.result is None:
             return self
         if self.result.tool_call_id != self.tool_call_id:
@@ -222,6 +270,7 @@ class ToolEnded(ToolScopePayload):
 
 
 class ToolExecutionStarted(ToolScopePayload):
+    canonical_arguments: dict[str, JsonValue] | None = None
     attempt_id: UUID
     type: Literal[RunEventType.TOOL_EXECUTION_START] = RunEventType.TOOL_EXECUTION_START
 

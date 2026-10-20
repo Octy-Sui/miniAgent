@@ -140,6 +140,7 @@ class Application:
             policy_context=dependencies.policy_context,
             approval_handler=dependencies.approval_handler,
             run_store=dependencies.run_store,
+            artifact_store=dependencies.artifact_store,
             evaluator=dependencies.evaluator,
         )
         try:

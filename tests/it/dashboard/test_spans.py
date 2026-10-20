@@ -28,6 +28,7 @@ from miniagent.runtime.events import (
     ToolExecutionStarted,
     ToolStarted,
 )
+from miniagent.tools.contracts import ToolReturnValidation
 from tests.support.dashboard.builders import make_run
 
 
@@ -70,9 +71,20 @@ async def span_history(database: Path) -> tuple[PageBoundary, dict[str, str]]:
         (
             "tool",
             "step",
-            ToolStarted(call_index=0, tool_call_id="call", tool_name="shell"),
+            ToolStarted(
+                call_index=0, tool_call_id="call", tool_name="shell", arguments={}
+            ),
             ToolEnded(
-                call_index=0, tool_call_id="call", tool_name="shell", status="success"
+                call_index=0,
+                tool_call_id="call",
+                tool_name="shell",
+                status="success",
+                raw_result=None,
+                return_validation=ToolReturnValidation(
+                    disposition="not_returned", reason="fixture_not_returned"
+                ),
+                observation=None,
+                observation_missing_reason="fixture_not_observed",
             ),
         ),
         (

@@ -4,11 +4,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from miniagent.agents import AgentSpec
-from miniagent.artifacts.contracts import ArtifactPersistenceError
+from miniagent.artifacts.contracts import ArtifactPersistenceError, ArtifactRef
 from miniagent.environments.managed_execution import (
     ManagedExecutionError,
     execution_scope,
 )
+from miniagent.models.messages import ToolMessage
 from miniagent.policy import (
     PolicyContext,
     PolicyDecision,
@@ -32,11 +33,26 @@ from miniagent.runtime.interruption import (
 from miniagent.runtime.recording import RunPersistenceError
 from miniagent.runtime.result import RunError, TerminationReason
 from miniagent.runtime.state import RunStatus, ToolBatch
-from miniagent.tools.contracts import ToolCall, ToolError, ToolResult, ToolStatus
+from miniagent.tools.contracts import (
+    ToolCall,
+    ToolError,
+    ToolResult,
+    ToolResultEvidence,
+    ToolReturnValidation,
+    ToolStatus,
+)
 from miniagent.tools.registry import PreparedToolCall, ToolRegistry
 
 _TOOL_ERROR_CODE = re.compile(r"^[A-Z0-9_]{1,64}$")
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class CapturedToolReturn:
+    raw_result: ToolResultEvidence | None
+    effective_result: ToolResult
+    validation: ToolReturnValidation
+    artifacts: tuple[ArtifactRef, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +89,7 @@ class ToolCallRunner:
         for call_index in range(batch.next_index, len(batch.calls)):
             raise_if_interrupted()
             call = batch.calls[call_index]
+            captured = None
             if self.cancellation_token.is_cancelled:
                 raise CancellationRequested
             await execution.begin_tool(
@@ -139,7 +156,7 @@ class ToolCallRunner:
                         if authorization.tool_result is not None:
                             result = authorization.tool_result
                         elif authorization.authorized:
-                            result = await self._execute_prepared(
+                            captured = await self._execute_prepared(
                                 execution,
                                 call,
                                 prepared,
@@ -149,14 +166,29 @@ class ToolCallRunner:
                                 "Approval coordinator returned no authorization outcome"
                             )
                     else:
-                        result = await self._execute_prepared(
+                        captured = await self._execute_prepared(
                             execution,
                             call,
                             prepared,
                         )
 
-            results.append(result)
-            await execution.complete_tool(result)
+            if captured is not None:
+                result = captured.effective_result
+            termination = await execution.complete_tool(
+                result,
+                raw_result=captured.raw_result if captured else None,
+                return_validation=captured.validation
+                if captured
+                else ToolReturnValidation(
+                    disposition="not_returned", reason="tool_not_executed"
+                ),
+                artifacts=captured.artifacts if captured else tuple(result.artifacts),
+            )
+            if termination is not None:
+                return ToolBatchOutcome(results=results, termination=termination)
+            observation = execution.state.conversation.messages[-1]
+            assert isinstance(observation, ToolMessage)
+            results.append(ToolResult.model_validate_json(observation.content))
         return ToolBatchOutcome(results=results)
 
     async def _decide_policy(
@@ -192,9 +224,13 @@ class ToolCallRunner:
         execution: RunExecution,
         call: ToolCall,
         prepared: PreparedToolCall,
-    ) -> ToolResult:
+    ) -> CapturedToolReturn:
         raise_if_interrupted()
-        await execution.begin_tool_execution()
+        if execution.artifact_store is None:
+            raise ValueError("Tool evidence requires artifact_store")
+        await execution.begin_tool_execution(
+            canonical_arguments=prepared.canonical_arguments
+        )
         try:
             operation = execution.state.execution.active_operation
             assert operation is not None
@@ -214,7 +250,7 @@ class ToolCallRunner:
             raise
         except Exception:
             logger.exception("Tool execution failed", extra={"tool": call.name})
-            return ToolResult(
+            effective = ToolResult(
                 tool_call_id=call.id,
                 status=ToolStatus.ERROR,
                 content=f"Tool execution failed: {call.name}",
@@ -223,28 +259,54 @@ class ToolCallRunner:
                     message="Tool execution raised an unexpected exception.",
                 ),
             )
+            return CapturedToolReturn(
+                None,
+                effective,
+                ToolReturnValidation(
+                    disposition="not_returned", reason="tool_exception"
+                ),
+            )
 
         if not isinstance(result, ToolResult):
-            return self._invalid_tool_result(
-                call.id,
-                call.name,
-                "Tool returned an unsupported result type.",
+            return CapturedToolReturn(
+                None,
+                self._invalid_tool_result(
+                    call.id, call.name, "Tool returned an unsupported result type."
+                ),
+                ToolReturnValidation(
+                    disposition="rejected", reason="unsupported_result_type"
+                ),
             )
+        result = result.model_copy(deep=True)
+        raw_result = await execution.capture_tool_result(result)
+        artifacts = tuple(result.artifacts)
         if result.tool_call_id != call.id:
-            return self._invalid_tool_result(
-                call.id,
-                call.name,
-                "Tool result does not match the current call.",
+            return CapturedToolReturn(
+                raw_result,
+                self._invalid_tool_result(
+                    call.id, call.name, "Tool result does not match the current call."
+                ),
+                ToolReturnValidation(
+                    disposition="rejected", reason="tool_call_id_mismatch"
+                ),
+                artifacts,
             )
         if result.error is not None and not _TOOL_ERROR_CODE.fullmatch(
             result.error.code
         ):
-            return self._invalid_tool_result(
-                call.id,
-                call.name,
-                "Tool returned an invalid error code.",
+            return CapturedToolReturn(
+                raw_result,
+                self._invalid_tool_result(
+                    call.id, call.name, "Tool returned an invalid error code."
+                ),
+                ToolReturnValidation(
+                    disposition="rejected", reason="invalid_error_code"
+                ),
+                artifacts,
             )
-        return result
+        return CapturedToolReturn(
+            raw_result, result, ToolReturnValidation(disposition="accepted"), artifacts
+        )
 
     @staticmethod
     def _policy_denied_result(

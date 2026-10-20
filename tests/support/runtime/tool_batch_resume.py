@@ -1,6 +1,7 @@
 from pathlib import Path
 from uuid import uuid4
 
+from miniagent.artifacts import FileArtifactStore
 from miniagent.models.messages import AssistantMessage, SystemMessage, UserMessage
 from miniagent.models.protocol import FinishReason, ModelResponse
 from miniagent.runtime import (
@@ -106,6 +107,7 @@ async def prefix(
                 run_id=state.identity.run_id, store=store, recovery_context=None
             )
         ),
+        artifact_store=FileArtifactStore(tmp_path / "artifacts"),
     )
     tool = LineTool(tmp_path / "effects")
     for _ in range(2):
@@ -134,7 +136,9 @@ async def prefix(
     return (
         reopened,
         RunExecution.attach(
-            record, RunJournal.attach(RunRecorder.attach(reopened, record), [])
+            record,
+            RunJournal.attach(RunRecorder.attach(reopened, record), []),
+            artifact_store=FileArtifactStore(tmp_path / "artifacts"),
         ),
         tool,
     )

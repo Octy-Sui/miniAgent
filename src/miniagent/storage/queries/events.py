@@ -52,12 +52,12 @@ def select_tool_results(
     return connection.execute(
         """SELECT sequence, schema_version,
         json_object(
-            'type', type, 'call_index', json_extract(payload_json,'$.call_index'),
-            'tool_call_id', json_extract(payload_json,'$.tool_call_id'),
-            'tool_name', json_extract(payload_json,'$.tool_name'),
-            'status', json_extract(payload_json,'$.status'),
-            'error_code', json_extract(payload_json,'$.error_code'),
-            'result', json_extract(payload_json,'$.result')
+            'type', json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END,'$.type'), 'call_index', json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END,'$.call_index'),
+            'tool_call_id', json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END,'$.tool_call_id'),
+            'tool_name', json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END,'$.tool_name'),
+            'status', json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END,'$.status'),
+            'error_code', json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END,'$.error_code'),
+            'result', json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END,'$.result')
         ) AS effective_payload
         FROM run_events WHERE run_id=? AND step_number=? AND sequence<=?
         AND type='tool_end' ORDER BY sequence""",

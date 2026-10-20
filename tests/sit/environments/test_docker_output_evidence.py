@@ -59,7 +59,7 @@ async def docker_output_case(tmp_path: Path):
         await workspace.destroy()
 
 
-@pytest.mark.parametrize("variant", ["binary", "utf8", "empty"])
+@pytest.mark.parametrize("variant", ["binary", "utf8", "empty", "both_empty"])
 async def test_real_docker_complete_streams(docker_output_case, variant):
     workspace, artifacts = docker_output_case
     expression = (
@@ -76,6 +76,7 @@ async def test_real_docker_complete_streams(docker_output_case, variant):
         if variant == "utf8"
         else b""
     )
+    stderr_expected = b"" if variant == "both_empty" else b"stderr"
     observer = MemoryExecutionObserver()
     with execution_scope(observer):
         result = await workspace.execute(
@@ -83,7 +84,7 @@ async def test_real_docker_complete_streams(docker_output_case, variant):
                 argv=[
                     "python3",
                     "-c",
-                    f"import sys;sys.stdout.buffer.write({expression});sys.stderr.buffer.write(b'stderr')",
+                    f"import sys;sys.stdout.buffer.write({expression});sys.stderr.buffer.write({stderr_expected!r})",
                 ],
                 timeout_seconds=30,
             )
@@ -92,7 +93,7 @@ async def test_real_docker_complete_streams(docker_output_case, variant):
     assert output is not None
     assert output.stdout.ref is not None and output.stderr.ref is not None
     assert await artifacts.read(output.stdout.ref) == expected
-    assert await artifacts.read(output.stderr.ref) == b"stderr"
+    assert await artifacts.read(output.stderr.ref) == stderr_expected
     assert output.stdout.eof_observed and output.stderr.eof_observed
     assert output.stdout.status == output.stderr.status == "complete"
     assert result.stdout_truncated == (len(expected) > 1024)
@@ -109,6 +110,7 @@ async def test_real_docker_complete_streams(docker_output_case, variant):
         "second_open_failure",
         "write_failure",
         "finish_failure",
+        "manifest_failure",
     ],
 )
 async def test_real_docker_partial_and_capture_faults(
@@ -144,6 +146,16 @@ async def test_real_docker_partial_and_capture_faults(
             raise OSError("capture publication failed")
 
         monkeypatch.setattr(os, "fsync", fail_fsync)
+    elif mode == "manifest_failure":
+        replace = os.replace
+
+        def fail_manifest(source, target):
+            if Path(target).suffix == ".json":
+                assert any(path.is_file() for path in artifacts.content_root.rglob("*"))
+                raise OSError("manifest publication failed")
+            return replace(source, target)
+
+        monkeypatch.setattr(os, "replace", fail_manifest)
     script = (
         "import os,time;os.write(1,b'prefix');time.sleep(30)"
         if mode in {"timeout", "cancel"}
@@ -186,7 +198,8 @@ async def test_real_docker_partial_and_capture_faults(
 
 
 @pytest.mark.parametrize(
-    "mode", ["normal", "output_commit_failure", "cancel_before_permit"]
+    "mode",
+    ["normal", "output_commit_failure", "cancel_before_permit", "combined_failure"],
 )
 async def test_real_docker_tool_commands_and_durable_boundary(
     docker_output_case, tmp_path, monkeypatch, mode
@@ -244,6 +257,7 @@ async def test_real_docker_tool_commands_and_durable_boundary(
         provider=provider,
         tools=ToolRegistry([Tool()]),
         run_store=store,
+        artifact_store=artifacts,
         policy_engine=AllowPolicyEngine(),
     )
     if mode == "output_commit_failure":
@@ -251,6 +265,19 @@ async def test_real_docker_tool_commands_and_durable_boundary(
             connection.execute(
                 "CREATE TRIGGER fail_output AFTER INSERT ON run_events WHEN NEW.type='operation_output_recorded' BEGIN SELECT RAISE(ABORT,'output commit fault'); END"
             )
+    if mode == "combined_failure":
+        original_write = os.write
+
+        def fail_both(descriptor, data):
+            if len(data) > 1:
+                with sqlite3.connect(store.path) as connection:
+                    connection.execute(
+                        "CREATE TRIGGER fail_after_disk BEFORE INSERT ON run_events BEGIN SELECT RAISE(ABORT,'database unavailable after disk fault'); END"
+                    )
+                raise OSError("capture write failed with database unavailable")
+            return original_write(descriptor, data)
+
+        monkeypatch.setattr(os, "write", fail_both)
     barrier = None
     if mode == "cancel_before_permit":
         barrier = SQLiteWriteBarrier(
@@ -273,7 +300,7 @@ async def test_real_docker_tool_commands_and_durable_boundary(
     if mode == "normal":
         assert (await task).output == "finished"
     else:
-        with pytest.raises(RunPersistenceError):
+        with pytest.raises((ArtifactPersistenceError, RunPersistenceError)) as failure:
             await task
         assert len(provider.requests) == 1
         result = await asyncio.to_thread(
@@ -311,6 +338,20 @@ async def test_real_docker_tool_commands_and_durable_boundary(
         assert (
             len((await artifacts.list_records_for_run(workspace.run_id)).records) == 2
         )
+    elif mode == "combined_failure":
+        assert len(commands) == 1 and not outputs
+        assert any(
+            "ArtifactPersistenceError" in note
+            for note in getattr(failure.value, "__notes__", ())
+        )
+        with (
+            sqlite3.connect(store.path) as connection,
+            pytest.raises(sqlite3.IntegrityError, match="database unavailable"),
+        ):
+            connection.execute(
+                "INSERT INTO run_events(run_id,sequence,event_id,schema_version,type,occurred_at,payload_json,artifacts_json) VALUES(?,99999,?,3,'run_started','2026-10-20T00:00:00Z','{}','[]')",
+                (str(workspace.run_id), str(uuid4())),
+            )
     else:
         assert len(commands) == 1 and not outputs
         result = await asyncio.to_thread(
@@ -326,3 +367,97 @@ async def test_real_docker_tool_commands_and_durable_boundary(
         )
         assert result.returncode != 0
         assert (await artifacts.list_records_for_run(workspace.run_id)).records == ()
+
+
+async def test_real_docker_dual_stream_backpressure(docker_output_case, monkeypatch):
+    import time
+
+    workspace, artifacts = docker_output_case
+    write = os.write
+
+    def slow_write(descriptor, data):
+        if len(data) > 1:
+            time.sleep(0.001)
+        return write(descriptor, data)
+
+    monkeypatch.setattr(os, "write", slow_write)
+    observer = MemoryExecutionObserver()
+    with execution_scope(observer):
+        result = await workspace.execute(
+            Command(
+                argv=[
+                    "python3",
+                    "-c",
+                    "import os;[(os.write(1,b'A'*32768),os.write(2,b'B'*32768)) for _ in range(128)]",
+                ],
+                timeout_seconds=30,
+            )
+        )
+    output = result.output_evidence
+    assert (
+        output is not None
+        and output.stdout.ref is not None
+        and output.stderr.ref is not None
+    )
+    assert await artifacts.read(output.stdout.ref) == b"A" * 4194304
+    assert await artifacts.read(output.stderr.ref) == b"B" * 4194304
+    assert result.stdout_truncated and result.stderr_truncated
+    assert output.stdout.status == output.stderr.status == "complete"
+
+
+async def test_real_docker_read_file_does_not_reread_changed_source(
+    docker_output_case, tmp_path, monkeypatch
+):
+    import json
+
+    from miniagent.tools.read_file import ReadFileArguments, ReadFileTool
+
+    workspace, artifacts = docker_output_case
+    source = tmp_path / "evidence-source.txt"
+    original = b"original-line\n" * 10000
+    source.write_bytes(original)
+    await asyncio.to_thread(
+        subprocess.run,
+        [
+            "docker",
+            "cp",
+            str(source),
+            f"{workspace.container_id}:/testbed/evidence-source.txt",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    replace = os.replace
+    changed = False
+
+    def replace_after_mutation(temporary, target):
+        nonlocal changed
+        if Path(target).suffix == ".json" and not changed:
+            record = json.loads(Path(temporary).read_text())
+            if record["type"] == "command_stdout":
+                source.write_text("changed after read")
+                subprocess.run(
+                    [
+                        "docker",
+                        "cp",
+                        str(source),
+                        f"{workspace.container_id}:/testbed/evidence-source.txt",
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+                changed = True
+        return replace(temporary, target)
+
+    monkeypatch.setattr(os, "replace", replace_after_mutation)
+    observer = MemoryExecutionObserver()
+    with execution_scope(observer):
+        result = await ReadFileTool(workspace).execute(
+            ReadFileArguments(path=source.name), tool_call_id="read"
+        )
+    assert changed
+    stdout = next(ref for ref in result.artifacts if ref.type == "command_stdout")
+    assert await artifacts.read(stdout) == original
+    assert result.content.startswith(original[:1024].decode())
+    assert result.output.stdout_truncated
+    assert len(observer.commands) == len(observer.outputs) == 1

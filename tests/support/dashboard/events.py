@@ -4,7 +4,7 @@ from pathlib import Path
 from miniagent.dashboard.cursors import PageBoundary
 from miniagent.runtime.events import NewRunEvent, ToolEnded, ToolStarted
 from miniagent.storage import SQLiteRunStore
-from miniagent.tools.contracts import ToolOutputInfo, ToolResult
+from miniagent.tools.contracts import ToolOutputInfo, ToolResult, ToolReturnValidation
 from tests.support.dashboard.builders import make_run
 
 
@@ -14,7 +14,9 @@ async def tool_page(database: Path):
     sequence = 0
     for step in (1, 2):
         for payload in (
-            ToolStarted(call_index=0, tool_call_id="same", tool_name="shell"),
+            ToolStarted(
+                call_index=0, tool_call_id="same", tool_name="shell", arguments={}
+            ),
             ToolEnded(
                 call_index=0,
                 tool_call_id="same",
@@ -27,6 +29,12 @@ async def tool_page(database: Path):
                     data={"exit_code": 0},
                     output=ToolOutputInfo(stdout_truncated=True),
                 ),
+                raw_result=None,
+                return_validation=ToolReturnValidation(
+                    disposition="not_returned", reason="fixture_not_returned"
+                ),
+                observation=None,
+                observation_missing_reason="fixture_not_observed",
             ),
         ):
             await store.append(

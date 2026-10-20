@@ -18,7 +18,7 @@ from miniagent.environments.managed_execution import (
 )
 
 
-@pytest.mark.parametrize("variant", ["binary", "utf8", "empty"])
+@pytest.mark.parametrize("variant", ["binary", "utf8", "empty", "both_empty"])
 async def test_tc_u09_01_to_04(
     tmp_path: Path, source_repository: Path, variant: str
 ) -> None:
@@ -45,12 +45,13 @@ async def test_tc_u09_01_to_04(
         if variant == "utf8"
         else b""
     )
+    stderr_expected = b"" if variant == "both_empty" else b"stderr"
     observer = MemoryExecutionObserver()
     command = Command(
         argv=[
             sys.executable,
             "-c",
-            f"import sys; sys.stdout.buffer.write({expression}); sys.stderr.buffer.write(b'stderr')",
+            f"import sys; sys.stdout.buffer.write({expression}); sys.stderr.buffer.write({stderr_expected!r})",
         ],
         environment={"SECRET": "environment-sentinel"},
         stdin="stdin-sentinel",
@@ -63,7 +64,7 @@ async def test_tc_u09_01_to_04(
     assert output.stdout.ref is not None
     assert output.stderr.ref is not None
     assert await store.read(output.stdout.ref) == expected
-    assert await store.read(output.stderr.ref) == b"stderr"
+    assert await store.read(output.stderr.ref) == stderr_expected
     assert output.stdout.received_bytes == len(expected)
     assert output.stdout.status == "complete"
     assert output.stdout.eof_observed
@@ -126,6 +127,8 @@ async def test_tc_u12_05_partial_stream(
         "second_open_failure",
         "write_failure",
         "finish_failure",
+        "manifest_failure",
+        "combined_failure",
         "output_commit_failure",
     ],
 )
@@ -195,6 +198,7 @@ async def test_command_is_persisted_before_permission_and_failures_stop_next_com
         provider=provider,
         tools=ToolRegistry([Tool()]),
         run_store=store,
+        artifact_store=artifacts,
         policy_engine=AllowPolicyEngine(),
     )
     if mode in {"open_failure", "second_open_failure"}:
@@ -210,11 +214,16 @@ async def test_command_is_persisted_before_permission_and_failures_stop_next_com
             return mkstemp(*args, **kwargs)
 
         monkeypatch.setattr(tempfile, "mkstemp", fail_open)
-    elif mode == "write_failure":
+    elif mode in {"write_failure", "combined_failure"}:
         write = os.write
 
         def fail_write(descriptor, data):
             if len(data) > 1:
+                if mode == "combined_failure":
+                    with sqlite3.connect(store.path) as connection:
+                        connection.execute(
+                            "CREATE TRIGGER fail_after_disk BEFORE INSERT ON run_events BEGIN SELECT RAISE(ABORT,'database unavailable after disk fault'); END"
+                        )
                 raise OSError("disk full")
             return write(descriptor, data)
 
@@ -225,6 +234,16 @@ async def test_command_is_persisted_before_permission_and_failures_stop_next_com
             raise OSError("body publish unavailable")
 
         monkeypatch.setattr(os, "fsync", fail_fsync)
+    elif mode == "manifest_failure":
+        replace = os.replace
+
+        def fail_manifest(source, target):
+            if Path(target).suffix == ".json":
+                assert any(path.is_file() for path in artifacts.content_root.rglob("*"))
+                raise OSError("manifest publication failed")
+            return replace(source, target)
+
+        monkeypatch.setattr(os, "replace", fail_manifest)
     elif mode == "output_commit_failure":
         with sqlite3.connect(store.path) as connection:
             connection.execute(
@@ -250,9 +269,10 @@ async def test_command_is_persisted_before_permission_and_failures_stop_next_com
     else:
         with pytest.raises(
             RunPersistenceError
-            if mode in {"cancel_before_permit", "output_commit_failure"}
+            if mode
+            in {"cancel_before_permit", "output_commit_failure", "combined_failure"}
             else ArtifactPersistenceError
-        ):
+        ) as failure:
             await task
         assert not (workspace.root / "second_effect").exists()
         assert len(provider.requests) == 1
@@ -290,6 +310,19 @@ async def test_command_is_persisted_before_permission_and_failures_stop_next_com
         assert any(
             isinstance(event.payload, OperationExecutionEnded) for event in events
         )
+    if mode == "combined_failure":
+        assert any(
+            "ArtifactPersistenceError" in note
+            for note in getattr(failure.value, "__notes__", ())
+        )
+        with (
+            sqlite3.connect(store.path) as connection,
+            pytest.raises(sqlite3.IntegrityError, match="database unavailable"),
+        ):
+            connection.execute(
+                "INSERT INTO run_events(run_id,sequence,event_id,schema_version,type,occurred_at,payload_json,artifacts_json) VALUES(?,99999,?,3,'run_started','2026-10-20T00:00:00Z','{}','[]')",
+                (str(run_id), str(uuid4())),
+            )
     assert not list((artifacts.root / "staging").glob("*.tmp"))
 
 
@@ -339,3 +372,96 @@ async def test_cleanup_deadline_requested_after_capture_open(
             await task
     assert (await store.list_records_for_run(run_id)).records == ()
     assert not list((store.root / "staging").glob("*.tmp"))
+
+
+async def test_dual_stream_backpressure_preserves_all_bytes(
+    tmp_path, source_repository, monkeypatch
+):
+    import os
+    import time
+
+    artifacts = FileArtifactStore(tmp_path / "artifacts")
+    backend = LocalWorkspaceBackend(
+        root=tmp_path / "workspaces", artifact_store=artifacts, max_output_bytes=1024
+    )
+    workspace = await backend.create(
+        LocalWorkspaceSpec(
+            run_id=uuid4(), options=LocalOptions(source_dir=source_repository)
+        )
+    )
+    write = os.write
+
+    def slow_write(descriptor, data):
+        if len(data) > 1:
+            time.sleep(0.001)
+        return write(descriptor, data)
+
+    monkeypatch.setattr(os, "write", slow_write)
+    observer = MemoryExecutionObserver()
+    with execution_scope(observer):
+        result = await workspace.execute(
+            Command(
+                argv=[
+                    sys.executable,
+                    "-c",
+                    "import os;[(os.write(1,b'A'*32768),os.write(2,b'B'*32768)) for _ in range(128)]",
+                ],
+                timeout_seconds=30,
+            )
+        )
+    output = result.output_evidence
+    assert (
+        output is not None
+        and output.stdout.ref is not None
+        and output.stderr.ref is not None
+    )
+    assert await artifacts.read(output.stdout.ref) == b"A" * 4194304
+    assert await artifacts.read(output.stderr.ref) == b"B" * 4194304
+    assert result.stdout_truncated and result.stderr_truncated
+    assert output.stdout.status == output.stderr.status == "complete"
+
+
+async def test_read_file_evidence_uses_received_bytes_after_source_changes(
+    tmp_path, source_repository, monkeypatch
+):
+    import json
+    import os
+
+    from miniagent.tools.read_file import ReadFileArguments, ReadFileTool
+
+    artifacts = FileArtifactStore(tmp_path / "artifacts")
+    backend = LocalWorkspaceBackend(
+        root=tmp_path / "workspaces", artifact_store=artifacts, max_output_bytes=1024
+    )
+    workspace = await backend.create(
+        LocalWorkspaceSpec(
+            run_id=uuid4(), options=LocalOptions(source_dir=source_repository)
+        )
+    )
+    source = workspace.root / "evidence-source.txt"
+    original = b"original-line\n" * 10000
+    source.write_bytes(original)
+    replace = os.replace
+    changed = False
+
+    def replace_after_mutation(temporary, target):
+        nonlocal changed
+        if Path(target).suffix == ".json" and not changed:
+            record = json.loads(Path(temporary).read_text())
+            if record["type"] == "command_stdout":
+                source.write_text("changed after read")
+                changed = True
+        return replace(temporary, target)
+
+    monkeypatch.setattr(os, "replace", replace_after_mutation)
+    observer = MemoryExecutionObserver()
+    with execution_scope(observer):
+        result = await ReadFileTool(workspace).execute(
+            ReadFileArguments(path=source.name), tool_call_id="read"
+        )
+    assert changed and source.read_text() == "changed after read"
+    stdout = next(ref for ref in result.artifacts if ref.type == "command_stdout")
+    assert await artifacts.read(stdout) == original
+    assert result.content.startswith(original[:1024].decode())
+    assert result.output.stdout_truncated
+    assert len(observer.commands) == len(observer.outputs) == 1

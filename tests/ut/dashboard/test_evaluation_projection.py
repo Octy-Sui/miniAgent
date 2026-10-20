@@ -17,7 +17,7 @@ from miniagent.evaluation.contracts import EvaluationResult
 from miniagent.runtime.events import EvaluationCompleted, RunEvent, ToolEnded
 from miniagent.runtime.result import TerminationReason
 from miniagent.runtime.state import RunStatus
-from miniagent.tools.contracts import ToolResult
+from miniagent.tools.contracts import ToolResult, ToolReturnValidation
 from tests.support.dashboard.builders import (
     EvaluationExample,
     change_evaluation_content,
@@ -377,6 +377,12 @@ def test_successful_shell_and_pass_log_do_not_replace_a_report() -> None:
                 content="ALL PASSED",
                 data={"exit_code": 0},
             ),
+            raw_result=None,
+            return_validation=ToolReturnValidation(
+                disposition="not_returned", reason="fixture_not_returned"
+            ),
+            observation=None,
+            observation_missing_reason="fixture_not_observed",
         ),
     )
     shell = StoredEvent(

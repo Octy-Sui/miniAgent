@@ -1,11 +1,12 @@
 import json
 import sqlite3
 from datetime import UTC, datetime
+from typing import Literal
 
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError, model_validator
 
 from miniagent.artifacts.contracts import ArtifactRef
-from miniagent.runtime.events import EventPayload, RunEvent
+from miniagent.runtime.events import EventPayload, RunEvent, ToolScopePayload
 from miniagent.runtime.recovery import RunRecoveryContext
 from miniagent.runtime.snapshots import NewRunSnapshot, RunSnapshot
 from miniagent.runtime.state import RunState
@@ -15,6 +16,26 @@ from miniagent.runtime.store_contracts import (
     StoredApproval,
     UnsupportedStorageVersionError,
 )
+from miniagent.tools.contracts import ToolResult
+
+
+class EffectiveToolResult(ToolScopePayload):
+    type: Literal["tool_end"] = "tool_end"
+    status: str
+    error_code: str | None = None
+    result: ToolResult
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "EffectiveToolResult":
+        if (
+            self.result.tool_call_id != self.tool_call_id
+            or self.result.status.value != self.status
+        ):
+            raise ValueError("Tool result scope/status mismatch")
+        if (self.result.error.code if self.result.error else None) != self.error_code:
+            raise ValueError("Tool result error code mismatch")
+        return self
+
 
 _ARTIFACTS_ADAPTER = TypeAdapter(list[ArtifactRef])
 _EVENT_PAYLOAD_ADAPTER = TypeAdapter(EventPayload)

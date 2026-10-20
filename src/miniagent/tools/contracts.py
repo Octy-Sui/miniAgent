@@ -1,7 +1,14 @@
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, JsonValue, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
 
 from miniagent.artifacts.contracts import ArtifactRef
 from miniagent.environments.contracts import WorkspaceDelta
@@ -98,3 +105,29 @@ class ToolResult(BaseModel):
         if self.status is not ToolStatus.SUCCESS and self.error is None:
             raise ValueError("Unsuccessful tool result requires an error")
         return self
+
+
+class ToolReturnValidation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    disposition: Literal["accepted", "rejected", "not_returned"]
+    reason: str | None = None
+
+
+class InlineToolResultEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["inline"] = "inline"
+    result: ToolResult
+
+
+class ArtifactToolResultEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["artifact"] = "artifact"
+    ref: ArtifactRef
+
+
+type ToolResultEvidence = Annotated[
+    InlineToolResultEvidence | ArtifactToolResultEvidence, Field(discriminator="kind")
+]

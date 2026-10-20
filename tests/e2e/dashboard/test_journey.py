@@ -23,7 +23,7 @@ from miniagent.runtime.events import (
 )
 from miniagent.storage import SQLiteRunStore
 from miniagent.storage.codecs import encode_datetime
-from miniagent.tools.contracts import ToolOutputInfo, ToolResult
+from miniagent.tools.contracts import ToolOutputInfo, ToolResult, ToolReturnValidation
 from tests.support.dashboard.builders import (
     evaluation_example,
     make_database,
@@ -46,7 +46,9 @@ async def seed_journey(database: Path, artifacts: Path):
     event = None
     payloads = [
         StepStarted(),
-        ToolStarted(call_index=0, tool_call_id="journey-call", tool_name="shell"),
+        ToolStarted(
+            call_index=0, tool_call_id="journey-call", tool_name="shell", arguments={}
+        ),
         ToolEnded(
             call_index=0,
             tool_call_id="journey-call",
@@ -59,6 +61,12 @@ async def seed_journey(database: Path, artifacts: Path):
                 data={"exit_code": 0},
                 output=ToolOutputInfo(stdout_truncated=True),
             ),
+            raw_result=None,
+            return_validation=ToolReturnValidation(
+                disposition="not_returned", reason="fixture_not_returned"
+            ),
+            observation=None,
+            observation_missing_reason="fixture_not_observed",
         ),
         StepCompleted(failed=False),
     ]
