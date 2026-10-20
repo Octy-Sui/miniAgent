@@ -9,12 +9,20 @@ def select_events(
     *,
     after_sequence: int,
     limit: int | None,
+    through_sequence: int | None = None,
+    types: tuple[str, ...] | None = None,
 ) -> list[sqlite3.Row]:
-    sql = (
-        "SELECT * FROM run_events WHERE run_id = ? AND sequence > ? "
-        "ORDER BY sequence ASC"
-    )
+    sql = "SELECT * FROM run_events WHERE run_id = ? AND sequence > ? "
     parameters: tuple[Any, ...] = (str(run_id), after_sequence)
+    if through_sequence is not None:
+        sql += " AND sequence <= ?"
+        parameters += (through_sequence,)
+    if types is not None:
+        if not types:
+            return []
+        sql += " AND type IN (" + ",".join("?" for _ in types) + ")"
+        parameters += types
+    sql += " ORDER BY sequence ASC"
     if limit is not None:
         sql += " LIMIT ?"
         parameters += (limit,)

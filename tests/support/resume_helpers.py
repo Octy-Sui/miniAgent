@@ -178,10 +178,27 @@ class StoreBoundary:
         return await self.store.load_version(run_id, version)
 
     async def list_events(
-        self, run_id: UUID, *, after_sequence: int = 0, limit: int | None = None
+        self,
+        run_id: UUID,
+        *,
+        after_sequence: int = 0,
+        through_sequence: int | None = None,
+        types: tuple[RunEventType, ...] | None = None,
+        limit: int | None = None,
     ) -> list[RunEvent]:
         return await self.store.list_events(
-            run_id, after_sequence=after_sequence, limit=limit
+            run_id,
+            after_sequence=after_sequence,
+            through_sequence=through_sequence,
+            types=types,
+            limit=limit,
+        )
+
+    async def get_event(
+        self, run_id: UUID, event_id: UUID, *, through_sequence: int
+    ) -> RunEvent | None:
+        return await self.store.get_event(
+            run_id, event_id, through_sequence=through_sequence
         )
 
     async def list_tool_results(

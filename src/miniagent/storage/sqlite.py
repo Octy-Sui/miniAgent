@@ -162,8 +162,12 @@ class SQLiteRunStore:
         run_id: UUID,
         *,
         after_sequence: int = 0,
+        through_sequence: int | None = None,
+        types: tuple[RunEventType, ...] | None = None,
         limit: int | None = None,
     ) -> list[RunEvent]:
+        if through_sequence is not None and through_sequence < 0:
+            raise ValueError("through_sequence must be non-negative")
         if after_sequence < 0:
             raise ValueError("after_sequence must be non-negative")
         if limit is not None and limit < 1:
@@ -172,9 +176,28 @@ class SQLiteRunStore:
             lambda: self._list_events_sync(
                 run_id,
                 after_sequence=after_sequence,
+                through_sequence=through_sequence,
+                types=types,
                 limit=limit,
             )
         )
+
+    async def get_event(
+        self, run_id: UUID, event_id: UUID, *, through_sequence: int
+    ) -> RunEvent | None:
+        if through_sequence < 0:
+            raise ValueError("through_sequence must be non-negative")
+
+        def get() -> RunEvent | None:
+            with closing(self._connect()) as connection:
+                self._require_run(connection, run_id)
+                row = connection.execute(
+                    "SELECT * FROM run_events WHERE run_id = ? AND event_id = ? AND sequence <= ?",
+                    (str(run_id), str(event_id), through_sequence),
+                ).fetchone()
+                return decode_event(row) if row is not None else None
+
+        return await self._in_thread(get)
 
     async def latest_sequence(self, run_id: UUID) -> int:
         return (await self.get(run_id)).last_event_sequence
@@ -1031,6 +1054,8 @@ class SQLiteRunStore:
         *,
         after_sequence: int,
         limit: int | None,
+        through_sequence: int | None,
+        types: tuple[RunEventType, ...] | None,
     ) -> list[RunEvent]:
         with closing(self._connect()) as connection:
             self._require_run(connection, run_id)
@@ -1039,6 +1064,8 @@ class SQLiteRunStore:
                 run_id,
                 after_sequence=after_sequence,
                 limit=limit,
+                through_sequence=through_sequence,
+                types=types,
             )
             return [decode_event(row) for row in rows]
 

@@ -533,7 +533,13 @@ class EventStore(Protocol):
         run_id: UUID,
         *,
         after_sequence: int = 0,
+        through_sequence: int | None = None,
+        types: tuple[RunEventType, ...] | None = None,
         limit: int | None = None,
     ) -> list[RunEvent]: ...
+
+    async def get_event(
+        self, run_id: UUID, event_id: UUID, *, through_sequence: int
+    ) -> RunEvent | None: ...
 
     async def latest_sequence(self, run_id: UUID) -> int: ...

@@ -19,6 +19,7 @@ from miniagent.runtime.events import (
     EventPayload,
     NewRunEvent,
     RunEvent,
+    RunEventType,
 )
 from miniagent.runtime.recovery import RunRecoveryContext
 from miniagent.runtime.snapshots import RunSnapshot
@@ -234,8 +235,18 @@ class RuntimeStore(Protocol):
     async def load_version(self, run_id: UUID, version: int) -> RunSnapshot | None: ...
 
     async def list_events(
-        self, run_id: UUID, *, after_sequence: int = 0, limit: int | None = None
+        self,
+        run_id: UUID,
+        *,
+        after_sequence: int = 0,
+        through_sequence: int | None = None,
+        types: tuple[RunEventType, ...] | None = None,
+        limit: int | None = None,
     ) -> list[RunEvent]: ...
+
+    async def get_event(
+        self, run_id: UUID, event_id: UUID, *, through_sequence: int
+    ) -> RunEvent | None: ...
 
     async def list_tool_results(
         self, run_id: UUID, *, step_number: int
