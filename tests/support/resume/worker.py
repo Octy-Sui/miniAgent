@@ -95,6 +95,9 @@ async def run(args, channel) -> int:
 
     class Provider:
         async def generate(self, request):
+            if args.before_response:
+                channel.send({"boundary": "provider_return", "time": monotonic()})
+                assert await receive(channel) == "continue"
             done = any(
                 getattr(message, "tool_call_id", None) == "c2"
                 for message in request.messages
@@ -140,6 +143,17 @@ async def run(args, channel) -> int:
             calls = []
             for index in range(3):
                 command = f"printf 'c{index}\\n' >> effects.txt"
+                if index == 0 and args.output_bytes:
+                    import shlex
+                    import sys
+
+                    program = (
+                        f"import sys;sys.stdout.buffer.write(b'x'*{args.output_bytes})"
+                    )
+                    command = (
+                        f"{shlex.quote(sys.executable)} -c {shlex.quote(program)}; "
+                        + command
+                    )
                 if index == 0 and args.first_status == "error":
                     command += "; exit 2"
                 elif index == 0 and args.first_status == "timeout":
@@ -176,9 +190,17 @@ async def run(args, channel) -> int:
                 resolved_at=datetime.now(UTC),
             )
 
+    finalization_seen = [False]
+    trajectory_gate_reached = [False]
+    signal_notifiers = []
+
     class Artifacts(FileArtifactStore):
-        async def list_for_run(self, run_id):
-            if args.gate_finalization:
+        finalization_gated = False
+
+        async def list_records_for_run(self, run_id, *, cursor=None, limit=100):
+            finalization_seen[0] = True
+            if args.gate_finalization and not self.finalization_gated:
+                self.finalization_gated = True
                 channel.send(
                     {
                         "boundary": "finalization",
@@ -187,9 +209,22 @@ async def run(args, channel) -> int:
                     }
                 )
                 assert await receive(channel) == "continue"
-            return await super().list_for_run(run_id)
+            return await super().list_records_for_run(
+                run_id, cursor=cursor, limit=limit
+            )
 
     class AuditStore(StoreBoundary):
+        async def list_events(self, *values, **options):
+            if (
+                args.trajectory_gate == "encoding"
+                and finalization_seen[0]
+                and not trajectory_gate_reached[0]
+            ):
+                trajectory_gate_reached[0] = True
+                channel.send({"boundary": "trajectory_encoding", "time": monotonic()})
+                assert await receive(channel) == "continue"
+            return await super().list_events(*values, **options)
+
         async def initialize(self):
             assert isinstance(self.store, SQLiteRunStore)
             await self.store.initialize()
@@ -246,6 +281,66 @@ async def run(args, channel) -> int:
             return result
 
     patch = pytest.MonkeyPatch()
+    if args.transaction_event:
+        import sqlite3
+
+        connect = sqlite3.connect
+
+        class TransactionConnection(sqlite3.Connection):
+            def execute(self, sql, parameters=(), /):
+                cursor = super().execute(sql, parameters)
+                if (
+                    "INSERT INTO run_events" in sql
+                    and len(parameters) > 4
+                    and parameters[4] == args.transaction_event
+                ):
+                    channel.send(
+                        {
+                            "boundary": "transaction",
+                            "event": parameters[4],
+                            "time": monotonic(),
+                        }
+                    )
+                    assert channel.recv() == "continue"
+                return cursor
+
+        def transaction_connect(*values, **options):
+            return connect(*values, **options, factory=TransactionConnection)
+
+        patch.setattr(sqlite3, "connect", transaction_connect)
+    if args.trajectory_gate in ("body", "manifest"):
+        write, replace = os.write, os.replace
+
+        def gate_publication():
+            trajectory_gate_reached[0] = True
+            channel.send(
+                {"boundary": "trajectory_" + args.trajectory_gate, "time": monotonic()}
+            )
+            assert channel.recv() == "continue"
+
+        def write_body(fd, content):
+            if (
+                args.trajectory_gate == "body"
+                and not trajectory_gate_reached[0]
+                and b"miniagent.trajectory" in bytes(content[:120])
+            ):
+                gate_publication()
+            return write(fd, content)
+
+        def replace_manifest(source, target):
+            if (
+                args.trajectory_gate == "manifest"
+                and not trajectory_gate_reached[0]
+                and str(target).endswith(".json")
+                and json.loads(Path(source).read_bytes()).get("type")
+                == "run_trajectory"
+            ):
+                gate_publication()
+            return replace(source, target)
+
+        patch.setattr(os, "write", write_body)
+        patch.setattr(os, "replace", replace_manifest)
+
     patch.setattr(composition, "build_provider", lambda agent, settings: Provider())
     patch.setattr(composition, "FileArtifactStore", Artifacts)
     # Console input is an external boundary; the restored application must ask it again.
@@ -273,6 +368,13 @@ async def run(args, channel) -> int:
     patch.setattr(recovery, "SQLiteRunStore", store)
 
     async def operation(cancellation, interruption):
+        if args.trajectory_gate:
+
+            async def signal_notifier():
+                await interruption.wait()
+                channel.send({"boundary": "first_signal", "time": monotonic()})
+
+            signal_notifiers.append(asyncio.create_task(signal_notifier()))
         if args.deadline_probe:
             channel.send({"boundary": "deadline", "time": monotonic()})
             await interruption.wait()
@@ -316,6 +418,7 @@ async def run(args, channel) -> int:
             return await execute_new_run(
                 BootstrapConfig(
                     agent=DEFAULT_AGENT,
+                    trajectory=args.trajectory,
                     task=manifest.task
                     if manifest
                     else "append c0, c1, c2 once, then resume-local-ok",
@@ -371,6 +474,9 @@ async def run(args, channel) -> int:
         )
         return 1
     finally:
+        for notifier in signal_notifiers:
+            notifier.cancel()
+        await asyncio.gather(*signal_notifiers, return_exceptions=True)
         patch.undo()
 
 
@@ -381,6 +487,11 @@ def main():
     parser.add_argument("--channel-fd", type=int, required=True)
     parser.add_argument("--label", default="initial")
     parser.add_argument("--run-id")
+    parser.add_argument("--output-bytes", type=int, default=0)
+    parser.add_argument("--trajectory-gate", choices=("encoding", "body", "manifest"))
+    parser.add_argument("--before-response", action="store_true")
+    parser.add_argument("--transaction-event")
+    parser.add_argument("--trajectory", action="store_true", default=None)
     parser.add_argument("--gate-call", type=int, default=-1)
     parser.add_argument("--gate-finalization", action="store_true")
     parser.add_argument("--deadline-probe", action="store_true")

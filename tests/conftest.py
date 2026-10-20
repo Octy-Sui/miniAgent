@@ -510,6 +510,7 @@ def export_engine():
 
 
 pytest_plugins = [
+    "tests.support.trajectory.provider",
     "tests.support.runtime.persistence",
     "tests.support.cli.fixtures",
     "tests.support.dashboard.fixtures",
