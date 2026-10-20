@@ -291,3 +291,51 @@ async def test_command_is_persisted_before_permission_and_failures_stop_next_com
             isinstance(event.payload, OperationExecutionEnded) for event in events
         )
     assert not list((artifacts.root / "staging").glob("*.tmp"))
+
+
+@pytest.mark.parametrize("stage", ["before_finish", "during_body"])
+async def test_cleanup_deadline_requested_after_capture_open(
+    tmp_path, monkeypatch, stage
+):
+    import os
+    import threading
+    from time import monotonic
+
+    from miniagent.environments.managed_execution import cleanup_deadline_scope
+    from miniagent.environments.output_capture import OutputCapture
+
+    store = FileArtifactStore(tmp_path / "artifacts")
+    run_id = uuid4()
+    deadline: list[float | None] = [None]
+    entered, release = threading.Event(), threading.Event()
+    fsync = os.fsync
+
+    def blocked_fsync(descriptor):
+        entered.set()
+        if not release.wait(5):
+            raise TimeoutError("publish barrier not released")
+        fsync(descriptor)
+
+    with cleanup_deadline_scope(lambda: deadline[0]):
+        capture = await OutputCapture.open(
+            store=store, run_id=run_id, attempt_id=uuid4(), deadline=None
+        )
+        await capture.write("stdout", b"prefix")
+        deadline[0] = monotonic() + (0.1 if stage == "during_body" else -1)
+        if stage == "during_body":
+            monkeypatch.setattr(os, "fsync", blocked_fsync)
+        task = asyncio.create_task(
+            capture.finish(
+                execution_id=uuid4(), stdout_eof=True, stderr_eof=True, reason=None
+            )
+        )
+        if stage == "during_body":
+            try:
+                assert await asyncio.to_thread(entered.wait, 5)
+                await asyncio.sleep(0.11)
+            finally:
+                release.set()
+        with pytest.raises(TimeoutError, match="deadline"):
+            await task
+    assert (await store.list_records_for_run(run_id)).records == ()
+    assert not list((store.root / "staging").glob("*.tmp"))

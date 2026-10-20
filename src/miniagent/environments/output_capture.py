@@ -5,6 +5,7 @@ from uuid import UUID
 from miniagent.artifacts.contracts import ArtifactStore, ArtifactWrite
 from miniagent.artifacts.writer import ArtifactWriter
 from miniagent.environments.evidence import CommandOutputEvidence, StreamEvidence
+from miniagent.environments.managed_execution import current_cleanup_deadline
 
 
 @dataclass(slots=True)
@@ -55,7 +56,9 @@ class OutputCapture:
         streams = {}
         try:
             for stream, eof in (("stdout", stdout_eof), ("stderr", stderr_eof)):
-                ref = await self.writers[stream].finish()
+                ref = await self.writers[stream].finish(
+                    deadline=current_cleanup_deadline()
+                )
                 streams[stream] = StreamEvidence(
                     ref=ref,
                     received_bytes=self.received[stream],

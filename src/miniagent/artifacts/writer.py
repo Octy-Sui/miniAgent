@@ -18,7 +18,7 @@ from miniagent.artifacts.contracts import (
 class ArtifactWriter(Protocol):
     async def write(self, chunk: bytes) -> None: ...
 
-    async def finish(self) -> ArtifactRef: ...
+    async def finish(self, *, deadline: float | None = None) -> ArtifactRef: ...
 
     async def abort(self) -> None: ...
 
@@ -116,7 +116,13 @@ class FileArtifactWriter:
         finally:
             self._busy = False
 
-    async def finish(self) -> ArtifactRef:
+    async def finish(self, *, deadline: float | None = None) -> ArtifactRef:
+        if deadline is not None and not self._closed and not self._busy:
+            self._deadline = (
+                min(self._deadline, deadline)
+                if self._deadline is not None
+                else deadline
+            )
         self._enter()
         self._closed = True
         digest = self._digest.hexdigest()
