@@ -4,18 +4,22 @@
 
 from miniagent.artifacts.contracts import (
     ArtifactNotFoundError,
+    ArtifactPersistenceError,
     ArtifactRecord,
     ArtifactRef,
     ArtifactStore,
     ArtifactWrite,
 )
 from miniagent.artifacts.file import FileArtifactStore
+from miniagent.artifacts.writer import ArtifactWriter
 
 __all__ = [
     "ArtifactNotFoundError",
+    "ArtifactPersistenceError",
     "ArtifactRecord",
     "ArtifactRef",
     "ArtifactStore",
     "ArtifactWrite",
+    "ArtifactWriter",
     "FileArtifactStore",
 ]

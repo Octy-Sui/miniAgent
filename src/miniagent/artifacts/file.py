@@ -5,7 +5,7 @@ import re
 import tempfile
 from pathlib import Path
 from urllib.parse import unquote, urlparse
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from pydantic import ValidationError
 
@@ -15,6 +15,7 @@ from miniagent.artifacts.contracts import (
     ArtifactRef,
     ArtifactWrite,
 )
+from miniagent.artifacts.writer import ArtifactWriter, FileArtifactWriter
 
 _SAFE_TYPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
@@ -25,25 +26,23 @@ class FileArtifactStore:
         self.content_root = self.root / "content"
         self.manifest_root = self.root / "manifests"
 
-    async def put(self, request: ArtifactWrite, content: bytes) -> ArtifactRef:
+    async def open_writer(
+        self, request: ArtifactWrite, *, deadline: float | None = None
+    ) -> ArtifactWriter:
         self._validate_write(request)
-        digest = hashlib.sha256(content).hexdigest()
-        artifact_id = uuid4()
-        target = self.content_root / digest[:2] / digest
-        record = ArtifactRecord(
-            artifact_id=artifact_id,
-            run_id=request.run_id,
-            type=request.type,
-            name=request.name,
-            media_type=request.media_type,
-            uri=target.as_uri(),
-            size_bytes=len(content),
-            sha256=digest,
-            metadata=request.metadata,
-        )
-        manifest = self._manifest_path(request.run_id, artifact_id)
-        await asyncio.to_thread(self._publish, target, content, manifest, record)
-        return record.reference()
+        writer = FileArtifactWriter(self.root, request, deadline, self._atomic_write)
+        await writer.open()
+        return writer
+
+    async def put(
+        self, request: ArtifactWrite, content: bytes, *, deadline: float | None = None
+    ) -> ArtifactRef:
+        writer = await self.open_writer(request, deadline=deadline)
+        try:
+            await writer.write(content)
+            return await writer.finish()
+        finally:
+            await writer.abort()
 
     async def read(self, ref: ArtifactRef) -> bytes:
         record = await self.get_record(ref)
@@ -74,16 +73,6 @@ class FileArtifactStore:
         for record in records:
             await asyncio.to_thread(self._validate_content, record)
         return records
-
-    def _publish(
-        self,
-        target: Path,
-        content: bytes,
-        manifest: Path,
-        record: ArtifactRecord,
-    ) -> None:
-        self._atomic_write(target, content)
-        self._atomic_write(manifest, record.model_dump_json().encode("utf-8"))
 
     @staticmethod
     def _atomic_write(target: Path, content: bytes) -> None:

@@ -1,7 +1,10 @@
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
+
+if TYPE_CHECKING:
+    from miniagent.artifacts.writer import ArtifactWriter
 
 
 class ArtifactRef(BaseModel):
@@ -13,6 +16,10 @@ class ArtifactRef(BaseModel):
     media_type: str | None = None
     size_bytes: int | None = Field(default=None, ge=0)
     sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
+class ArtifactPersistenceError(RuntimeError):
+    pass
 
 
 class ArtifactNotFoundError(LookupError):
@@ -55,7 +62,13 @@ class ArtifactRecord(BaseModel):
 
 
 class ArtifactStore(Protocol):
-    async def put(self, request: ArtifactWrite, content: bytes) -> ArtifactRef: ...
+    async def open_writer(
+        self, request: ArtifactWrite, *, deadline: float | None = None
+    ) -> "ArtifactWriter": ...
+
+    async def put(
+        self, request: ArtifactWrite, content: bytes, *, deadline: float | None = None
+    ) -> ArtifactRef: ...
 
     async def read(self, ref: ArtifactRef) -> bytes: ...
 
