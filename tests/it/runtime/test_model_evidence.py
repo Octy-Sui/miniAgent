@@ -36,7 +36,7 @@ from tests.support.runtime.runtime import QueueProvider, agent
 async def test_tc_u03_03(tmp_path, variant):
     store = SQLiteRunStore(tmp_path / "runs.db")
     await store.initialize()
-    usage = ModelUsage(input_tokens=10, output_tokens=10, total_tokens=20)
+    usage = ModelUsage(input_tokens=10, output_tokens=5, total_tokens=15)
     calls = (
         (ToolCall(id="same", name="ok", arguments={"sentinel": "arguments"}),) * 2
         if variant == "duplicate_calls"
@@ -75,7 +75,7 @@ async def test_tc_u03_03(tmp_path, variant):
                     provider="test",
                     model="test-model",
                     input_per_token=Decimal("0.000001"),
-                    output_per_token=Decimal("0.000001"),
+                    output_per_token=Decimal("0.000002"),
                 )
             ]
         )
@@ -140,7 +140,7 @@ async def test_tc_u03_02_atomic_sql_failure(tmp_path, stage):
             ModelResponse(
                 message=AssistantMessage(content="final sentinel"),
                 finish_reason=FinishReason.STOP,
-                usage=ModelUsage(input_tokens=10, output_tokens=10, total_tokens=20),
+                usage=ModelUsage(input_tokens=10, output_tokens=5, total_tokens=15),
             )
         ]
     )
@@ -172,7 +172,7 @@ async def test_tc_u03_04_unexpected_calculation_exception_propagates(tmp_path):
             ModelResponse(
                 message=AssistantMessage(content="final sentinel"),
                 finish_reason=FinishReason.STOP,
-                usage=ModelUsage(input_tokens=10, output_tokens=10, total_tokens=20),
+                usage=ModelUsage(input_tokens=10, output_tokens=5, total_tokens=15),
             )
         ]
     )
@@ -213,7 +213,7 @@ async def test_cancelled_response_transaction_drains_actual_commit(
     response = ModelResponse(
         message=AssistantMessage(content="committed response"),
         finish_reason=FinishReason.STOP,
-        usage=ModelUsage(input_tokens=10, output_tokens=10, total_tokens=20),
+        usage=ModelUsage(input_tokens=10, output_tokens=5, total_tokens=15),
     )
     provider = QueueProvider([response])
     run_id = uuid4()
@@ -244,7 +244,7 @@ async def test_cancelled_response_transaction_drains_actual_commit(
     ]
     assert len(responses) == 1
     assert responses[0].response == response
-    assert record.state.usage.total_tokens == 20
+    assert record.state.usage.total_tokens == 15
     assert record.state.execution.active_operation is None
 
 
@@ -257,7 +257,7 @@ async def test_tc_u03_01_request_committed_before_provider_entry(tmp_path):
     response = ModelResponse(
         message=AssistantMessage(content="final sentinel"),
         finish_reason=FinishReason.STOP,
-        usage=ModelUsage(input_tokens=10, output_tokens=10, total_tokens=20),
+        usage=ModelUsage(input_tokens=10, output_tokens=5, total_tokens=15),
     )
 
     class Provider:
@@ -278,7 +278,7 @@ async def test_accepted_tool_response_preserves_evidence_and_charges_once(tmp_pa
 
     store = SQLiteRunStore(tmp_path / "runs.db")
     await store.initialize()
-    usage = ModelUsage(input_tokens=10, output_tokens=10, total_tokens=20)
+    usage = ModelUsage(input_tokens=10, output_tokens=5, total_tokens=15)
     tool_response = ModelResponse(
         message=AssistantMessage(
             tool_calls=(ToolCall(id="single", name="ok", arguments={}),)
@@ -299,7 +299,7 @@ async def test_accepted_tool_response_preserves_evidence_and_charges_once(tmp_pa
                 provider="test",
                 model="test-model",
                 input_per_token=Decimal("0.000001"),
-                output_per_token=Decimal("0.000001"),
+                output_per_token=Decimal("0.000002"),
             )
         ]
     )

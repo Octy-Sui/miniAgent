@@ -74,7 +74,7 @@ async def test_tc_u05_05(tmp_path, variant):
     from tests.support.runtime.runtime import QueueProvider
 
     response = summary_response().model_copy(
-        update={"usage": ModelUsage(input_tokens=10, output_tokens=10, total_tokens=20)}
+        update={"usage": ModelUsage(input_tokens=10, output_tokens=5, total_tokens=15)}
     )
     failure = ProviderResponseEvidence(
         content="final summary sentinel",
@@ -99,7 +99,7 @@ async def test_tc_u05_05(tmp_path, variant):
                     provider="qwen",
                     model="test",
                     input_per_token=Decimal("0.000001"),
-                    output_per_token=Decimal("0.000001"),
+                    output_per_token=Decimal("0.000002"),
                 )
             ]
         )
@@ -138,7 +138,7 @@ async def test_tc_u05_03_attempt_commit_survives_failed_publication_and_retry(tm
     from tests.support.runtime.runtime import QueueProvider
 
     response = summary_response().model_copy(
-        update={"usage": ModelUsage(input_tokens=10, output_tokens=10, total_tokens=20)}
+        update={"usage": ModelUsage(input_tokens=10, output_tokens=5, total_tokens=15)}
     )
     runtime, execution, _provider, store = await pipeline(tmp_path, response=response)
     runtime.pricing = PriceConfig(
@@ -147,7 +147,7 @@ async def test_tc_u05_03_attempt_commit_survives_failed_publication_and_retry(tm
                 provider="qwen",
                 model="test",
                 input_per_token=Decimal("0.000001"),
-                output_per_token=Decimal("0.000001"),
+                output_per_token=Decimal("0.000002"),
             )
         ]
     )
@@ -215,7 +215,7 @@ async def test_tc_u05_02_soft_failure_then_later_success(tmp_path, variant):
                 }
             ]
         )
-    usage = ModelUsage(input_tokens=10, output_tokens=10, total_tokens=20)
+    usage = ModelUsage(input_tokens=10, output_tokens=5, total_tokens=15)
     invalid = invalid.model_copy(update={"usage": usage})
     valid = summary_response().model_copy(update={"usage": usage})
     runtime, execution, _provider, store = await pipeline(tmp_path, old=8500)
@@ -239,7 +239,7 @@ async def test_tc_u05_02_soft_failure_then_later_success(tmp_path, variant):
                 provider="qwen",
                 model="test",
                 input_per_token=Decimal("0.000001"),
-                output_per_token=Decimal("0.000001"),
+                output_per_token=Decimal("0.000002"),
             )
         ]
     )
