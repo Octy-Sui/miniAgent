@@ -53,7 +53,9 @@ async def test_application_persists_patch_and_cleans_successful_workspace(
     application_result = await application.run(CancellationToken())
 
     assert application_result.artifacts
-    patch_artifact = application_result.artifacts[0]
+    patch_artifact = next(
+        ref for ref in application_result.artifacts if ref.type == "workspace_patch"
+    )
     artifact_store = FileArtifactStore(artifact_root)
     patch = await artifact_store.read(patch_artifact)
     assert b"result.txt" in patch

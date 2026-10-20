@@ -13,7 +13,7 @@ from miniagent.environments.process import (
     inspect_host_execution,
 )
 from miniagent.models.messages import AssistantMessage
-from miniagent.models.protocol import FinishReason, ModelResponse
+from miniagent.models.protocol import FinishReason, ModelResponse, ModelUsage
 from miniagent.runtime import AgentRuntime
 from miniagent.runtime.events import RunEventType
 from miniagent.storage.sqlite import SQLiteRunStore
@@ -43,6 +43,7 @@ async def test_live_child_with_closed_pipes_prevents_trusted_tool_completion(
             )
         ),
         finish_reason=FinishReason.TOOL_CALL,
+        usage=ModelUsage(input_tokens=10, output_tokens=5, total_tokens=15),
     )
     store = SQLiteRunStore(tmp_path / "runs.sqlite3")
     await store.initialize()

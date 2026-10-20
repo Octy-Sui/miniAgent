@@ -340,6 +340,23 @@ class Application:
                     if page.next_cursor is None:
                         break
                     cursor = page.next_cursor
+                record = await self.dependencies.run_store.get(self.dependencies.run_id)
+                evaluation = record.state.execution.evaluation.result
+                if evaluation is not None:
+                    delivery_refs = [
+                        *evaluation.artifacts,
+                        *(
+                            check.artifact
+                            for check in evaluation.checks
+                            if check.artifact is not None
+                        ),
+                    ]
+                    for ref in delivery_refs:
+                        if refs.get(ref.artifact_id) != ref:
+                            raise ArtifactNotFoundError(
+                                f"Evaluation artifact missing or changed: {ref.artifact_id}"
+                            )
+                        await self.dependencies.artifact_store.get_record(ref)
                 if submission.patch_ref is not None:
                     await self.dependencies.artifact_store.get_record(
                         submission.patch_ref

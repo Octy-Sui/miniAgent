@@ -219,6 +219,7 @@ async def execute(directory: Path, run_id: str) -> None:
                 recovery_context=dependencies.recovery_context,
             )
         ),
+        artifact_store=dependencies.artifact_store,
     )
     failure = None
     result = None
