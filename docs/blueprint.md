@@ -6,7 +6,7 @@
 
 项目名称暂定：**Recoverable Coding Agent（RCA）**。
 
-RCA 接收真实 GitHub Issue，在隔离的代码工作区内自主完成代码搜索、问题诊断、补丁修改和测试验证。与普通 Coding Agent 不同，RCA 将可恢复执行作为核心能力：它能够识别 API、工具和 Agent 行为异常，保存状态、回滚无效修改、压缩上下文，并在进程重启后继续任务。
+RCA 接收真实 GitHub Issue，在隔离的代码工作区内自主完成代码搜索、问题诊断、补丁修改和测试验证。与普通 Coding Agent 不同，RCA 将可恢复执行作为核心能力：它能够识别 API、工具和 Agent 行为异常，保存状态、识别停滞、压缩上下文，并在进程重启后继续任务。
 
 项目不是 mini-swe-agent 的 Fork。开发方式是先分析其最小 Agent Loop，再建立独立代码仓库，自行设计 Runtime、Workspace、工具协议、恢复控制器与评测系统。
 
@@ -21,18 +21,18 @@ RCA 接收真实 GitHub Issue，在隔离的代码工作区内自主完成代码
 
 推荐在简历中定位为：
 
-> 独立设计并开发可恢复的软件工程 Agent Runtime，在 Docker 隔离环境中完成真实 GitHub Issue 的自主诊断、代码修改与测试验证；通过事件溯源、检查点、停滞检测、回滚和上下文压缩提高任务可靠性，并在固定 SWE-bench 任务集上进行可复现实验。
+> 独立设计并开发可恢复的软件工程 Agent Runtime，在 Docker 隔离环境中完成真实 GitHub Issue 的自主诊断、代码修改与测试验证；通过事件溯源、进程中断续跑、停滞检测和上下文压缩提高任务可靠性，并在固定 SWE-bench 任务集上进行可复现实验。
 
 ## 2. V1 目标与非目标
 
 ### 2.1 V1 目标
 
 - 单 Agent 能在 Local Workspace 或 Docker Workspace 中完成 Issue → Patch → Test 闭环。
-- Agent 使用结构化工具，受限 Shell 作为兜底。
+- Agent 仅使用 `read_file` 和 `shell` 两个结构化工具；目录浏览、代码搜索、修改和测试通过受 Policy 控制的 `shell` 执行。
 - Runtime 不依赖 OpenAI Agents SDK、LangGraph 等 Agent 框架。
-- 支持 Provider/API、Tool、Agent 行为和 Workspace 修改异常的分级恢复。
+- 支持 Provider/API、Tool、Agent 行为和 执行异常的分级恢复。
 - 使用 SQLite 保存事件、状态快照和审批状态。
-- 使用 Git Checkpoint 保存、回滚和重建代码工作区。
+- 保留 Run 独占的原 Workspace，进程重启后校验身份并接回；Git 基线仅用于导出候选 Patch。
 - 进程重启后能从最近安全边界继续执行。
 - 使用固定 SWE-bench 子集进行 Baseline 与 Recoverable 对照实验。
 - 提供 CLI 和只读 Trace Dashboard。
@@ -49,6 +49,8 @@ RCA 接收真实 GitHub Issue，在隔离的代码工作区内自主完成代码
 - 多语言批量评测。
 - 自动 Push 或创建真实 Pull Request。
 - 全量 SWE-bench 排名。
+- Checkpoint、自动回滚和基于工作区快照的重建恢复。
+- `read_file`、`shell` 之外的独立工具，暂不支持目录浏览、搜索、修改、测试、Diff 或 `finish` 专用工具。
 
 ## 3. 总体架构
 
@@ -63,7 +65,6 @@ flowchart TD
     Workspace --> Docker["Docker Workspace"]
     Runtime --> Recovery["Recovery Controller"]
     Runtime --> Store["Event & State Store"]
-    Workspace --> Git["Git Checkpoints"]
     Workspace --> Evaluator["Independent Evaluator"]
     Store --> Dashboard["Trace Dashboard"]
 ```
@@ -88,7 +89,7 @@ flowchart TD
 9. Event Store 记录模型、工具、文件、测试、恢复和成本事件。
 10. Recovery Controller 检测重试、停滞、预算和上下文条件。
 11. Agent 生成候选 Patch 后，Independent Evaluator 执行验证。
-12. 保存 Patch、Trace、测试报告、指标和最终状态，销毁工作区。
+12. 保存 Patch、Trace、测试报告、指标和最终状态；成功且交付无错误时销毁 Workspace，中断或失败时保留原工作区。
 
 ## 5. 模块设计
 
@@ -103,7 +104,7 @@ Runtime 是项目核心，不应与具体模型、工具或 Docker SDK 耦合。
 - 模型调用与工具调用分发。
 - 轮数、时间、Token 和费用预算。
 - Recovery Controller 调度。
-- Checkpoint、审批、中断和恢复。
+- 审批、中断、原 Workspace 接回和恢复。
 - 终止条件与最终结果组装。
 
 建议状态：
@@ -121,7 +122,7 @@ CREATED
 终止条件必须由 Runtime 判定：
 
 - 独立验证通过。
-- Agent 调用 `finish` 且验证完成。
+- 模型返回最终文本，提交候选结果后由独立验证判定。
 - 达到最大轮数、总时长、Token 或费用预算。
 - 恢复阶梯耗尽。
 - 用户取消或审批拒绝。
@@ -152,21 +153,15 @@ Provider 层负责协议差异、超时、限流识别和基础网络重试；�
 Workspace 输出采集截断、模型消息截断和结构化错误 JSON 已接入 Runtime。
 
 四项能力的数据结构、职责、消息大小上限和迁移方案见
-[Tool 契约设计](tool-contract-design.md)。以下工具列表为路线图，
-不表示已经全部注册。
-
-目标工具控制在 8 个左右：
+[Tool 契约设计](tool-contract-design.md)。本蓝图的工具范围仅包含以下两个工具：
 
 | 工具 | 作用 |
 |---|---|
-| `list_files` | 浏览目录和文件元数据 |
-| `search_code` | 使用 ripgrep 搜索代码 |
 | `read_file` | 按行或窗口读取文件 |
-| `apply_patch` | 受控修改文件 |
-| `run_tests` | 按 ProjectProfile 执行测试 |
-| `git_diff` | 查看当前修改 |
-| `shell_exec` | 受限命令兜底 |
-| `finish` | 提交候选结果并触发验证 |
+| `shell` | 在 Workspace 中执行命令，完成目录浏览、搜索、修改、测试和 Diff 查看 |
+
+不再将其他专用工具列为 V1 交付要求。模型返回最终文本表示提交候选结果，
+由 Runtime 触发 Independent Evaluator；不提供 `finish` 工具。
 
 统一工具接口使用参数模型生成 Schema 并执行严格校验：
 
@@ -203,7 +198,7 @@ Registry 负责注册和参数校验；Runtime 保留执行与取消职责，将
 
 ### 5.4 WorkspaceBackend
 
-Workspace 是 Run 独占的代码状态边界。每个 Run 同一时间最多有一个活动 Workspace；恢复时可以创建替代 Workspace，但新旧 Workspace 不得同时接受命令。不同 Backend 的隔离强度不同：LocalWorkspace 只隔离文件状态，DockerWorkspace 额外提供容器安全和资源边界。
+Workspace 是 Run 独占的代码状态边界。每个 Run 同一时间最多有一个活动 Workspace；恢复时只接回身份已确认的原 Workspace；原工作区缺失或身份不匹配时拒绝续跑，不从 Checkpoint 重建。不同 Backend 的隔离强度不同：LocalWorkspace 只隔离文件状态，DockerWorkspace 额外提供容器安全和资源边界。
 
 ```python
 class Workspace(Protocol):
@@ -214,8 +209,6 @@ class Workspace(Protocol):
     def run_id(self) -> UUID: ...
 
     async def execute(self, command: Command) -> ExecutionResult: ...
-    async def checkpoint(self) -> WorkspaceCheckpoint: ...
-    async def restore(self, checkpoint: WorkspaceCheckpoint) -> None: ...
     async def export_patch(self) -> Patch: ...
     async def destroy(self) -> None: ...
 
@@ -223,10 +216,10 @@ class Workspace(Protocol):
 class WorkspaceBackend[SpecT](Protocol):
     async def create(self, spec: SpecT) -> Workspace: ...
 
-    async def recover(
+    async def attach(
         self,
         spec: SpecT,
-        checkpoint: WorkspaceCheckpoint,
+        attachment: WorkspaceAttachment,
     ) -> Workspace: ...
 ```
 
@@ -275,7 +268,7 @@ class WorkspaceSettings(BaseSettings):
     local_workspace_root: Path = Path.home() / ".miniagent" / "workspaces"
 ```
 
-`run_id` 必须先于 Workspace 创建。CLI bootstrap 根据运行参数构造 `WorkspaceConfig`，由异步 context manager 选择 Backend、管理 Workspace 生命周期，再把创建完成的 Workspace 注入 Tool Executor：
+`run_id` 必须先于 Workspace 创建。CLI bootstrap 根据运行参数构造 `WorkspaceConfig`，选择 Backend 并创建 Workspace，再由 Application 管理生命周期，将 Workspace 注入 Tool Executor：
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -286,15 +279,9 @@ class WorkspaceConfig:
     settings: Settings
     docker_image: str | None = None
 
-
-@asynccontextmanager
-async def workspace(config: WorkspaceConfig) -> AsyncIterator[Workspace]:
-    instance = await create_workspace(config)
-    try:
-        yield instance
-    finally:
-        await instance.destroy()
 ```
+
+Application 仅在 Run 成功且 Artifact 交付无错误时销毁 Workspace；中断和失败时保留原工作区，供诊断或符合续跑条件时接回。Runtime Snapshot 保存执行状态，不保存或恢复工作区文件内容。
 
 工具只依赖 Workspace 协议，不直接接收宿主机路径或 Docker 容器 ID。CLI 提供 `--workspace local|docker`，默认值为 `local`；Docker 所需镜像来自 Task 配置，而不是 LocalWorkspace 配置。
 
@@ -332,7 +319,7 @@ class LocalWorkspace:
 - `source_dir` 和 `local_workspace_root` 必须解析为绝对路径，且两者不能互相包含，避免复制递归和清理源仓库。
 - `execute` 只接受参数数组；工作目录解析后必须位于 `root` 内。需要 Shell 语义时，由受策略控制的 Tool 显式执行 `/bin/sh -lc`。
 - 命令超时后终止整个进程组并把 Workspace 标记为 `BROKEN`，避免遗留子进程继续修改文件。
-- `checkpoint` 将工作区快照写入 Artifact Store；`recover` 在新的独占目录中恢复快照，并校验 `run_id`、revision 和内容摘要。
+- `attach` 校验持久化的 Workspace 身份并接回原目录；工作区缺失或身份校验失败时拒绝续跑，不创建替代目录。
 - `export_patch` 始终相对 `base_revision` 生成 Git binary patch；源仓库保持不变，只有 Patch 能跨越 Workspace 边界。
 - `destroy` 只能删除 `local_workspace_root` 下且身份标记与 `run_id`、`workspace_id` 匹配的目录；路径校验失败时必须拒绝删除。
 - 子进程环境使用最小宿主机环境加 `spec.environment`。这只能减少意外凭证暴露，不能构成安全隔离。
@@ -357,8 +344,8 @@ Rootless Docker 或 user namespace 是推荐的部署加固手段，不是 Docke
 #### 5.4.4 Runtime 接入顺序
 
 1. 先把 `run_id` 的生成移到 Workspace 创建之前，并把 Workspace 的创建失败映射为 `PREPARATION_FAILED`。
-2. 实现 LocalWorkspace 的 create、execute、checkpoint、recover、export_patch 和 destroy，再以 Workspace 协议重写文件与 Shell 工具适配层。
-3. CLI bootstrap 使用 `workspace(config)` 异步 context manager 管理 Workspace；退出 Run 时统一销毁，销毁失败必须显式上抛，避免静默泄漏工作区。
+2. 实现 LocalWorkspace 的 create、execute、attach、export_patch 和 destroy，再以 Workspace 协议重写文件与 Shell 工具适配层。
+3. CLI bootstrap 管理 Workspace 生命周期；中断和失败时保留原 Workspace 供诊断或续跑，成功且 Artifact 交付完成后销毁；销毁失败必须显式报告。
 4. 增加 CLI backend 选择和配置校验，Local 为默认，Docker 为显式选择。
 5. 使用同一组 Workspace 契约测试验证 Local 与 Docker；另外为 Local 增加源仓库不变、跨 Run 文件不可见、超时无遗留进程、越界目录拒绝和安全销毁测试。
 
@@ -383,7 +370,7 @@ project:
 
 ### 5.6 Policy 与 Human-in-the-loop
 
-沙箱内的读写、测试、Git Checkpoint 和回滚自动执行。下列行为需要审批：
+`read_file` 和 `shell` 的调用均跨越 Policy 边界；Local Shell 需要人工审批，Docker Shell 按容器策略执行。下列行为需要审批：
 
 - 开启网络。
 - 安装未预置依赖。
@@ -404,7 +391,7 @@ V1 使用 SQLite。完整大输出写入 Artifact 文件，数据库只保存引
 |---|---|---|
 | Run Event | 按 Run 严格排序的单条不可变事实 | 审计、解释和后续回放 |
 | Run Snapshot | 已知 Event sequence 上的完整 Run State 副本 | 避免从头回放并加速恢复 |
-| Artifact | 不适合放入数据库的大型不可变字节内容 | 保存 Patch、完整输出、报告、Checkpoint 和 Trace 导出 |
+| Artifact | 不适合放入数据库的大型不可变字节内容 | 保存 Patch、完整输出、报告和 Trace 导出 |
 | Run Trace | 关联 Event 与 Trace Span 得到的可观测性视图 | 因果分析、耗时诊断、查询和展示 |
 
 Run Trace 不是第四套事实存储。Event Store 是审计事实的权威来源；Run
@@ -427,8 +414,6 @@ file_changed
 test_completed
 retry_scheduled
 stall_detected
-checkpoint_created
-rollback_completed
 context_compacted
 approval_requested
 approval_resolved
@@ -451,7 +436,7 @@ Trace 关联规则：
   `external_trace_id`。
 - 模型请求、Tool Call、Workspace 命令和 Evaluation 等有耗时的操作各自形成
   Trace Span；相关 Event 携带 `span_id`，父子关系使用 `parent_span_id`。
-- Event 不使用通用 `parent_event_id`。Tool Call、Approval、Checkpoint、Snapshot
+- Event 不使用通用 `parent_event_id`。Tool Call、Approval、Snapshot
   等领域关系由各自有语义的 ID 表达；Span 层级只表达逻辑归属关系，不要求父
   Span 的时间范围包含子 Span。
 - Event sequence 是 Run 内事实顺序的权威来源；时间戳和 Span 关系只用于观察，
@@ -468,23 +453,19 @@ Trace 关联规则：
 
 ```text
 RUN
-├── WORKSPACE create/recover/destroy
+├── WORKSPACE create/attach/destroy
 ├── STEP N
 │   ├── MODEL
 │   └── TOOL call_index=N
 │       ├── APPROVAL_WAIT
 │       └── TOOL_EXECUTION
-├── CHECKPOINT create
 ├── RECOVERY
-│   └── CHECKPOINT restore
 └── EVALUATION
 ```
 
 STEP Span 从模型请求开始，覆盖该响应产生的全部 Tool Call，并携带明确的
 `step_number`；MODEL 与 TOOL 是其子 Span，APPROVAL_WAIT 和 TOOL_EXECUTION
-是 TOOL 的子 Span。Checkpoint 不是 Tool：在安全边界
-创建时直属 RUN，在恢复或回滚时直属 RECOVERY。只有未来由显式 Tool 发起时，
-CHECKPOINT 才能成为 TOOL 的子 Span，但其 Category 仍是 CHECKPOINT。
+是 TOOL 的子 Span。RECOVERY Span 记录重试、重新规划、上下文压缩和续跑等恢复操作。
 
 状态快照保存：
 
@@ -492,7 +473,7 @@ CHECKPOINT 才能成为 TOOL 的子 Span，但其 Category 仍是 CHECKPOINT。
 - 当前轮次与预算。
 - Working Context 引用。
 - Task Memory。
-- 最近安全 Checkpoint。
+- 原 Workspace 身份与接回所需的引用；Snapshot 不保存工作区文件内容。
 - 已完成 Tool Call 的幂等键。
 - 待审批操作。
 
@@ -508,7 +489,7 @@ CHECKPOINT 才能成为 TOOL 的子 Span，但其 Category 仍是 CHECKPOINT。
 
 - Working Context 达到窗口约 70%。
 - 工具输出累计过大。
-- 发生回滚或停滞。
+- 发生停滞或连续失败。
 - 准备进入更高恢复层级。
 
 压缩规则：
@@ -533,7 +514,7 @@ Event，也不把 Trace Artifact 提升为恢复状态。
 | L0 | 普通工具错误 | 将结构化错误返回 Agent |
 | L1 | 临时 API/工具异常 | 有界重试和指数退避 |
 | L2 | 无进展或重复行为 | 注入失败摘要，要求采用不同策略 |
-| L3 | 修改导致明显退化 | 回滚最近 Checkpoint，压缩上下文 |
+| L3 | 停滞或失败后上下文负担过重 | 压缩上下文，保留失败证据后继续规划 |
 | L4 | 剩余预算不足或连续失败 | 切换备用模型或请求人工介入 |
 | L5 | 恢复耗尽 | 终止并输出失败诊断 |
 
@@ -542,7 +523,7 @@ Event，也不把 Trace Artifact 提升为恢复状态。
 - 相同工具和参数重复调用。
 - 连续若干轮没有文件变化。
 - 测试失败集合连续不变。
-- 修改与回滚在相同文件间振荡。
+- 相同文件反复修改且没有测试进展。
 - Agent 多次提出已被否定的假设。
 
 每次恢复必须记录：触发证据、恢复等级、执行动作、结果和额外成本。
@@ -678,7 +659,7 @@ recoverable-coding-agent/
 
 - 单 Agent + 相同工具。
 - 只保留 Provider 临时错误的基本重试。
-- 不启用停滞检测、重新规划、Git 回滚和上下文压缩。
+- 不启用停滞检测、重新规划和上下文压缩。
 
 **Recoverable**：
 
@@ -702,7 +683,6 @@ Resolved Rate = 验证通过任务数 / 总任务数
 - API/工具异常恢复率。
 - 进程中断续跑成功率。
 - 停滞检测准确率和恢复后成功率。
-- 回滚触发次数与回滚后成功率。
 - 重复工具调用率。
 - 策略越权拦截率。
 
@@ -713,9 +693,8 @@ Resolved Rate = 验证通过任务数 / 总任务数
 1. Baseline。
 2. Baseline + Provider/Tool Retry。
 3. 加入停滞检测和重新规划。
-4. 加入 Git Checkpoint 和回滚。
-5. 加入 Context Compaction。
-6. 完整 Recoverable 版本。
+4. 加入 Context Compaction。
+5. 完整 Recoverable 版本。
 
 不要一次打开全部能力，否则无法判断哪项机制产生了效果。
 
@@ -735,9 +714,9 @@ Resolved Rate = 验证通过任务数 / 总任务数
 ### 9.2 集成测试
 
 - Provider Fake → Runtime → Fake Tool 完整循环。
-- LocalWorkspace 创建、执行、Checkpoint、Patch 导出和安全销毁。
+- LocalWorkspace 创建、执行、原工作区接回、Patch 导出和安全销毁。
 - DockerWorkspace 创建、执行、导出和销毁。
-- Git Checkpoint 与回滚。
+- 原 Workspace 缺失或身份不匹配时拒绝续跑。
 - SQLite Snapshot 恢复。
 - 审批中断与继续。
 - 工具超时和输出截断。
@@ -757,7 +736,7 @@ Resolved Rate = 验证通过任务数 / 总任务数
 - 一个简单 Issue 成功修复。
 - 一个任务触发重试后成功。
 - 一个任务触发停滞与重新规划。
-- 一个任务回滚后成功。
+- 一个任务触发上下文压缩后继续完成。
 - 一个任务预算耗尽并生成完整失败诊断。
 
 ## 10. 一周完整 V1 冲刺路线
@@ -773,13 +752,13 @@ Resolved Rate = 验证通过任务数 / 总任务数
 周日结束前必须同时满足：
 
 - 默认 Local Workspace 和显式 Docker Workspace 均能完成 Issue → Patch → Test 闭环。
-- 实现 8 个结构化工具和受限 Shell。
+- 实现 `read_file` 和 `shell` 两个结构化工具及其 Policy 边界。
 - Runtime 统一负责状态机、预算、终止、取消和最终结果。
 - SQLite 持久化 Event、Snapshot 和 Approval。
-- Artifact Store 与 Git Checkpoint 支持重建、回滚和 Patch 导出。
+- Artifact Store 保存 Patch 和评测证据；续跑接回原 Workspace，不依赖工作区快照重建。
 - 提供 `run`、`inspect`、`resume`、审批、评测、对比和 Dashboard CLI。
 - 进程中断后能够从最近安全边界续跑。
-- 支持 Provider/Tool 重试、停滞检测、重新规划、回滚和恢复耗尽诊断。
+- 支持 Provider/Tool 重试、停滞检测、重新规划、上下文压缩和恢复耗尽诊断。
 - 实现 Working Context、Task Memory 和 Context Compaction。
 - 实现 Policy、`WAITING_APPROVAL`、approve/reject/resume。
 - Independent Evaluator 独立判定任务成功。
@@ -793,7 +772,7 @@ Resolved Rate = 验证通过任务数 / 总任务数
 
 ### 10.2 实施原则
 
-- 模型返回最终文本或调用 `finish` 只表示提交候选结果；只有 Independent Evaluator 验证通过，Run 才能进入 `SUCCEEDED`。
+- 模型返回最终文本只表示提交候选结果；只有 Independent Evaluator 验证通过，Run 才能进入 `SUCCEEDED`。
 - 每项能力按照“接口与验收测试 → 最小实现 → 集成测试 → 故障注入 → 文档与示例”的顺序完成。
 - 每天 13:00 和 21:00 设置集成点；核心纵向链路、测试和类型检查不得留到周末集中处理。
 - 5 个开发任务允许反复调试；20 个正式任务冻结后不得因任务失败而替换。
@@ -809,7 +788,7 @@ Docker 可用
   → Workspace
   → Tool
   → Event/Snapshot
-  → Checkpoint/Resume
+  → 原 Workspace 接回/Resume
   → Recovery
   → Evaluator
   → 正式评测
@@ -868,8 +847,8 @@ Docker 可用
 - `WorkspaceBackend`、默认 `LocalWorkspace`、`DockerWorkspace` 和 Python `ProjectProfile`。
 - 每个 Run 使用独立工作区；DockerWorkspace 应用 capability、PID、CPU、内存和网络限制，非 root 校验按策略启用。
 - Tool Registry、输入 Schema 校验、输出截断和结构化错误。
-- `list_files`、`search_code`、`read_file`、`apply_patch`。
-- `run_tests`、`git_diff`、受限 `shell_exec`、`finish`。
+- `read_file`、`shell` 两个结构化工具。
+- 通过 `shell` 完成目录浏览、代码搜索、修改、测试和 Diff 查看。
 - Policy Engine 的 allow、deny 和 approval 决策。
 
 验收门槛：
@@ -878,9 +857,9 @@ Docker 可用
 - 路径逃逸、未授权工具和高风险命令被拒绝或进入审批。
 - 容器不能读取宿主机敏感路径。
 - 容器销毁后 Patch、Trace 和测试 Artifact 仍然保留。
-- `finish` 只触发评估，不直接宣告成功。
+- 模型最终文本只触发候选结果评估，不直接宣告成功。
 
-### 周三，9 月 16 日：事件溯源、Checkpoint 和续跑
+### 周三，9 月 16 日：事件溯源、Workspace 接回和续跑
 
 实现：
 
@@ -888,9 +867,9 @@ Docker 可用
 - 文件型 Artifact Store。
 - Model、Tool、文件、测试、恢复和审批事件。
 - Run Snapshot、最近安全边界和 Tool Call 幂等键。
-- Git Checkpoint、restore 和 Patch 导出。
+- 原 Workspace 身份持久化、attach 和 Patch 导出。
 - `run`、`inspect`、`resume` CLI。
-- Snapshot 恢复后按原 Backend 重建 Workspace。
+- 从 Snapshot 恢复 Runtime 状态，并按原 Backend 接回原 Workspace。
 
 安全边界顺序：
 
@@ -903,8 +882,8 @@ Docker 可用
 验收门槛：
 
 - 在安全 Snapshot 后强制终止 Runtime。
-- 使用同一 `run_id` 重建 Workspace 并恢复执行。
-- 消息、预算、Checkpoint 和下一执行位置正确恢复。
+- 使用同一 `run_id` 接回原 Workspace 并恢复执行；工作区缺失或身份不匹配时拒绝续跑。
+- 消息、预算、原 Workspace 身份和下一执行位置正确恢复。
 - 已完成的幂等 Tool Call 不重复执行。
 - 中断续跑与不中断运行导出等价 Patch。
 
@@ -916,7 +895,7 @@ Docker 可用
 - L1 Provider/Tool 有界重试和指数退避。
 - L2 重复调用、无文件变化、测试失败集合不变和振荡检测。
 - L2 结构化失败摘要与不同策略重新规划。
-- L3 测试退化后的 Git 回滚和上下文压缩。
+- L3 停滞或连续失败后的上下文压缩与重新规划。
 - L4 备用模型或人工介入。
 - L5 恢复耗尽和结构化失败诊断。
 - Working Context、Task Memory、`rejected_hypotheses` 和 Context Compactor。
@@ -928,7 +907,7 @@ Docker 可用
 - Provider 临时错误重试后成功。
 - 相同工具调用循环和无进展能够被检测。
 - 停滞后注入证据并要求采用不同策略。
-- 无效修改能够回滚后继续。
+- 测试退化证据能够反馈给 Agent，要求通过 `shell` 修正修改，不执行自动回滚。
 - 高风险工具调用不能绕过审批。
 - 上下文压缩后保留关键事实、失败策略和来源 Event ID。
 
@@ -940,7 +919,7 @@ Docker 可用
 - Independent Evaluator。
 - Patch clean-apply、目标测试、回归测试和测试超时判定。
 - Baseline/Recoverable 配置开关。
-- Token、费用、耗时、重试、停滞、回滚和恢复指标。
+- Token、费用、耗时、重试、停滞、压缩和恢复指标。
 - `eval`、`compare` CLI 和限并发评测执行器。
 
 执行顺序：
@@ -964,7 +943,7 @@ Docker 可用
 
 - Run 列表和 Run 详情。
 - Event 时间线。
-- Git Diff、Checkpoint、测试和恢复事件。
+- Git Diff、Workspace 身份、测试和恢复事件。
 - Task Memory、预算和成本。
 - Baseline/Recoverable Compare 页面。
 
@@ -974,8 +953,8 @@ Docker 可用
 2. Tool 执行超时。
 3. Runtime 在安全边界后退出并续跑。
 4. 相同工具调用循环后重新规划。
-5. 无效 Patch 导致测试退化并回滚。
-6. 有余量时补充容器意外停止和 Context 超限。
+5. Context 接近上限，压缩后继续执行。
+6. 有余量时补充容器意外停止和无效 Patch 的独立验证失败。
 
 质量收口：
 
@@ -1014,7 +993,7 @@ Docker 可用
 1. 普通 Issue 成功修复。
 2. Provider 错误后恢复。
 3. 停滞后重新规划。
-4. 无效修改回滚后成功。
+4. 上下文压缩后继续完成任务。
 5. 进程中断后续跑。
 6. 越权调用进入审批。
 7. 恢复耗尽并输出结构化失败诊断。
@@ -1054,7 +1033,7 @@ rca dashboard --port 8080
 
 1. Run 列表：状态、模型、任务、耗时、成本和最终结果。
 2. Run 详情：Event 时间线、当前 Task Memory 和预算。
-3. Workspace：修改文件、Git Diff、Checkpoint 和测试结果。
+3. Workspace：修改文件、Git Diff、Workspace 身份和测试结果。
 4. Compare：Baseline 与 Recoverable 的成功率、成本和恢复指标。
 
 Dashboard 不负责创建任务、管理用户或远程调度。
@@ -1063,9 +1042,9 @@ Dashboard 不负责创建任务、管理用户或远程调度。
 
 - ADR-001：自研 Runtime 而不是首版使用 Agent 框架。
 - ADR-002：单 Agent + 确定性控制器。
-- ADR-003：结构化工具 + 受限 Shell。
+- ADR-003：仅 `read_file` 和 `shell` 两个结构化工具，执行前经过 Policy。
 - ADR-004：可信开发默认 Local、受控评测使用 Docker、Firecracker V2。
-- ADR-005：Event Log + Snapshot + Git Checkpoint。
+- ADR-005：Event Log + Runtime Snapshot + 原 Workspace 身份接回。
 - ADR-006：客观测试作为最终判定。
 - ADR-007：内部 Tool Registry，MCP Adapter 后置。
 - ADR-008：Working Context、Task Memory 与 Trace 分层。
@@ -1082,7 +1061,7 @@ Dashboard 不负责创建任务、管理用户或远程调度。
 | 恢复导致成本上升 | 同时报告成功率、Token、耗时和恢复成本 |
 | Dashboard 占用时间 | 只读、服务端渲染；核心完成后再开发 |
 | Provider 差异 | 首版只实现一个 Provider；统一错误模型和协议 |
-| 容器恢复不稳定 | Runtime Snapshot + Git Patch 重建，不依赖容器进程快照 |
+| 容器恢复不稳定 | Runtime Snapshot + 原容器身份接回；原容器丢失时拒绝续跑 |
 
 ## 16. Definition of Done
 
@@ -1095,7 +1074,7 @@ Dashboard 不负责创建任务、管理用户或远程调度。
 - 通过至少 5 个故障注入 E2E 场景。
 - 能完成一次进程中断后的任务续跑。
 - 能展示一次停滞检测和重新规划。
-- 能展示一次回滚后继续执行。
+- 能展示一次上下文压缩后继续执行。
 - 能阻止一个越权工具调用并进入审批。
 - 在冻结任务集上输出 Baseline 与 Recoverable 对比。
 - README 包含快速开始、架构、演示、结果、限制和安全边界。
@@ -1108,7 +1087,7 @@ Dashboard 不负责创建任务、管理用户或远程调度。
 1. 1 分钟：说明问题——Agent 会调用工具，但真实失败、停滞和中断如何处理？
 2. 2 分钟：展示架构，重点区分模型决策与 Runtime 控制。
 3. 3 分钟：运行一个触发测试失败、重新规划并修复的任务。
-4. 2 分钟：展示 Trace、Checkpoint、回滚和成本。
+4. 2 分钟：展示 Trace、Snapshot、上下文压缩和成本。
 5. 1 分钟：展示 Baseline/Recoverable 对照结果。
 6. 1 分钟：说明 Local 与 Docker 的安全边界、V2 Firecracker/MCP 扩展路径。
 
@@ -1119,7 +1098,7 @@ Dashboard 不负责创建任务、管理用户或远程调度。
 1. Agent Loop：消息、工具调用、观察与终止。
 2. Tool Schema：输入验证、错误模型与幂等性。
 3. Runtime 状态机：中断、审批、恢复和预算。
-4. Workspace：隔离、资源控制、Artifact 与 Git Checkpoint。
+4. Workspace：隔离、资源控制、Artifact 与原工作区接回。
 5. Context：工作窗口、结构化记忆和压缩。
 6. Evaluation：独立验证、对照实验和失败分类。
 7. Observability：Event、Trace、指标和回放。
