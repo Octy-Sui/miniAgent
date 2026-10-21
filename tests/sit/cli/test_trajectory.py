@@ -111,6 +111,7 @@ def test_forbidden_provider_fields_do_not_enter_evidence(
     trajectory = next(
         record for record in manifests if record["type"] == "run_trajectory"
     )
+    assert result.stdout.splitlines()[-1] == f"Trajectory: {trajectory['uri']}"
     document = json.loads(Path(urlparse(trajectory["uri"]).path).read_bytes())
     assert sentinel not in json.dumps(document)
     responded = next(

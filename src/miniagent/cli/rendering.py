@@ -84,29 +84,31 @@ def print_application_result(
     *,
     failure_exit_code: int,
 ) -> None:
-    outcome = result.trajectory_export
-    if outcome.status == "exported":
-        typer.echo(f"Trajectory: {outcome.ref.uri}")
-    elif outcome.status == "failed":
-        typer.echo(
-            f"TRAJECTORY_EXPORT_FAILED [{outcome.code}]: {outcome.message}"[:4096],
-            err=True,
+    try:
+        run_succeeded = result.run_result.status is RunStatus.SUCCEEDED
+        if not run_succeeded:
+            _print_finalization_errors(result)
+        print_run_result(
+            result.run_result,
+            failure_exit_code=failure_exit_code,
+            patch_artifact=next(
+                (ref for ref in result.artifacts if ref.type == "workspace_patch"), None
+            ),
         )
-    elif outcome.status == "skipped":
-        typer.echo(f"TRAJECTORY_EXPORT_SKIPPED: {outcome.reason}"[:4096], err=True)
-    run_succeeded = result.run_result.status is RunStatus.SUCCEEDED
-    if not run_succeeded:
-        _print_finalization_errors(result)
-    print_run_result(
-        result.run_result,
-        failure_exit_code=failure_exit_code,
-        patch_artifact=next(
-            (ref for ref in result.artifacts if ref.type == "workspace_patch"), None
-        ),
-    )
-    if run_succeeded and result.finalization_errors:
-        _print_finalization_errors(result)
-        raise typer.Exit(code=failure_exit_code)
+        if run_succeeded and result.finalization_errors:
+            _print_finalization_errors(result)
+            raise typer.Exit(code=failure_exit_code)
+    finally:
+        outcome = result.trajectory_export
+        if outcome.status == "exported":
+            typer.echo(f"Trajectory: {outcome.ref.uri}")
+        elif outcome.status == "failed":
+            typer.echo(
+                f"TRAJECTORY_EXPORT_FAILED [{outcome.code}]: {outcome.message}"[:4096],
+                err=True,
+            )
+        elif outcome.status == "skipped":
+            typer.echo(f"TRAJECTORY_EXPORT_SKIPPED: {outcome.reason}"[:4096], err=True)
 
 
 def _print_finalization_errors(result: ApplicationResult) -> None:
