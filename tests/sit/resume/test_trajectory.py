@@ -303,6 +303,7 @@ async def test_failed_summary_then_later_compaction_survives_process_reopen(
         ]
     ) == len(attempts)
     evidence = Path(".superpowers/sdd/2026-10-20-trajectory")
+    evidence.mkdir(parents=True, exist_ok=True)
     (evidence / "offline-summary-review.json").write_text(
         json.dumps(
             {
