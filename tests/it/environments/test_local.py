@@ -156,7 +156,7 @@ async def test_checkpoint_can_restore_and_recover_workspace(
         await recovered.destroy()
 
 
-async def test_timeout_kills_descendant_processes(
+async def test_timeout_kills_descendants_and_preserves_workspace(
     tmp_path: Path,
     source_repository: Path,
 ) -> None:
@@ -173,16 +173,28 @@ async def test_timeout_kills_descendant_processes(
                 argv=[
                     "/bin/sh",
                     "-c",
-                    "(sleep 0.2; printf late > late.txt) & wait",
+                    "(sleep 1; printf late > late.txt) & wait",
                 ],
-                timeout_seconds=0.05,
+                timeout_seconds=0.5,
             )
         )
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.7)
 
         assert result.status is ExecutionStatus.TIMEOUT
-        assert workspace.state is LocalWorkspaceState.BROKEN
         assert not marker.exists()
+        assert workspace.state is LocalWorkspaceState.ACTIVE
+        assert (
+            await workspace.execute(
+                Command(
+                    argv=[
+                        "/bin/sh",
+                        "-c",
+                        "printf after_timeout > tracked.txt; cat tracked.txt",
+                    ]
+                )
+            )
+        ).stdout == "after_timeout"
+        assert (await workspace.export_patch()).files == ["tracked.txt"]
     finally:
         await workspace.destroy()
 

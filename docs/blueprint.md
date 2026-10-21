@@ -318,7 +318,7 @@ class LocalWorkspace:
 - `create` 要求 `source_dir` 是 Git 工作树根目录；复制当前 tracked 和未忽略的 untracked 文件，并在副本中创建合成 Git 基线。源工作树可以包含未提交修改，这些修改属于初始快照，不应出现在 Agent 导出的 Patch 中。
 - `source_dir` 和 `local_workspace_root` 必须解析为绝对路径，且两者不能互相包含，避免复制递归和清理源仓库。
 - `execute` 只接受参数数组；工作目录解析后必须位于 `root` 内。需要 Shell 语义时，由受策略控制的 Tool 显式执行 `/bin/sh -lc`。
-- 命令超时后终止整个进程组并把 Workspace 标记为 `BROKEN`，避免遗留子进程继续修改文件。
+- 命令超时后终止整个进程组；确认清理完成后返回超时结果并保持 Workspace 可用。取消、无法确认清理完成或其他执行链超时仍将 Workspace 标记为 `BROKEN`，阻止后续命令。
 - `attach` 校验持久化的 Workspace 身份并接回原目录；工作区缺失或身份校验失败时拒绝续跑，不创建替代目录。
 - `export_patch` 始终相对 `base_revision` 生成 Git binary patch；源仓库保持不变，只有 Patch 能跨越 Workspace 边界。
 - `destroy` 只能删除 `local_workspace_root` 下且身份标记与 `run_id`、`workspace_id` 匹配的目录；路径校验失败时必须拒绝删除。

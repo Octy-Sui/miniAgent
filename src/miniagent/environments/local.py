@@ -55,6 +55,10 @@ class LocalWorkspaceError(RuntimeError):
     pass
 
 
+class _VerifiedCommandTimeout(TimeoutError):
+    pass
+
+
 class LocalWorkspaceState(StrEnum):
     ACTIVE = "active"
     BROKEN = "broken"
@@ -534,8 +538,10 @@ class LocalWorkspaceBackend:
                 max(0.0, remaining - min(0.1, remaining / 4)),
             )
 
+        command_timeout = asyncio.timeout(timeout_seconds)
         try:
-            await asyncio.wait_for(asyncio.gather(*tasks), timeout=timeout_seconds)
+            async with command_timeout:
+                await asyncio.gather(*tasks)
             if identity is not None:
                 evidence = inspect_host_execution(identity)
                 if evidence.outcome != "ended":
@@ -584,6 +590,10 @@ class LocalWorkspaceBackend:
                     raise
             if not isinstance(exc, ArtifactPersistenceError):
                 await record_output(type(exc).__name__)
+            if isinstance(exc, TimeoutError) and command_timeout.expired():
+                raise _VerifiedCommandTimeout(
+                    "Local command timed out after verified group cleanup"
+                ) from exc
             raise
 
         await record_output(None)
@@ -700,6 +710,12 @@ class LocalWorkspace:
                     stdin=command.stdin.encode() if command.stdin is not None else None,
                     timeout_seconds=command.timeout_seconds,
                 )
+            except _VerifiedCommandTimeout:
+                return ExecutionResult(
+                    status=ExecutionStatus.TIMEOUT,
+                    output_evidence=capture.output,
+                    duration_ms=int((monotonic() - started_at) * 1000),
+                )
             except TimeoutError:
                 self.state = LocalWorkspaceState.BROKEN
                 return ExecutionResult(
@@ -707,7 +723,11 @@ class LocalWorkspace:
                     output_evidence=capture.output,
                     duration_ms=int((monotonic() - started_at) * 1000),
                 )
-            except (asyncio.CancelledError, ArtifactPersistenceError):
+            except (
+                asyncio.CancelledError,
+                ArtifactPersistenceError,
+                ManagedExecutionError,
+            ):
                 self.state = LocalWorkspaceState.BROKEN
                 raise
             finally:

@@ -11,6 +11,7 @@ from miniagent.environments import (
     LocalOptions,
     LocalWorkspaceBackend,
     LocalWorkspaceSpec,
+    LocalWorkspaceState,
 )
 from miniagent.environments.managed_execution import (
     MemoryExecutionObserver,
@@ -110,12 +111,22 @@ async def test_tc_u12_05_partial_stream(
                 await task
         else:
             assert (await task).status.value == "timeout"
+    if variant == "timeout":
+        assert workspace.state is LocalWorkspaceState.ACTIVE
+        assert (
+            await workspace.execute(
+                Command(argv=["/bin/sh", "-c", "printf after_timeout"])
+            )
+        ).stdout == "after_timeout"
+    else:
+        assert workspace.state is LocalWorkspaceState.BROKEN
     output = next(iter(observer.outputs.values()))
     assert output.stdout.status == "partial"
     assert not output.stdout.eof_observed
     assert output.stdout.reason is not None
     assert output.stdout.ref is not None
     assert (await store.read(output.stdout.ref)) in (b"", b"prefix")
+    assert observer.evidence[output.execution_id].group_ended
 
 
 @pytest.mark.parametrize(
