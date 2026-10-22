@@ -19,3 +19,6 @@ wheels/
 /htmlcov/
 /coverage.xml
 /coverage.json
+
+# Evaluation runs
+/eval/
