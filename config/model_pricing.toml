@@ -17,7 +17,7 @@ output_per_unit = "0.296296"
 
 [[models]]
 provider = "qwen"
-model = "deepseek-v4.1-flash"
+model = "deepseek-v4.1-flash-1017"
 input_per_unit = "0.296296"
 cached_input_per_unit = "0.029630"
 output_per_unit = "1.185185"
