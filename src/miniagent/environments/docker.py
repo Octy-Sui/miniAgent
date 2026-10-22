@@ -91,6 +91,12 @@ class DockerCommandError(DockerWorkspaceError):
     pass
 
 
+class _VerifiedCommandTimeout(TimeoutError):
+    def __init__(self, result: ExecutionResult) -> None:
+        super().__init__("Docker command timed out after verified group cleanup")
+        self.result = result
+
+
 class DockerWorkspaceState(StrEnum):
     ACTIVE = "active"
     BROKEN = "broken"
@@ -647,9 +653,7 @@ class DockerWorkspaceBackend:
                 ),
             )
             if output.result.status is ExecutionStatus.TIMEOUT:
-                raise TimeoutError(
-                    "Docker command timed out after verified group cleanup"
-                )
+                raise _VerifiedCommandTimeout(output.result)
             assert output.result.exit_code is not None
             return DockerCommandResult(
                 exit_code=output.result.exit_code,
@@ -848,6 +852,8 @@ class DockerWorkspace:
                     stdin=command.stdin.encode() if command.stdin is not None else None,
                     timeout_seconds=command.timeout_seconds,
                 )
+            except _VerifiedCommandTimeout as exc:
+                return exc.result
             except TimeoutError:
                 self.state = DockerWorkspaceState.BROKEN
                 await self.backend._kill_container(self.container_id)
