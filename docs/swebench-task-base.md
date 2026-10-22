@@ -32,7 +32,7 @@ revision：`c104f840cc67f8b6eec6f759ebc8b2693d585d4a`。
 | `sphinx-doc__sphinx-8551` | 多文件或调用链（5） | `sphinx-doc/sphinx` | `57ed10c68057c96491acbd3e62254ccfaf9e3861` |
 | `scikit-learn__scikit-learn-25102` | 多文件或调用链（5） | `scikit-learn/scikit-learn` | `f9a1cf072da9d7375d6c2163f68a6038b13b310f` |
 | `django__django-16667` | 边界条件和测试相关（4） | `django/django` | `02c356f2f3945b8075735d485c3cf48cad991011` |
-| `psf__requests-2931` | 边界条件和测试相关（4） | `psf/requests` | `5f7a3a74aab1625c2bb65f643197ee885e3da576` |
+| `matplotlib__matplotlib-22871` | 边界条件和测试相关（4） | `matplotlib/matplotlib` | `a7b7260bf06c20d408215d95ce20a1a01c12e5b1` |
 | `pytest-dev__pytest-7236` | 边界条件和测试相关（4） | `pytest-dev/pytest` | `c98bc4cd3d687fe9b392d8eecd905627191d4f06` |
 | `pydata__xarray-3151` | 边界条件和测试相关（4） | `pydata/xarray` | `118f4d996e7711c9aced916e6049af9f28d5ec66` |
 | `django__django-14349` | 依赖理解与兼容性（3） | `django/django` | `a708f39ce67af174df90c5b5e50ad1976cec7cb8` |
@@ -1938,41 +1938,105 @@ patch
 Thanks for this report.
 ````
 
-## psf__requests-2931
+## matplotlib__matplotlib-22871
 
 | 字段 | 值 |
 |---|---|
 | `selection` | `evaluation` |
 | `category` | `边界条件和测试相关（4）` |
-| `repo` | `psf/requests` |
-| `base_commit` | `5f7a3a74aab1625c2bb65f643197ee885e3da576` |
-| `version` | `2.9` |
-| `environment_setup_commit` | `bbeb0001cdc657ac8c7fef98e154229bc392db0e` |
-| `created_at` | `2015-12-16T14:57:00Z` |
+| `repo` | `matplotlib/matplotlib` |
+| `base_commit` | `a7b7260bf06c20d408215d95ce20a1a01c12e5b1` |
+| `version` | `3.5` |
+| `environment_setup_commit` | `de98877e3dc45de8dd441d008f23d88738dc015d` |
+| `created_at` | `2022-04-21T13:10:50Z` |
 | `difficulty` | `15 min - 1 hour` |
 | `platform` | `linux/amd64` |
 | `workspace_path` | `/testbed` |
-| `image` | `docker.io/swebench/sweb.eval.x86_64.psf_1776_requests-2931@sha256:852d3d1ddb3c859675e5bb7d9269cb27c1bf8a6e95965108ad8a38b3495fc1d0` |
+| `image` | `docker.io/swebench/sweb.eval.x86_64.matplotlib_1776_matplotlib-22871@sha256:0b50468d5fab27e15ed1d19f001d357534872b4392b71683e400923881c258aa` |
 
 ### problem_statement
 
 ````text
-Request with binary payload fails due to calling to_native_string
-Introduced with https://github.com/kennethreitz/requests/issues/2844
+[Bug]: ConciseDateFormatter not showing year anywhere when plotting <12 months
+### Bug summary
 
+When I plot < 1 year and January is not included in the x-axis, the year doesn't show up anywhere.
+This bug is different from bug #21670 (fixed in #21785).
+
+### Code for reproduction
+
+```python
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from datetime import datetime, timedelta
+
+#create time array
+initial = datetime(2021,2,14,0,0,0)
+time_array = [initial + timedelta(days=x) for x in range(1,200)]
+
+#create data array
+data = [-x**2/20000 for x in range(1,200)]
+
+
+#plot data
+fig,ax = plt.subplots()
+ax.plot(time_array,data)
+
+locator = mdates.AutoDateLocator()
+formatter = mdates.ConciseDateFormatter(locator)
+
+ax.grid(True)
+ax.set_ylabel("Temperature ($\degree$C)")
+ax.xaxis.set_major_locator(locator)
+ax.xaxis.set_major_formatter(formatter)
+fig.autofmt_xdate() #automatically makes the x-labels rotate
 ```
-import requests
-requests.put("http://httpbin.org/put", data=u"ööö".encode("utf-8"))
-```
 
-This works with 2.8.1, but not with 2.9.
 
+### Actual outcome
+
+![image](https://user-images.githubusercontent.com/15143365/154090257-c7813f1c-f9ea-4252-86bf-f84e449c2f46.png)
+
+
+### Expected outcome
+
+I expect the year "2021" to show in the offset, to the right of the x-axis
+
+### Additional information
+
+I'm using Spyder IDE, v5.1.5
+
+### Operating system
+
+Windows 10
+
+### Matplotlib Version
+
+3.4.3
+
+### Matplotlib Backend
+
+Qt5Agg
+
+### Python version
+
+3.9.1
+
+### Jupyter version
+
+_No response_
+
+### Installation
+
+conda
 
 ````
 
 ### hints_text
 
-空字符串：`""`。
+````text
+@anntzer working on this
+````
 
 ## pytest-dev__pytest-7236
 

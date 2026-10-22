@@ -1,5 +1,5 @@
 {
-  "task_base_sha256": "002f706b7c35a165247b532542425ccbfda9b87b35778ddc3c416b057e509bee",
+  "task_base_sha256": "875ebcb68d991257024a86c7158848e658c2175dcc66350819b9613885fb7a4d",
   "sources": [
     {
       "dataset": "princeton-nlp/SWE-bench_Verified",
@@ -186,12 +186,12 @@
       "workspace_path": "/testbed"
     },
     {
-      "instance_id": "psf__requests-2931",
+      "instance_id": "matplotlib__matplotlib-22871",
       "selection": "evaluation",
-      "repo": "psf/requests",
-      "version": "2.9",
-      "base_commit": "5f7a3a74aab1625c2bb65f643197ee885e3da576",
-      "image": "docker.io/swebench/sweb.eval.x86_64.psf_1776_requests-2931@sha256:852d3d1ddb3c859675e5bb7d9269cb27c1bf8a6e95965108ad8a38b3495fc1d0",
+      "repo": "matplotlib/matplotlib",
+      "version": "3.5",
+      "base_commit": "a7b7260bf06c20d408215d95ce20a1a01c12e5b1",
+      "image": "docker.io/swebench/sweb.eval.x86_64.matplotlib_1776_matplotlib-22871@sha256:0b50468d5fab27e15ed1d19f001d357534872b4392b71683e400923881c258aa",
       "platform": "linux/amd64",
       "workspace_path": "/testbed"
     },

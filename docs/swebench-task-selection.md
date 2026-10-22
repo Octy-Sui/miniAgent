@@ -23,6 +23,8 @@
 3. 正式集覆盖 9 个 Python 仓库，避免结果被单一框架或单一测试入口支配。
 4. 所有任务都保留原始人工难度；“单点/调用链/边界/兼容性/长轨迹”是本项目依据 issue 行为与 gold 变更范围做的实验分层，并非 SWE-bench 官方标签。
 
+2026-10-22 修订：因本机 TUN 网络使连接超时测试失效、固定镜像缺少 `pytest-httpbin`，将 `psf__requests-2931` 替换为 `matplotlib__matplotlib-22871`。替换前已确认新任务 gold 通过、空补丁实际运行后失败；本地数据使用新的 `swebench-verified-25-20261022` 批次，原批次和 requests 失败报告保留。5/20 划分、五类分层及正式集 9 个仓库覆盖保持不变；其余 24 项的固定任务、镜像及预检证据沿用。
+
 ## 开发任务（5）
 
 | Task ID | 版本 | 难度 | 范围 | F2P / P2P | 练习重点 | linux/amd64 镜像（digest 固定） |
@@ -61,7 +63,7 @@
 | Task ID | 版本 | 难度 | 范围 | F2P / P2P | 评测重点 | linux/amd64 镜像（digest 固定） |
 |---|---:|---|---:|---:|---|---|
 | [`django__django-16667`](https://github.com/django/django/issues/16667) | 5.0 | 15 min–1 h | 1 / 1 / +2,-0 | 2 / 24 | 日期控件溢出边界 | `docker.io/swebench/sweb.eval.x86_64.django_1776_django-16667@sha256:a0f59024db622ca13d7b34fe9356230a199588e8895a958e3501ea39251368a6` ([tags](https://hub.docker.com/r/swebench/sweb.eval.x86_64.django_1776_django-16667/tags)) |
-| [`psf__requests-2931`](https://github.com/psf/requests/issues/2931) | 2.9 | 15 min–1 h | 1 / 2 / +4,-1 | 1 / 84 | 二进制请求体边界 | `docker.io/swebench/sweb.eval.x86_64.psf_1776_requests-2931@sha256:852d3d1ddb3c859675e5bb7d9269cb27c1bf8a6e95965108ad8a38b3495fc1d0` ([tags](https://hub.docker.com/r/swebench/sweb.eval.x86_64.psf_1776_requests-2931/tags)) |
+| [`matplotlib__matplotlib-22871`](https://github.com/matplotlib/matplotlib/issues/22871) | 3.5 | 15 min–1 h | 1 / 2 / +4,-2 | 1 / 88 | 不跨一月的短日期范围年份标注 | `docker.io/swebench/sweb.eval.x86_64.matplotlib_1776_matplotlib-22871@sha256:0b50468d5fab27e15ed1d19f001d357534872b4392b71683e400923881c258aa` ([tags](https://hub.docker.com/r/swebench/sweb.eval.x86_64.matplotlib_1776_matplotlib-22871/tags)) |
 | [`pytest-dev__pytest-7236`](https://github.com/pytest-dev/pytest/issues/7236) | 5.4 | 15 min–1 h | 1 / 4 / +8,-3 | 1 / 51 | `--pdb` 下 skip/tearDown 生命周期 | `docker.io/swebench/sweb.eval.x86_64.pytest-dev_1776_pytest-7236@sha256:edcc72fd067a1b88f55fc9676cd2fa8ad6f0e624a3ae7d92eae232b7f39efadf` ([tags](https://hub.docker.com/r/swebench/sweb.eval.x86_64.pytest-dev_1776_pytest-7236/tags)) |
 | [`pydata__xarray-3151`](https://github.com/pydata/xarray/issues/3151) | 0.12 | 15 min–1 h | 1 / 1 / +7,-8 | 1 / 66 | 非单调相同坐标合并 | `docker.io/swebench/sweb.eval.x86_64.pydata_1776_xarray-3151@sha256:320eea88d5a1b8553e7bf3f51c705b2230936800bac59f9cc0acd920a5d44d6b` ([tags](https://hub.docker.com/r/swebench/sweb.eval.x86_64.pydata_1776_xarray-3151/tags)) |
 

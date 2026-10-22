@@ -29,7 +29,7 @@ class Settings(RunLocationSettings):
     artifact_root: Path = Path.home() / ".miniagent" / "artifacts"
     docker_image: str | None = None
     swebench_data_root: Path = (
-        Path.home() / ".miniagent/evaluation/swebench-verified-25-20261010"
+        Path.home() / ".miniagent/evaluation/swebench-verified-25-20261022"
     )
     swebench_work_root: Path = Path.home() / ".miniagent/evaluation/runs"
     swebench_executable: str = "swebench"
