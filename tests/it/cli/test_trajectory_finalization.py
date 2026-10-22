@@ -1,5 +1,7 @@
 import json
 from dataclasses import replace
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import pytest
 
@@ -50,6 +52,15 @@ async def test_export_does_not_change_run_outcome(tmp_path, monkeypatch, failed)
         await app.dependencies.artifact_store.read(result.trajectory_export.ref)
     )
     record = await app.dependencies.run_store.get(result.run_result.run_id)
+    artifact = await app.dependencies.artifact_store.get_record(
+        result.trajectory_export.ref
+    )
+    expected_name = f"task_{DEFAULT_AGENT.model.model}_{record.state.lifecycle.started_at:%Y-%m-%d}.json"
+    assert artifact.name == expected_name
+    path = Path(unquote(urlparse(artifact.uri).path))
+    assert path.name == expected_name
+    assert json.loads(path.read_bytes()) == document
+    assert artifact.media_type == "application/json"
     assert document["boundary"]["through_sequence"] == record.last_event_sequence
     assert document["summary"]["final_output"] == record.state.lifecycle.final_output
     assert result.finalization_errors == ()

@@ -340,13 +340,25 @@ class ArtifactReader:
             path = unquote_to_bytes(parsed.path).decode("utf-8")
         except (ValueError, UnicodeError) as exc:
             raise ReadFailure(409, "artifact_uri_invalid") from exc
-        target = self.root / "content" / record.sha256[:2] / record.sha256
+        parts = ("content", record.sha256[:2])
+        name = record.sha256
+        target = self.root.joinpath(*parts, name)
+        if (
+            path != str(target)
+            and record.type == "run_trajectory"
+            and record.name
+            and Path(record.name).name == record.name
+            and record.name not in {".", ".."}
+        ):
+            parts = ("content", "trajectories", record.sha256)
+            name = record.name
+            target = self.root.joinpath(*parts, name)
         if "\x00" in path or path != str(target):
             raise ReadFailure(409, "artifact_uri_invalid")
         try:
             with (
-                self._directory(("content", record.sha256[:2])) as directory,
-                self._regular(directory, record.sha256) as (descriptor, info),
+                self._directory(parts) as directory,
+                self._regular(directory, name) as (descriptor, info),
             ):
                 if max(info.st_size, record.size_bytes) > LIMITS.artifact_bytes:
                     return VerifiedContent(

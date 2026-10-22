@@ -1,4 +1,5 @@
 import asyncio
+import re
 from datetime import UTC, datetime
 from importlib.metadata import version
 from time import monotonic
@@ -50,6 +51,23 @@ type TrajectoryExportOutcome = Annotated[
     TrajectoryDisabled | TrajectoryExported | TrajectoryFailed | TrajectorySkipped,
     Field(discriminator="status"),
 ]
+
+
+def trajectory_filename(definition: TrajectoryDefinition, executed_at: datetime) -> str:
+    def component(value: str, fallback: str) -> str:
+        value = re.sub(r"[^\w.-]+", "_", value).strip("._-")
+        # Bound bytes rather than characters to accommodate Unicode filenames.
+        return value.encode("utf-8")[:96].decode("utf-8", errors="ignore") or fallback
+
+    task = (
+        definition.benchmark.instance_id
+        if definition.benchmark is not None
+        else definition.task.partition("\n")[0]
+    )
+    return (
+        f"{component(task, 'task')}_{component(definition.agent.model.model, 'model')}_"
+        f"{executed_at.astimezone(UTC):%Y-%m-%d}.json"
+    )
 
 
 def build_trajectory_definition(
@@ -114,9 +132,10 @@ async def try_export_trajectory(
         )
     try:
         async with asyncio.timeout_at(deadline):
+            trajectory_definition = build_trajectory_definition(record, definition)
             content = await encode_trajectory(
                 record=record,
-                definition=build_trajectory_definition(record, definition),
+                definition=trajectory_definition,
                 store=run_store,
                 artifacts=artifact_store,
                 exported_at=datetime.now(UTC),
@@ -131,7 +150,11 @@ async def try_export_trajectory(
             ArtifactWrite(
                 run_id=run_id,
                 type="run_trajectory",
-                name="trajectory.json",
+                name=trajectory_filename(
+                    trajectory_definition,
+                    record.state.lifecycle.started_at
+                    or record.state.identity.created_at,
+                ),
                 media_type="application/json",
                 metadata={
                     "through_sequence": record.last_event_sequence,

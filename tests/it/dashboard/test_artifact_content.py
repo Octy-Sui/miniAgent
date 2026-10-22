@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 from uuid import UUID
 
 import pytest
@@ -56,19 +57,51 @@ async def test_content_identity_and_layout(tmp_path: Path) -> None:
     assert result["leaked"] == []
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_named_trajectory_content_remains_readable(tmp_path: Path, legacy: bool):
+    store = FileArtifactStore(tmp_path)
+    content = b'{"kind":"miniagent.trajectory"}'
+    ref = await store.put(
+        ArtifactWrite(
+            run_id=UUID(int=1),
+            type="run_trajectory",
+            name="任务_model_2026-10-22.json",
+            media_type="application/json",
+        ),
+        content,
+    )
+    if legacy:
+        assert ref.sha256 is not None
+        target = tmp_path / "content" / ref.sha256[:2] / ref.sha256
+        target.parent.mkdir(parents=True, exist_ok=True)
+        Path(unquote(urlsplit(ref.uri).path)).rename(target)
+        manifest = tmp_path / "manifests" / UUID(int=1).hex / f"{ref.artifact_id}.json"
+        value = json.loads(manifest.read_text())
+        value["uri"] = target.as_uri()
+        manifest.write_text(json.dumps(value))
+    result = ArtifactReader(tmp_path).read_content(
+        UUID(int=1), ref.artifact_id, budget=ReadBudget(5, monotonic=lambda: 0)
+    )
+    assert result.content == content
+
+
 @pytest.mark.parametrize(("outside",), [(False,), (True,)])
 @pytest.mark.parametrize(("node",), [("content",), ("prefix",), ("directory",)])
+@pytest.mark.parametrize("named_trajectory", [False, True])
 async def test_internal_symlinks_are_always_rejected(
-    tmp_path: Path, node: str, outside: bool
+    tmp_path: Path, node: str, outside: bool, named_trajectory: bool
 ) -> None:
     ref = await FileArtifactStore(tmp_path).put(
         ArtifactWrite(
-            run_id=UUID(int=1), type="evaluation_stdout", media_type="text/plain"
+            run_id=UUID(int=1),
+            type="run_trajectory" if named_trajectory else "evaluation_stdout",
+            name="task_model_2026-10-22.json" if named_trajectory else None,
+            media_type="text/plain",
         ),
         b"visible",
     )
     assert ref.sha256 is not None
-    target = tmp_path / "content" / ref.sha256[:2] / ref.sha256
+    target = Path(unquote(urlsplit(ref.uri).path))
     if node == "prefix":
         target = target.parent
     elif node == "directory":

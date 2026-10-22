@@ -127,6 +127,10 @@ class FileArtifactWriter:
         self._closed = True
         digest = self._digest.hexdigest()
         target = self._root / "content" / digest[:2] / digest
+        if self._request.type == "run_trajectory" and self._request.name is not None:
+            target = (
+                self._root / "content" / "trajectories" / digest / self._request.name
+            )
         record = ArtifactRecord(
             artifact_id=uuid4(),
             run_id=self._request.run_id,
