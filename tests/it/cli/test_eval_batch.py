@@ -8,7 +8,7 @@ import pytest
 from miniagent.artifacts import ArtifactWrite, FileArtifactStore
 from miniagent.cli.eval_batch import collect_result, run_jobs
 from miniagent.metering.pricing import ModelPrice, PriceConfig
-from miniagent.models.protocol import ModelProviderError, ModelRequestTiming
+from miniagent.models.protocol import ModelProviderError, ModelRequestTiming, ModelUsage
 from miniagent.runtime import AgentRuntime, RuntimeConfig
 from miniagent.storage import SQLiteRunStore
 from miniagent.tools.contracts import ToolError, ToolResult, ToolStatus
@@ -82,7 +82,13 @@ async def test_statistics_include_summary_requests_and_actual_tool_executions(
     store = SQLiteRunStore(database)
     await store.initialize()
     artifacts = FileArtifactStore(tmp_path / "artifacts")
-    summary = summary_response().model_copy(update={"usage": final_response().usage})
+    summary = summary_response().model_copy(
+        update={
+            "usage": ModelUsage(
+                input_tokens=10, cached_input_tokens=4, output_tokens=3, total_tokens=13
+            )
+        }
+    )
     run = await AgentRuntime(
         provider=QueueProvider([tool_response()] * 4 + [summary, final_response()]),
         tools=ToolRegistry([SuccessfulTool()]),
@@ -108,7 +114,11 @@ async def test_statistics_include_summary_requests_and_actual_tool_executions(
     assert result.compactions == 1
     assert result.tool_executions == 4
     assert result.steps == 5
-    assert result.cost_usd == Decimal("0.018")
+    assert result.cost_usd == Decimal("0.031")
+    assert result.input_tokens == 15
+    assert result.cached_input_tokens == 4
+    assert result.output_tokens == 8
+    assert result.model_dump()["cached_input_tokens"] == 4
     assert result.unconfirmed_model_requests == 0
     assert result.model_metrics is not None
     assert result.model_metrics.overall.started == 6

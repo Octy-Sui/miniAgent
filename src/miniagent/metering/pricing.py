@@ -19,7 +19,7 @@ class ModelUnitPrice(BaseModel):
 
 
 class PriceConfigInput(BaseModel):
-    currency: Literal["USD"] = "USD"
+    currency: Literal["USD", "CNY"] = "USD"
     billing_unit_tokens: int = Field(default=1_000_000, ge=1)
     models: list[ModelUnitPrice]
 
@@ -44,7 +44,7 @@ class ModelPrice(BaseModel):
 class PriceConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    currency: Literal["USD"] = "USD"
+    currency: Literal["USD", "CNY"] = "USD"
     models: list[ModelPrice]
 
     @classmethod

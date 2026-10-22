@@ -1,4 +1,4 @@
-currency = "USD"
+currency = "CNY"
 billing_unit_tokens = 1000000
 
 [[models]]
@@ -18,6 +18,6 @@ output_per_unit = "0.296296"
 [[models]]
 provider = "qwen"
 model = "deepseek-v4.1-flash-1017"
-input_per_unit = "0.296296"
-cached_input_per_unit = "0.029630"
-output_per_unit = "1.185185"
+input_per_unit = "2"
+cached_input_per_unit = "0.2"
+output_per_unit = "8"

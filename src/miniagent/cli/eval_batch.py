@@ -58,6 +58,9 @@ class TaskResult(BaseModel):
     passed: bool = False
     cost_usd: Decimal | None = None
     unconfirmed_model_requests: int = 0
+    input_tokens: int | None = Field(default=None, ge=0)
+    cached_input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
     model_requests: int | None = None
     compaction_attempts: int | None = None
     compactions: int | None = None
@@ -229,6 +232,9 @@ async def collect_result(
         status=state.lifecycle.status,
         passed=evaluation is not None and evaluation.passed,
         cost_usd=state.usage.cost_usd,
+        input_tokens=state.usage.input_tokens,
+        cached_input_tokens=state.usage.cached_input_tokens,
+        output_tokens=state.usage.output_tokens,
         unconfirmed_model_requests=state.usage.unconfirmed_model_requests
         + int(
             state.execution.active_operation is not None
@@ -412,7 +418,7 @@ def _print_metrics(
 def print_summary(summary: BatchSummary, output: Path) -> None:
     typer.echo(f"Pass rate: {summary.passed}/{summary.total} ({summary.pass_rate:.2%})")
     typer.echo(
-        "Task\tPassed\tCost (USD)\tModel requests\tCompactions (attempts/success)\tTools\tSteps"
+        "Task\tPassed\tCost (USD)\tModel requests\tCompactions (attempts/success)\tTools\tSteps\tInput tokens (incl. cache)\tCache tokens\tOutput tokens"
     )
     for result in summary.tasks:
         values = [
@@ -427,10 +433,17 @@ def print_summary(summary: BatchSummary, output: Path) -> None:
             else None,
             result.tool_executions,
             result.steps,
+            result.input_tokens,
+            result.cached_input_tokens,
+            result.output_tokens,
         ]
         typer.echo(
             "\t".join("unknown" if value is None else str(value) for value in values)
         )
+        if result.unconfirmed_model_requests:
+            typer.echo(
+                f"  Token usage is partial: {result.unconfirmed_model_requests} requests with unconfirmed usage"
+            )
         if result.error:
             typer.echo(f"  Error: {result.error}")
         if result.task_duration_ms is not None:

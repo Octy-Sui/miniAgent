@@ -10,6 +10,7 @@ from miniagent.cli.eval_batch import (
     TaskResult,
     build_summary,
     create_output_directory,
+    print_summary,
     select_tasks,
 )
 
@@ -96,3 +97,32 @@ def test_unconfirmed_usage_marks_cost_as_incomplete():
     assert summary.known_cost_usd == Decimal("0.12")
     assert summary.unknown_cost_tasks == 1
     assert summary.tasks[0].unconfirmed_model_requests == 1
+
+
+def test_task_token_output_keeps_cache_as_subset_and_marks_partial_usage(
+    capsys, tmp_path
+):
+    print_summary(
+        build_summary(
+            [
+                TaskResult(
+                    instance_id="one",
+                    input_tokens=100,
+                    cached_input_tokens=30,
+                    output_tokens=20,
+                    unconfirmed_model_requests=1,
+                ),
+                TaskResult(instance_id="not-started"),
+            ],
+            "test-model",
+        ),
+        tmp_path,
+    )
+    output = capsys.readouterr().out
+    assert "Input tokens (incl. cache)\tCache tokens\tOutput tokens" in output
+    assert "100\t30\t20" in output
+    assert "Token usage is partial: 1 requests with unconfirmed usage" in output
+    assert (
+        "not-started\tno\tunknown\tunknown\tunknown\tunknown\tunknown\tunknown\tunknown\tunknown"
+        in output
+    )
