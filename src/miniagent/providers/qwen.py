@@ -2,10 +2,12 @@
 # Created: 2026-09-09 17:02:08
 # Author : octy Sui
 
+from time import perf_counter
 from typing import Any
 
 import orjson
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI, omit
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from miniagent.models.messages import AssistantMessage, Message
 from miniagent.models.protocol import (
@@ -13,6 +15,7 @@ from miniagent.models.protocol import (
     ModelContextLimitError,
     ModelProviderError,
     ModelRequest,
+    ModelRequestTiming,
     ModelResponse,
     ModelResponseNormalizationError,
     ModelUsage,
@@ -20,6 +23,35 @@ from miniagent.models.protocol import (
     ProviderToolCallEvidence,
 )
 from miniagent.tools.contracts import ToolCall
+
+
+class _ServerMetadata(BaseModel):
+    duration: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    request_id: str | None = None
+
+    @field_validator("duration", mode="before")
+    @classmethod
+    def reject_boolean_duration(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("Duration must be milliseconds")  # noqa: TRY004 -- Pydantic validation must remain recoverable.
+        return value
+
+
+def _request_timing(
+    started: float, metadata: object, request_id: str | None = None
+) -> ModelRequestTiming:
+    elapsed = (perf_counter() - started) * 1000
+    try:
+        server = _ServerMetadata.model_validate(
+            metadata if isinstance(metadata, dict) else {}
+        )
+    except ValidationError:
+        server = _ServerMetadata()
+    return ModelRequestTiming(
+        client_duration_ms=elapsed,
+        server_duration_ms=server.duration,
+        provider_request_id=server.request_id or request_id,
+    )
 
 
 class QwenProvider:
@@ -102,6 +134,7 @@ class QwenProvider:
         return mapping.get(finish_reason, FinishReason.UNKNOWN)
 
     async def generate(self, request: ModelRequest) -> ModelResponse:
+        started = perf_counter()
         try:
             response = await self.client.chat.completions.create(
                 model=request.model,
@@ -125,6 +158,11 @@ class QwenProvider:
                 max_tokens=request.generation.max_output_tokens,
             )
         except APIStatusError as exc:
+            try:
+                metadata = exc.response.json()
+            except ValueError:
+                metadata = exc.body
+            timing = _request_timing(started, metadata, exc.request_id)
             code = str(exc.code or "").lower()
             message = exc.message.lower()
             safe_message = f"Provider HTTP request failed (status={exc.status_code})"
@@ -137,14 +175,24 @@ class QwenProvider:
                 }
                 or "maximum context length" in message
             ):
-                raise ModelContextLimitError(safe_message) from None
+                raise ModelContextLimitError(
+                    safe_message, request_timing=timing
+                ) from None
             if exc.status_code == 429 or exc.status_code >= 500:
-                raise ModelProviderError(safe_message, retryable=True) from None
-            raise type(exc)(safe_message, response=exc.response, body=None) from None
+                raise ModelProviderError(
+                    safe_message, retryable=True, request_timing=timing
+                ) from None
+            error = type(exc)(safe_message, response=exc.response, body=None)
+            error.__dict__["request_timing"] = timing
+            raise error from None
         except APIConnectionError:
             raise ModelProviderError(
-                "Provider connection failed", retryable=True
+                "Provider connection failed",
+                retryable=True,
+                request_timing=_request_timing(started, {}),
             ) from None
+
+        timing = _request_timing(started, response.model_extra, response.id)
 
         def text(value: object) -> str | None:
             return value if isinstance(value, str) else None
@@ -173,6 +221,7 @@ class QwenProvider:
         )
         calls = getattr(provider_message, "tool_calls", None)
         evidence = ProviderResponseEvidence(
+            request_timing=timing,
             content=text(getattr(provider_message, "content", None)),
             tool_calls=tuple(
                 ProviderToolCallEvidence(
@@ -221,6 +270,8 @@ class QwenProvider:
             )
 
             return ModelResponse(
+                request_timing=timing,
+                latency_ms=int(timing.client_duration_ms),
                 message=message,
                 finish_reason=self._map_finish_reason(choice.finish_reason),
                 usage=ModelUsage(

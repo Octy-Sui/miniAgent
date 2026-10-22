@@ -8,8 +8,10 @@ import pytest
 from miniagent.artifacts import ArtifactWrite, FileArtifactStore
 from miniagent.cli.eval_batch import collect_result, run_jobs
 from miniagent.metering.pricing import ModelPrice, PriceConfig
+from miniagent.models.protocol import ModelProviderError, ModelRequestTiming
 from miniagent.runtime import AgentRuntime, RuntimeConfig
 from miniagent.storage import SQLiteRunStore
+from miniagent.tools.contracts import ToolError, ToolResult, ToolStatus
 from miniagent.tools.registry import ToolRegistry
 from tests.support.runtime.compaction import PipelineEstimator
 from tests.support.runtime.context import summary_response
@@ -108,6 +110,100 @@ async def test_statistics_include_summary_requests_and_actual_tool_executions(
     assert result.steps == 5
     assert result.cost_usd == Decimal("0.018")
     assert result.unconfirmed_model_requests == 0
+    assert result.model_metrics is not None
+    assert result.model_metrics.overall.started == 6
+    assert result.model_metrics.overall.succeeded == 6
+    assert result.model_metrics.compaction.succeeded == 1
+    assert result.model_metrics.overall.duration_ms.samples == 6
+    assert result.tool_metrics is not None
+    assert result.tool_metrics.overall.success_rate == 1
+    assert result.tool_metrics.by_tool["ok"].succeeded == 4
+    assert result.run_duration_ms is not None
+
+
+async def test_denied_calls_are_not_counted_as_tool_execution_failures(tmp_path: Path):
+    database = tmp_path / "runs.sqlite3"
+    store = SQLiteRunStore(database)
+    await store.initialize()
+    artifacts = FileArtifactStore(tmp_path / "artifacts")
+    run = await AgentRuntime(
+        provider=QueueProvider([tool_response(), final_response()]),
+        tools=ToolRegistry([SuccessfulTool()]),
+        run_store=store,
+        artifact_store=artifacts,
+    ).run(agent(), "issue")
+    result = await collect_result("one", run.run_id, database, artifacts, tmp_path)
+    assert result.tool_metrics is not None
+    assert result.tool_metrics.overall.started == 0
+    assert result.tool_metrics.overall.success_rate is None
+    assert result.tool_metrics.not_executed == {"TOOL_NOT_ALLOWED": 1}
+
+
+async def test_failed_model_call_preserves_precise_rt_in_eval(tmp_path: Path):
+    database = tmp_path / "runs.sqlite3"
+    store = SQLiteRunStore(database)
+    await store.initialize()
+    artifacts = FileArtifactStore(tmp_path / "artifacts")
+    error = ModelProviderError(
+        "failed",
+        request_timing=ModelRequestTiming(
+            client_duration_ms=1700,
+            server_duration_ms=1613,
+            provider_request_id="cloud-request",
+        ),
+    )
+    run = await AgentRuntime(
+        provider=QueueProvider([error]),
+        tools=ToolRegistry([]),
+        run_store=store,
+        artifact_store=artifacts,
+    ).run(agent(), "issue")
+    result = await collect_result("one", run.run_id, database, artifacts, tmp_path)
+    assert result.model_metrics is not None
+    assert result.model_metrics.overall.failed == 1
+    assert result.model_metrics.overall.interrupted == 0
+    assert result.model_metrics.overall.success_rate == 0
+    assert result.model_metrics.overall.duration_ms.mean == 1700
+    assert result.model_metrics.overall.server_duration_ms.mean == 1613
+    assert result.model_metrics.calls[0].provider_request_id == "cloud-request"
+
+
+@pytest.mark.parametrize(
+    "status", [ToolStatus.SUCCESS, ToolStatus.ERROR, ToolStatus.TIMEOUT]
+)
+async def test_tool_statistics_use_validated_status_and_execution_duration(
+    tmp_path: Path, status: ToolStatus
+):
+    class TimedTool(SuccessfulTool):
+        async def execute(self, arguments, *, tool_call_id):
+            return ToolResult(
+                tool_call_id=tool_call_id,
+                status=status,
+                content="result",
+                duration_ms=123,
+                error=None
+                if status is ToolStatus.SUCCESS
+                else ToolError(code="COMMAND_FAILED", message="failed"),
+            )
+
+    database = tmp_path / "runs.sqlite3"
+    store = SQLiteRunStore(database)
+    await store.initialize()
+    artifacts = FileArtifactStore(tmp_path / "artifacts")
+    run = await AgentRuntime(
+        provider=QueueProvider([tool_response(), final_response()]),
+        tools=ToolRegistry([TimedTool()]),
+        policy_engine=AllowPolicyEngine(),
+        run_store=store,
+        artifact_store=artifacts,
+    ).run(agent(allowed_tools=["ok"]), "issue")
+    result = await collect_result("one", run.run_id, database, artifacts, tmp_path)
+    assert result.tool_metrics is not None
+    stats = result.tool_metrics.by_tool["ok"]
+    assert stats.started == 1
+    assert stats.succeeded == (1 if status is ToolStatus.SUCCESS else 0)
+    assert stats.failed == (0 if status is ToolStatus.SUCCESS else 1)
+    assert stats.duration_ms.mean == stats.duration_ms.p95 == 123
 
 
 async def test_missing_provider_usage_is_visible_in_task_cost(tmp_path: Path):

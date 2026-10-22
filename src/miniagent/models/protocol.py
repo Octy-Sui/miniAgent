@@ -58,6 +58,14 @@ class ModelError(BaseModel):
     retryable: bool = False
 
 
+class ModelRequestTiming(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    client_duration_ms: float = Field(ge=0, allow_inf_nan=False)
+    server_duration_ms: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    provider_request_id: str | None = None
+
+
 class ModelResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -66,6 +74,7 @@ class ModelResponse(BaseModel):
     usage: ModelUsage | None = None
     provider_request_id: str | None = None
     latency_ms: int | None = None
+    request_timing: ModelRequestTiming | None = None
     error: ModelError | None = None
 
 
@@ -85,6 +94,7 @@ class ProviderResponseEvidence(BaseModel):
     finish_reason: str | None = None
     provider_request_id: str | None = None
     usage: dict[str, int | None] | None = None
+    request_timing: ModelRequestTiming | None = None
 
 
 class ModelProvider(Protocol):
@@ -92,8 +102,15 @@ class ModelProvider(Protocol):
 
 
 class ModelProviderError(RuntimeError):
-    def __init__(self, message: str, *, retryable: bool = False) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        request_timing: ModelRequestTiming | None = None,
+    ) -> None:
         self.retryable = retryable
+        self.request_timing = request_timing
         super().__init__(message)
 
 
@@ -105,4 +122,7 @@ class ModelResponseNormalizationError(ModelProviderError):
     def __init__(self, *, evidence: ProviderResponseEvidence, code: str) -> None:
         self.evidence = evidence
         self.code = code
-        super().__init__("Model response normalization failed")
+        super().__init__(
+            "Model response normalization failed",
+            request_timing=evidence.request_timing,
+        )

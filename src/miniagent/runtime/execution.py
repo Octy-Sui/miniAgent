@@ -25,6 +25,7 @@ from miniagent.metering.usage import RequestCost, add_request_usage
 from miniagent.models.messages import ToolMessage
 from miniagent.models.protocol import (
     ModelRequest,
+    ModelRequestTiming,
     ModelResponse,
     ProviderResponseEvidence,
 )
@@ -343,7 +344,12 @@ class RunExecution:
         self.pending_approval_resolution = None
 
     async def interrupt_operation(
-        self, *, unconfirmed: bool, termination: TerminationDecision | None = None
+        self,
+        *,
+        unconfirmed: bool,
+        termination: TerminationDecision | None = None,
+        request_timing: ModelRequestTiming | None = None,
+        error_code: str | None = None,
     ) -> None:
         operation = self.state.execution.active_operation
         if operation is None:
@@ -354,6 +360,8 @@ class RunExecution:
         trace = deepcopy(self.trace)
         event = trace.run_event(
             OperationInterrupted(
+                request_timing=request_timing,
+                error_code=error_code,
                 attempt_id=operation.attempt_id,
                 operation_kind=operation.kind,
                 unconfirmed=unconfirmed,
@@ -658,12 +666,17 @@ class RunExecution:
         self.trace = next_trace
 
     async def record_model_failure(
-        self, code: str, *, message: str | None = None
+        self,
+        code: str,
+        *,
+        message: str | None = None,
+        request_timing: ModelRequestTiming | None = None,
     ) -> None:
         operation = self.state.execution.active_operation
         trace = deepcopy(self.trace)
         event = trace.model_event(
             ModelResponded(
+                request_timing=request_timing,
                 attempt_id=operation.attempt_id if operation else None,
                 finish_reason="error",
                 tool_call_count=0,
@@ -790,6 +803,7 @@ class RunExecution:
         *,
         disposition: ResponseDisposition,
         normalization_failure: ProviderResponseEvidence | None = None,
+        request_timing: ModelRequestTiming | None = None,
         cost_status: Literal[
             "calculated",
             "not_configured",
@@ -821,6 +835,14 @@ class RunExecution:
         next_trace = deepcopy(self.trace)
         event = next_trace.model_event(
             ModelResponded(
+                request_timing=request_timing
+                or (
+                    response.request_timing
+                    if response
+                    else normalization_failure.request_timing
+                    if normalization_failure
+                    else None
+                ),
                 attempt_id=operation.attempt_id if operation else None,
                 finish_reason=response.finish_reason.value if response else "error",
                 tool_call_count=len(response.message.tool_calls) if response else 0,

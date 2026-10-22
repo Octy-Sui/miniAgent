@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
+from time import perf_counter
 from typing import overload
 from uuid import UUID, uuid4
 
@@ -31,6 +32,8 @@ from miniagent.models.protocol import (
     ModelProvider,
     ModelProviderError,
     ModelRequest,
+    ModelRequestTiming,
+    ModelResponse,
     ModelResponseNormalizationError,
 )
 from miniagent.policy import (
@@ -583,10 +586,9 @@ class AgentRuntime:
             assert operation is not None
             attempt_id = operation.attempt_id
             try:
-                response = await await_with_stop(
-                    asyncio.wait_for(
-                        self.provider.generate(summary_request),
-                        timeout=config.compaction_timeout_seconds,
+                response, request_timing = await await_with_stop(
+                    self._generate(
+                        summary_request, timeout=config.compaction_timeout_seconds
                     ),
                     self.cancellation_token,
                     current_interruption_token(),
@@ -606,7 +608,10 @@ class AgentRuntime:
             except Exception as exc:  # noqa: BLE001
                 failure = f"{type(exc).__name__}: {exc}"
                 attempt = CompactionAttempt(
-                    attempt=number, attempt_id=attempt_id, error_code=type(exc).__name__
+                    attempt=number,
+                    attempt_id=attempt_id,
+                    error_code=type(exc).__name__,
+                    request_timing=getattr(exc, "request_timing", None),
                 )
                 attempts.append(attempt)
                 retryable = (
@@ -649,6 +654,7 @@ class AgentRuntime:
                         pricing=self.pricing,
                     )
             attempt = CompactionAttempt(
+                request_timing=request_timing,
                 attempt=number,
                 attempt_id=attempt_id,
                 usage=response.usage,
@@ -742,6 +748,34 @@ class AgentRuntime:
         )
         return self._build_request(execution.state)
 
+    async def _generate(
+        self, request: ModelRequest, *, timeout: float | None = None
+    ) -> tuple[ModelResponse, ModelRequestTiming]:
+        started = perf_counter()
+        try:
+            operation = self.provider.generate(request)
+            response = (
+                await operation
+                if timeout is None
+                else await asyncio.wait_for(operation, timeout=timeout)
+            )
+        except Exception as exc:
+            if getattr(exc, "request_timing", None) is None:
+                exc.__dict__["request_timing"] = ModelRequestTiming(
+                    client_duration_ms=(perf_counter() - started) * 1000
+                )
+            raise
+        if response.request_timing is None:
+            timing = ModelRequestTiming(
+                client_duration_ms=response.latency_ms
+                if response.latency_ms is not None and response.latency_ms >= 0
+                else (perf_counter() - started) * 1000,
+                provider_request_id=response.provider_request_id,
+            )
+        else:
+            timing = response.request_timing
+        return response, timing
+
     async def _request_model(
         self,
         execution: RunExecution,
@@ -779,8 +813,8 @@ class AgentRuntime:
                 )
         while True:
             try:
-                response = await await_with_stop(
-                    self.provider.generate(request),
+                response, request_timing = await await_with_stop(
+                    self._generate(request),
                     self.cancellation_token,
                     current_interruption_token(),
                 )
@@ -788,7 +822,9 @@ class AgentRuntime:
                 raise
             except ModelContextLimitError as exc:
                 await execution.record_model_failure(
-                    "CONTEXT_CAPACITY_EXCEEDED", message=str(exc)
+                    "CONTEXT_CAPACITY_EXCEEDED",
+                    message=str(exc),
+                    request_timing=exc.request_timing,
                 )
                 if execution.state.execution.request_progress.business_retry_used >= 1:
                     return TerminateRun(
@@ -815,6 +851,7 @@ class AgentRuntime:
                     None,
                     None,
                     normalization_failure=exc.evidence,
+                    request_timing=exc.request_timing,
                     cost_status="invalid_usage",
                     disposition=TerminateDisposition(
                         decision=TerminationDecision(
@@ -835,7 +872,10 @@ class AgentRuntime:
                     ),
                 )
                 await execution.interrupt_operation(
-                    unconfirmed=True, termination=decision
+                    unconfirmed=True,
+                    termination=decision,
+                    request_timing=getattr(exc, "request_timing", None),
+                    error_code="PROVIDER_EXCEPTION",
                 )
                 return ContinueRun()
             break
@@ -861,7 +901,11 @@ class AgentRuntime:
                 )
             )
             await execution.record_model_response(
-                response, None, disposition=disposition, cost_status=cost_status
+                response,
+                None,
+                disposition=disposition,
+                cost_status=cost_status,
+                request_timing=request_timing,
             )
             return ContinueRun()
         if self.pricing is not None:
@@ -885,6 +929,7 @@ class AgentRuntime:
                     None,
                     disposition=disposition,
                     cost_status="calculation_failed",
+                    request_timing=request_timing,
                 )
                 return ContinueRun()
             request_cost = calculate_request_cost(
@@ -910,7 +955,11 @@ class AgentRuntime:
                 )
             )
         await execution.record_model_response(
-            response, request_cost, disposition=disposition, cost_status=cost_status
+            response,
+            request_cost,
+            disposition=disposition,
+            cost_status=cost_status,
+            request_timing=request_timing,
         )
         return ContinueRun()
 

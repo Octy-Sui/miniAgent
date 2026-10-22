@@ -8,6 +8,7 @@ from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
+from time import perf_counter
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
@@ -17,6 +18,14 @@ from pydantic import BaseModel, Field
 from miniagent.agents.default_agent import DEFAULT_AGENT
 from miniagent.artifacts import FileArtifactStore
 from miniagent.cli.bootstrap import execute_new_run
+from miniagent.cli.eval_metrics import (
+    CallStatistics,
+    MetricsCollector,
+    ModelStatistics,
+    ToolStatistics,
+    summarize_models,
+    summarize_tools,
+)
 from miniagent.cli.main import parse_config
 from miniagent.cli.settings import RunLocationSettings, Settings
 from miniagent.cli.signals import run_with_signals
@@ -57,6 +66,10 @@ class TaskResult(BaseModel):
     trajectory: str | None = None
     log: str | None = None
     error: str | None = None
+    model_metrics: ModelStatistics | None = None
+    tool_metrics: ToolStatistics | None = None
+    run_duration_ms: float | None = None
+    task_duration_ms: float | None = None
 
 
 class BatchSummary(BaseModel):
@@ -73,6 +86,10 @@ class BatchSummary(BaseModel):
     steps: int
     incomplete_statistics_tasks: int
     tasks: list[TaskResult]
+    model_metrics: ModelStatistics
+    tool_metrics: ToolStatistics
+    metrics_unavailable_tasks: int
+    wall_duration_ms: float | None = None
 
 
 def select_tasks(
@@ -124,6 +141,36 @@ def build_summary(results: list[TaskResult], model: str) -> BatchSummary:
         "steps",
     )
     return BatchSummary(
+        model_metrics=summarize_models(
+            [
+                call
+                for result in results
+                if result.model_metrics is not None
+                for call in result.model_metrics.calls
+            ]
+        ),
+        tool_metrics=summarize_tools(
+            [
+                call
+                for result in results
+                if result.tool_metrics is not None
+                for call in result.tool_metrics.calls
+            ],
+            dict(
+                sum(
+                    (
+                        Counter(result.tool_metrics.not_executed)
+                        for result in results
+                        if result.tool_metrics is not None
+                    ),
+                    Counter(),
+                )
+            ),
+        ),
+        metrics_unavailable_tasks=sum(
+            result.model_metrics is None or result.tool_metrics is None
+            for result in results
+        ),
         model=model,
         total=len(results),
         passed=passed,
@@ -158,12 +205,25 @@ async def collect_result(
     record = await store.get(run_id)
     state = record.state
     counts: Counter[str] = Counter()
+    metrics = MetricsCollector()
     async for event in iter_run_events(
         store, run_id, through_sequence=record.last_event_sequence
     ):
         counts[event.type.value] += 1
+        metrics.observe(event)
     evaluation = state.execution.evaluation.result
     result = TaskResult(
+        model_metrics=metrics.models(),
+        tool_metrics=metrics.tools(),
+        run_duration_ms=(
+            (
+                (state.lifecycle.finished_at or state.lifecycle.updated_at)
+                - state.lifecycle.started_at
+            ).total_seconds()
+            * 1000
+            if state.lifecycle.started_at is not None
+            else None
+        ),
         instance_id=instance_id,
         run_id=run_id,
         status=state.lifecycle.status,
@@ -208,6 +268,7 @@ async def collect_result(
 
 
 async def run_worker(task: EvalTask, model: str, output: Path) -> None:
+    started = perf_counter()
     run_id = uuid4()
     result = TaskResult(instance_id=task.instance_id, run_id=run_id)
     try:
@@ -259,6 +320,7 @@ async def run_worker(task: EvalTask, model: str, output: Path) -> None:
         result.error = "; ".join(
             filter(None, [result.error, f"Statistics failed: {exc}"])
         )
+    result.task_duration_ms = (perf_counter() - started) * 1000
     path = output / f"{task.instance_id}.result.json"
     temporary = path.with_suffix(".tmp")
     temporary.write_text(result.model_dump_json(indent=2) + "\n")
@@ -312,6 +374,41 @@ async def run_jobs(
         loop.remove_signal_handler(signal.SIGTERM)
 
 
+def _print_call_statistics(label: str, stats: CallStatistics) -> None:
+    rate = f"{stats.success_rate:.2%}" if stats.success_rate is not None else "unknown"
+    typer.echo(
+        f"  {label}: success={stats.succeeded}/{stats.started} ({rate}); failed={stats.failed}; interrupted={stats.interrupted}; unknown={stats.unknown}"
+    )
+    for name, durations in (
+        ("RT/execution duration ms", stats.duration_ms),
+        ("Server duration ms", stats.server_duration_ms),
+        ("Event interval ms (approximate)", stats.event_elapsed_ms),
+    ):
+        if durations.samples:
+            typer.echo(
+                f"    {name}: n={durations.samples}; total={durations.total:.2f}; mean={durations.mean:.2f}; p50={durations.p50:.2f}; p95={durations.p95:.2f}; max={durations.maximum:.2f}"
+            )
+    if not stats.duration_ms.samples:
+        typer.echo("    RT/execution duration ms: unknown (n=0)")
+
+
+def _print_metrics(
+    models: ModelStatistics | None, tools: ToolStatistics | None
+) -> None:
+    if models is not None:
+        _print_call_statistics("Model requests", models.overall)
+        if models.business.started:
+            _print_call_statistics("Business requests", models.business)
+        if models.compaction.started:
+            _print_call_statistics("Compaction requests", models.compaction)
+    if tools is not None:
+        _print_call_statistics("Tool executions", tools.overall)
+        for name, stats in tools.by_tool.items():
+            _print_call_statistics(f"Tool {name}", stats)
+        if tools.not_executed:
+            typer.echo(f"  Tools not executed (by error/status): {tools.not_executed}")
+
+
 def print_summary(summary: BatchSummary, output: Path) -> None:
     typer.echo(f"Pass rate: {summary.passed}/{summary.total} ({summary.pass_rate:.2%})")
     typer.echo(
@@ -336,6 +433,13 @@ def print_summary(summary: BatchSummary, output: Path) -> None:
         )
         if result.error:
             typer.echo(f"  Error: {result.error}")
+        if result.task_duration_ms is not None:
+            typer.echo(
+                f"  Task total ms (including preparation/cleanup): {result.task_duration_ms:.2f}"
+            )
+        if result.run_duration_ms is not None:
+            typer.echo(f"  Run elapsed ms: {result.run_duration_ms:.2f}")
+        _print_metrics(result.model_metrics, result.tool_metrics)
     typer.echo(
         f"Totals (available statistics): cost=${summary.known_cost_usd}; "
         f"model requests={summary.model_requests}; "
@@ -346,12 +450,21 @@ def print_summary(summary: BatchSummary, output: Path) -> None:
         typer.echo(
             f"Unknown cost tasks: {summary.unknown_cost_tasks}; incomplete statistics tasks: {summary.incomplete_statistics_tasks}"
         )
+    typer.echo("Batch request/tool statistics:")
+    _print_metrics(summary.model_metrics, summary.tool_metrics)
+    if summary.metrics_unavailable_tasks:
+        typer.echo(
+            f"Tasks with unavailable request/tool metrics: {summary.metrics_unavailable_tasks}"
+        )
+    if summary.wall_duration_ms is not None:
+        typer.echo(f"Batch wall duration ms: {summary.wall_duration_ms:.2f}")
     typer.echo(f"Results: {output}")
 
 
 async def execute_batch(
     tasks: list[EvalTask], model: str, output: Path, concurrency: int
 ) -> BatchSummary:
+    started = perf_counter()
     commands = [
         [
             sys.executable,
@@ -387,6 +500,7 @@ async def execute_batch(
                 f"{index}.log" if (output / f"{index}.log").exists() else None
             )
         summary = build_summary(results, model)
+        summary.wall_duration_ms = (perf_counter() - started) * 1000
         (output / "summary.json").write_text(summary.model_dump_json(indent=2) + "\n")
         print_summary(summary, output)
     for result, code in zip(summary.tasks, codes, strict=True):

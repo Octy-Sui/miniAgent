@@ -683,6 +683,7 @@ _PAYLOAD_FIELDS: dict[str, tuple[str, tuple[str, ...]]] = {
     "model_responded": (
         "ModelResponded",
         (
+            "request_timing",
             "response",
             "normalization_failure",
             "request_cost",
@@ -748,7 +749,14 @@ _PAYLOAD_FIELDS: dict[str, tuple[str, tuple[str, ...]]] = {
     ),
     "operation_interrupted": (
         "OperationInterrupted",
-        ("type", "attempt_id", "operation_kind", "unconfirmed"),
+        (
+            "type",
+            "attempt_id",
+            "operation_kind",
+            "unconfirmed",
+            "request_timing",
+            "error_code",
+        ),
     ),
     "operation_execution_ended": (
         "OperationExecutionEnded",

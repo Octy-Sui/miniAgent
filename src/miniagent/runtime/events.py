@@ -23,6 +23,7 @@ from miniagent.metering.usage import RequestCost
 from miniagent.models.messages import ToolMessage
 from miniagent.models.protocol import (
     ModelRequest,
+    ModelRequestTiming,
     ModelResponse,
     ModelUsage,
     ProviderResponseEvidence,
@@ -167,6 +168,7 @@ class ModelRequested(_Payload):
 
 
 class ModelResponded(_Payload):
+    request_timing: ModelRequestTiming | None = None
     response: ModelResponse | None = None
     normalization_failure: ProviderResponseEvidence | None = None
     request_cost: RequestCost | None = None
@@ -284,6 +286,8 @@ class ToolExecutionEnded(ToolScopePayload):
 
 
 class OperationInterrupted(_Payload):
+    request_timing: ModelRequestTiming | None = None
+    error_code: str | None = None
     type: Literal[RunEventType.OPERATION_INTERRUPTED] = (
         RunEventType.OPERATION_INTERRUPTED
     )
@@ -469,6 +473,7 @@ class RunFinished(_Payload):
 
 
 class CompactionAttempt(_Payload):
+    request_timing: ModelRequestTiming | None = None
     attempt_id: UUID | None = None
     attempt: int = Field(ge=1)
     usage: ModelUsage | None = None
