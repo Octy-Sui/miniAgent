@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import Sequence
 from uuid import UUID, uuid4
 
+from miniagent.runtime.event_logging import log_committed_event
 from miniagent.runtime.events import NewRunEvent
 from miniagent.runtime.recovery import RunRecoveryContext
 from miniagent.runtime.state import RunState
@@ -123,4 +124,6 @@ class RunRecorder:
                 last_confirmed_sequence=self.record.last_event_sequence,
             )
         self.record = result.record
+        for event in result.events:
+            log_committed_event(event, result.record.state)
         return result

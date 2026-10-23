@@ -1,10 +1,11 @@
-import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from miniagent.agents import AgentSpec
 from miniagent.artifacts.contracts import ArtifactPersistenceError, ArtifactRef
+from miniagent.diagnostics import log_event
+from miniagent.diagnostics import operation as observe_operation
 from miniagent.environments.managed_execution import (
     ManagedExecutionError,
     execution_scope,
@@ -44,7 +45,6 @@ from miniagent.tools.contracts import (
 from miniagent.tools.registry import PreparedToolCall, ToolRegistry
 
 _TOOL_ERROR_CODE = re.compile(r"^[A-Z0-9_]{1,64}$")
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,11 +235,18 @@ class ToolCallRunner:
             operation = execution.state.execution.active_operation
             assert operation is not None
             with execution_scope(execution.execution_observer(operation.attempt_id)):
-                result = await await_with_stop(
-                    prepared.invoke(call.id),
-                    self.cancellation_token,
-                    current_interruption_token(),
-                )
+                async with observe_operation(
+                    "tool",
+                    lifecycle=False,
+                    step_number=execution.state.execution.steps_started,
+                    attempt_id=operation.attempt_id,
+                    tool_name=call.name,
+                ):
+                    result = await await_with_stop(
+                        prepared.invoke(call.id),
+                        self.cancellation_token,
+                        current_interruption_token(),
+                    )
         except (
             CancellationRequested,
             InterruptionRequested,
@@ -248,8 +255,12 @@ class ToolCallRunner:
             ManagedExecutionError,
         ):
             raise
-        except Exception:
-            logger.exception("Tool execution failed", extra={"tool": call.name})
+        except Exception:  # noqa: BLE001 -- translate unexpected tool failures.
+            log_event(
+                "tool.exception",
+                tool_name=call.name,
+                error_code="TOOL_EXECUTION_EXCEPTION",
+            )
             effective = ToolResult(
                 tool_call_id=call.id,
                 status=ToolStatus.ERROR,

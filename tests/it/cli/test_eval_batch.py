@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -378,3 +379,23 @@ async def test_unavailable_event_statistics_preserve_run_result_and_cost(tmp_pat
     assert result.model_requests is None
     assert result.error is None
     assert any("Statistics" in warning for warning in result.warnings)
+
+
+async def test_worker_progress_is_visible_while_child_output_stays_in_log(
+    tmp_path, caplog
+):
+    caplog.set_level(logging.INFO, logger="miniagent")
+    codes = await run_jobs(
+        [[sys.executable, "-c", "print('private child output')"]], tmp_path, 1
+    )
+    assert codes == [0]
+    names = [record.msg for record in caplog.records]
+    assert "batch.worker_started" in names
+    assert "batch.worker_completed" in names
+    completed = next(
+        record for record in caplog.records if record.msg == "batch.worker_completed"
+    )
+    assert completed.fields["completed"] == 1
+    assert completed.fields["running"] == 0
+    assert (tmp_path / "0.log").read_text().strip() == "private child output"
+    assert "private child output" not in caplog.text

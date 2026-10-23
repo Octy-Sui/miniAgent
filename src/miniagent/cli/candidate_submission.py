@@ -15,6 +15,7 @@ from miniagent.artifacts import (
     ArtifactWrite,
 )
 from miniagent.cli.run_definition import CandidateSubmissionState
+from miniagent.diagnostics import operation
 from miniagent.environments import Workspace
 from miniagent.environments.attachment import LocalAttachment
 from miniagent.environments.contracts import PatchExportCleanupError
@@ -134,6 +135,7 @@ class CandidateSubmission:
             return str(attachment.workspace_dir / f"index-{attempt_id.hex}")
         return f"/tmp/miniagent-index-{attempt_id.hex}"
 
+    @operation("candidate_submission", lifecycle=False)
     async def submit(
         self,
         *,

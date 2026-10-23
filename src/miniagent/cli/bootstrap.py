@@ -42,6 +42,7 @@ from miniagent.cli.settings import (
     Settings,
     load_provider_credentials,
 )
+from miniagent.diagnostics import log_context, operation
 from miniagent.environments import (
     DockerOptions,
     DockerWorkspaceBackend,
@@ -127,6 +128,7 @@ class WorkspaceConfig:
     docker_image: str | None = None
 
 
+@operation("workspace_create")
 async def create_workspace(
     spec: LocalWorkspaceSpec | DockerWorkspaceSpec,
     settings: Settings,
@@ -175,6 +177,7 @@ class BootstrapConfig:
     trajectory: bool | None = None
 
 
+@operation("workspace_prepare")
 async def bootstrap(config: BootstrapConfig) -> Application:
     settings = Settings()
     export_trajectory = (
@@ -466,71 +469,74 @@ async def execute_new_run(
 ) -> ApplicationResult:
     location = RunLocationSettings()
     run_id = config.run_id or uuid4()
-    async with application_execution_scope(
-        location.run_database_path, run_id, interruption_token=interruption_token
-    ):
-        if location.run_database_path.exists():
-            try:
-                await SQLiteRunStore(location.run_database_path, read_only=True).get(
-                    run_id
-                )
-            except RunNotFoundError:
-                pass
-            else:
-                raise RunAlreadyExistsError(run_id)
-        application = await await_with_stop(
-            bootstrap(replace(config, run_id=run_id)),
-            cancellation_token,
-            interruption_token,
-        )
-
-        def publish(record: RunRecord) -> None:
-            typer.echo(f"Run: {record.state.identity.run_id}")
-            typer.echo(
-                f"Resume: miniagent resume --run-id {record.state.identity.run_id} --database {shlex.quote(str(location.run_database_path))}"
-            )
-
-        try:
-            return await application.run(
-                cancellation_token,
-                interruption_token=interruption_token,
-                on_record_created=publish,
-            )
-        except InterruptionRequested as exc:
-            missing = not location.run_database_path.exists()
-            if not missing:
+    with log_context(run_id=run_id):
+        async with application_execution_scope(
+            location.run_database_path, run_id, interruption_token=interruption_token
+        ):
+            if location.run_database_path.exists():
                 try:
                     await SQLiteRunStore(
                         location.run_database_path, read_only=True
                     ).get(run_id)
                 except RunNotFoundError:
-                    missing = True
-            if missing:
-                deadline = interruption_token.deadline if interruption_token else None
-                try:
-                    async with asyncio.timeout_at(deadline):
-                        await application.dependencies.workspace.destroy()
-                except Exception as cleanup_error:  # noqa: BLE001 -- preserve the controlling interruption.
-                    exc.add_note(
-                        f"Unpublished workspace cleanup failed: {type(cleanup_error).__name__}"
+                    pass
+                else:
+                    raise RunAlreadyExistsError(run_id)
+            application = await await_with_stop(
+                bootstrap(replace(config, run_id=run_id)),
+                cancellation_token,
+                interruption_token,
+            )
+
+            def publish(record: RunRecord) -> None:
+                typer.echo(f"Run: {record.state.identity.run_id}")
+                typer.echo(
+                    f"Resume: miniagent resume --run-id {record.state.identity.run_id} --database {shlex.quote(str(location.run_database_path))}"
+                )
+
+            try:
+                return await application.run(
+                    cancellation_token,
+                    interruption_token=interruption_token,
+                    on_record_created=publish,
+                )
+            except InterruptionRequested as exc:
+                missing = not location.run_database_path.exists()
+                if not missing:
+                    try:
+                        await SQLiteRunStore(
+                            location.run_database_path, read_only=True
+                        ).get(run_id)
+                    except RunNotFoundError:
+                        missing = True
+                if missing:
+                    deadline = (
+                        interruption_token.deadline if interruption_token else None
                     )
-            raise
-        except RunPersistenceError as exc:
-            if exc.operation == "create" and isinstance(
-                exc.__cause__, (sqlite3.Error, asyncio.CancelledError)
-            ):
-                store = SQLiteRunStore(location.run_database_path, read_only=True)
-                try:
-                    await store.get(run_id)
-                except RunNotFoundError:
-                    deadline = current_cleanup_deadline()
-                    async with asyncio.timeout_at(
-                        min(asyncio.get_running_loop().time() + 10, deadline)
-                        if deadline is not None
-                        else asyncio.get_running_loop().time() + 10
-                    ):
-                        await application.dependencies.workspace.destroy()
-            raise
+                    try:
+                        async with asyncio.timeout_at(deadline):
+                            await application.dependencies.workspace.destroy()
+                    except Exception as cleanup_error:  # noqa: BLE001 -- preserve the controlling interruption.
+                        exc.add_note(
+                            f"Unpublished workspace cleanup failed: {type(cleanup_error).__name__}"
+                        )
+                raise
+            except RunPersistenceError as exc:
+                if exc.operation == "create" and isinstance(
+                    exc.__cause__, (sqlite3.Error, asyncio.CancelledError)
+                ):
+                    store = SQLiteRunStore(location.run_database_path, read_only=True)
+                    try:
+                        await store.get(run_id)
+                    except RunNotFoundError:
+                        deadline = current_cleanup_deadline()
+                        async with asyncio.timeout_at(
+                            min(asyncio.get_running_loop().time() + 10, deadline)
+                            if deadline is not None
+                            else asyncio.get_running_loop().time() + 10
+                        ):
+                            await application.dependencies.workspace.destroy()
+                raise
 
 
 class ApplicationRehydrationError(ValueError):

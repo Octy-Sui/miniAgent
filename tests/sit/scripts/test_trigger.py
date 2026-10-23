@@ -62,7 +62,7 @@ def test_trigger_passes_task_context_to_real_bootstrap(
     ("instance_id", "error"),
     [
         ("astropy__astropy-12907", "TASK_NOT_READY: astropy__astropy-12907"),
-        ("django__django-11477", "missing model limits: qwen/deepseek-v4-pro"),
+        ("django__django-11477", "missing model limits: qwen/qwen3.8-flash"),
         ("pytest-dev__pytest-7571", "TASK_NOT_READY: pytest-dev__pytest-7571"),
         ("sympy__sympy-13647", "TASK_NOT_READY: sympy__sympy-13647"),
         ("pydata__xarray-3677", "TASK_NOT_READY: pydata__xarray-3677"),

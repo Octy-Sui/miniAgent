@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 
 from miniagent.artifacts import ArtifactRef, ArtifactStore, ArtifactWrite
 from miniagent.cli.settings import Settings
+from miniagent.diagnostics import operation
 from miniagent.environments.managed_execution import (
     HostProcessIdentity,
     ManagedExecutionError,
@@ -260,6 +261,7 @@ class SWEbenchEvaluator:
         self.connection = connection
         self.environment = harness_environment(environment.copy(), connection)
 
+    @operation("evaluation_report")
     async def _judge(
         self, attempt: EvaluationAttempt, exit_code: int
     ) -> EvaluationError | None:
@@ -320,6 +322,7 @@ class SWEbenchEvaluator:
             )
         return None
 
+    @operation("evaluation_cleanup")
     async def _cleanup(
         self,
         attempt: EvaluationAttempt,
@@ -346,6 +349,7 @@ class SWEbenchEvaluator:
         )
         return identities, [*diagnostics, *container_diagnostics]
 
+    @operation("evaluation_collect")
     async def _collect(
         self,
         request: EvaluationRequest,
@@ -482,6 +486,7 @@ class SWEbenchEvaluator:
                 )
         return refs, error
 
+    @operation("evaluation", lifecycle=False)
     async def evaluate(self, request: EvaluationRequest) -> EvaluationResult:
         observer = self.observer_getter()
         if observer is not None and observer.progress.result is not None:
@@ -625,7 +630,8 @@ class SWEbenchEvaluator:
                         stderr=stderr,
                     )
                     stage = "process"
-                    await process.wait()
+                    async with operation("evaluation_harness"):
+                        await process.wait()
             async with asyncio.timeout(self.settings.swebench_artifact_timeout_seconds):
                 assert process is not None and process.returncode is not None
                 error = await self._judge(attempt, process.returncode)

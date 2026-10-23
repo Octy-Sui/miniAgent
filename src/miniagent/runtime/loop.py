@@ -12,6 +12,8 @@ from uuid import UUID, uuid4
 
 from miniagent.agents import AgentSpec
 from miniagent.artifacts.contracts import ArtifactStore
+from miniagent.diagnostics import log_context
+from miniagent.diagnostics import operation as observe_operation
 from miniagent.environments.managed_execution import (
     ManagedExecutionError,
     execution_scope,
@@ -359,7 +361,10 @@ class AgentRuntime:
         *,
         interruption_token: InterruptionToken | None = None,
     ) -> RunResult | RunSuspension:
-        with interruption_scope(interruption_token):
+        with (
+            interruption_scope(interruption_token),
+            log_context(run_id=execution.state.identity.run_id),
+        ):
             agent = execution.state.definition.agent_spec
             approval = ApprovalCoordinator(
                 config=execution.state.definition.config,
@@ -640,14 +645,20 @@ class AgentRuntime:
                 )
                 if remaining <= 0:
                     raise TimeoutError("Summary request retry deadline exceeded")
-                response, request_timing = await await_with_stop(
-                    self._generate(
-                        summary_request,
-                        timeout=min(config.compaction_timeout_seconds, remaining),
-                    ),
-                    self.cancellation_token,
-                    current_interruption_token(),
-                )
+                with log_context(
+                    step_number=execution.state.execution.steps_started,
+                    attempt_id=execution.state.execution.active_operation.attempt_id
+                    if execution.state.execution.active_operation
+                    else None,
+                ):
+                    response, request_timing = await await_with_stop(
+                        self._generate(
+                            summary_request,
+                            timeout=min(config.compaction_timeout_seconds, remaining),
+                        ),
+                        self.cancellation_token,
+                        current_interruption_token(),
+                    )
             except InterruptionRequested:
                 raise
             except CancellationRequested:
@@ -847,11 +858,12 @@ class AgentRuntime:
                 "MODEL_REQUEST_DEADLINE", "Model request retry deadline exceeded"
             )
         if delay:
-            await await_with_stop(
-                asyncio.sleep(delay),
-                self.cancellation_token,
-                current_interruption_token(),
-            )
+            async with observe_operation("model_retry_wait", retry_delay_seconds=delay):
+                await await_with_stop(
+                    asyncio.sleep(delay),
+                    self.cancellation_token,
+                    current_interruption_token(),
+                )
         raise_if_interrupted()
         if self.cancellation_token.is_cancelled:
             raise CancellationRequested
@@ -862,6 +874,7 @@ class AgentRuntime:
             )
         return None
 
+    @observe_operation("model", lifecycle=False)
     async def _generate(
         self, request: ModelRequest, *, timeout: float | None = None
     ) -> tuple[ModelResponse, ModelRequestTiming]:
@@ -930,13 +943,19 @@ class AgentRuntime:
                 )
         while True:
             try:
-                response, request_timing = await await_with_stop(
-                    self._generate(
-                        request, timeout=self._model_time_remaining(execution)
-                    ),
-                    self.cancellation_token,
-                    current_interruption_token(),
-                )
+                with log_context(
+                    step_number=execution.state.execution.steps_started,
+                    attempt_id=execution.state.execution.active_operation.attempt_id
+                    if execution.state.execution.active_operation
+                    else None,
+                ):
+                    response, request_timing = await await_with_stop(
+                        self._generate(
+                            request, timeout=self._model_time_remaining(execution)
+                        ),
+                        self.cancellation_token,
+                        current_interruption_token(),
+                    )
             except (CancellationRequested, InterruptionRequested):
                 raise
             except ModelContextLimitError as exc:

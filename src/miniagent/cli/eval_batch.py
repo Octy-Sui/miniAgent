@@ -26,9 +26,11 @@ from miniagent.cli.eval_metrics import (
     summarize_models,
     summarize_tools,
 )
+from miniagent.cli.logging import logging_session
 from miniagent.cli.main import parse_config
 from miniagent.cli.settings import RunLocationSettings, Settings
 from miniagent.cli.signals import run_with_signals
+from miniagent.diagnostics import log_event, operation
 from miniagent.environments import WorkspaceKind
 from miniagent.evaluation.swebench_data import SWEbenchTaskContext
 from miniagent.runtime.history import iter_run_events
@@ -277,64 +279,67 @@ async def collect_result(
 
 
 async def run_worker(task: EvalTask, model: str, output: Path) -> None:
-    started = perf_counter()
-    run_id = uuid4()
-    result = TaskResult(instance_id=task.instance_id, run_id=run_id)
-    try:
-        config = replace(
-            parse_config(
-                task=(
-                    "Reproduce the problem, implement the minimal fix, "
-                    f"and run the relevant tests.\n\n{task.problem_statement}"
+    with logging_session():
+        started = perf_counter()
+        run_id = uuid4()
+        result = TaskResult(instance_id=task.instance_id, run_id=run_id)
+        try:
+            config = replace(
+                parse_config(
+                    task=(
+                        "Reproduce the problem, implement the minimal fix, "
+                        f"and run the relevant tests.\n\n{task.problem_statement}"
+                    ),
+                    model=model,
+                    workspace=WorkspaceKind.DOCKER,
+                    docker_image=task.image,
+                    swebench_task=SWEbenchTaskContext(instance_id=task.instance_id),
+                    trajectory=True,
                 ),
-                model=model,
-                workspace=WorkspaceKind.DOCKER,
-                docker_image=task.image,
-                swebench_task=SWEbenchTaskContext(instance_id=task.instance_id),
-                trajectory=True,
-            ),
-            run_id=run_id,
-        )
-        application_result, _ = await run_with_signals(
-            lambda cancellation, interruption: execute_new_run(
-                config, cancellation_token=cancellation, interruption_token=interruption
+                run_id=run_id,
             )
-        )
-        if application_result.finalization_errors:
-            result.warnings.extend(
-                error.message for error in application_result.finalization_errors
+            application_result, _ = await run_with_signals(
+                lambda cancellation, interruption: execute_new_run(
+                    config,
+                    cancellation_token=cancellation,
+                    interruption_token=interruption,
+                )
             )
-    except Exception as exc:  # noqa: BLE001 -- isolate task failure and publish its result.
-        traceback.print_exc()
-        result.error = f"{type(exc).__name__}: {exc}"
-    try:
-        database = RunLocationSettings().run_database_path
-        if database.exists():
-            collected = await collect_result(
-                task.instance_id,
-                run_id,
-                database,
-                FileArtifactStore(Settings().artifact_root),
-                output,
+            if application_result.finalization_errors:
+                result.warnings.extend(
+                    error.message for error in application_result.finalization_errors
+                )
+        except Exception as exc:  # noqa: BLE001 -- isolate task failure and publish its result.
+            traceback.print_exc()
+            result.error = f"{type(exc).__name__}: {exc}"
+        try:
+            database = RunLocationSettings().run_database_path
+            if database.exists():
+                collected = await collect_result(
+                    task.instance_id,
+                    run_id,
+                    database,
+                    FileArtifactStore(Settings().artifact_root),
+                    output,
+                )
+                collected.error = (
+                    "; ".join(filter(None, [result.error, collected.error])) or None
+                )
+                collected.warnings.extend(result.warnings)
+                result = collected
+        except RunNotFoundError:
+            # Preparation can fail before the Run is committed.
+            pass
+        except Exception as exc:  # noqa: BLE001 -- retain task identity if evidence cannot be read.
+            traceback.print_exc()
+            result.error = "; ".join(
+                filter(None, [result.error, f"Statistics failed: {exc}"])
             )
-            collected.error = (
-                "; ".join(filter(None, [result.error, collected.error])) or None
-            )
-            collected.warnings.extend(result.warnings)
-            result = collected
-    except RunNotFoundError:
-        # Preparation can fail before the Run is committed.
-        pass
-    except Exception as exc:  # noqa: BLE001 -- retain task identity if evidence cannot be read.
-        traceback.print_exc()
-        result.error = "; ".join(
-            filter(None, [result.error, f"Statistics failed: {exc}"])
-        )
-    result.task_duration_ms = (perf_counter() - started) * 1000
-    path = output / f"{task.instance_id}.result.json"
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(result.model_dump_json(indent=2) + "\n")
-    temporary.replace(path)
+        result.task_duration_ms = (perf_counter() - started) * 1000
+        path = output / f"{task.instance_id}.result.json"
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(result.model_dump_json(indent=2) + "\n")
+        temporary.replace(path)
 
 
 async def run_jobs(
@@ -343,8 +348,13 @@ async def run_jobs(
     if not 1 <= concurrency <= 3:
         raise ValueError("Concurrency must be between 1 and 3")
     semaphore = asyncio.Semaphore(concurrency)
+    running = 0
+    completed = 0
+    log_event("batch.started", total=len(commands), output_directory=output)
 
     async def run(index: int, command: list[str]) -> int:
+        nonlocal running, completed
+        log_event("batch.worker_queued", worker_index=index, total=len(commands))
         async with semaphore:
             with (output / f"{index}.log").open("w") as log:
                 try:
@@ -357,9 +367,29 @@ async def run_jobs(
                     )
                 except OSError as exc:
                     log.write(f"Worker launch failed: {exc}\n")
+                    completed += 1
+                    log_event(
+                        "batch.worker_failed",
+                        worker_index=index,
+                        exit_code=127,
+                        completed=completed,
+                        total=len(commands),
+                        running=running,
+                    )
                     return 127
+                running += 1
+                log_event(
+                    "batch.worker_started",
+                    worker_index=index,
+                    running=running,
+                    total=len(commands),
+                    log_path=output / f"{index}.log",
+                )
                 try:
-                    return await process.wait()
+                    async with operation(
+                        "batch_worker", lifecycle=False, worker_index=index
+                    ):
+                        return await process.wait()
                 except asyncio.CancelledError:
                     if process.returncode is None:
                         process.send_signal(signal.SIGINT)
@@ -369,6 +399,17 @@ async def run_jobs(
                         process.kill()
                         await process.wait()
                     raise
+                finally:
+                    running -= 1
+                    completed += 1
+                    log_event(
+                        "batch.worker_completed",
+                        worker_index=index,
+                        running=running,
+                        completed=completed,
+                        total=len(commands),
+                        exit_code=process.returncode,
+                    )
 
     loop = asyncio.get_running_loop()
     current = asyncio.current_task()
@@ -483,52 +524,61 @@ def print_summary(summary: BatchSummary, output: Path) -> None:
 async def execute_batch(
     tasks: list[EvalTask], model: str, output: Path, concurrency: int
 ) -> BatchSummary:
-    started = perf_counter()
-    commands = [
-        [
-            sys.executable,
-            "-m",
-            "miniagent.cli.eval_batch",
-            "--worker",
-            "--instance-id",
-            task.instance_id,
-            "--model",
-            model,
-            "--output-directory",
-            str(output),
+    with logging_session():
+        started = perf_counter()
+        commands = [
+            [
+                sys.executable,
+                "-m",
+                "miniagent.cli.eval_batch",
+                "--worker",
+                "--instance-id",
+                task.instance_id,
+                "--model",
+                model,
+                "--output-directory",
+                str(output),
+            ]
+            for task in tasks
         ]
-        for task in tasks
-    ]
-    results = [
-        TaskResult(instance_id=task.instance_id, status="not_started") for task in tasks
-    ]
-    (output / "selection.json").write_text(
-        TaskManifest(tasks=tasks).model_dump_json(indent=2) + "\n"
-    )
-    try:
-        codes = await run_jobs(commands, output, concurrency)
-    finally:
-        for index, task in enumerate(tasks):
-            path = output / f"{task.instance_id}.result.json"
-            if path.exists():
-                results[index] = TaskResult.model_validate_json(path.read_text())
-            elif (output / f"{index}.log").exists():
-                results[index].status = "error"
-                results[index].error = "Worker exited without a result; see task log"
-            results[index].log = (
-                f"{index}.log" if (output / f"{index}.log").exists() else None
+        results = [
+            TaskResult(instance_id=task.instance_id, status="not_started")
+            for task in tasks
+        ]
+        (output / "selection.json").write_text(
+            TaskManifest(tasks=tasks).model_dump_json(indent=2) + "\n"
+        )
+        try:
+            codes = await run_jobs(commands, output, concurrency)
+        finally:
+            for index, task in enumerate(tasks):
+                path = output / f"{task.instance_id}.result.json"
+                if path.exists():
+                    results[index] = TaskResult.model_validate_json(path.read_text())
+                elif (output / f"{index}.log").exists():
+                    results[index].status = "error"
+                    results[
+                        index
+                    ].error = "Worker exited without a result; see task log"
+                results[index].log = (
+                    f"{index}.log" if (output / f"{index}.log").exists() else None
+                )
+            summary = build_summary(results, model)
+            summary.wall_duration_ms = (perf_counter() - started) * 1000
+            (output / "summary.json").write_text(
+                summary.model_dump_json(indent=2) + "\n"
             )
-        summary = build_summary(results, model)
-        summary.wall_duration_ms = (perf_counter() - started) * 1000
-        (output / "summary.json").write_text(summary.model_dump_json(indent=2) + "\n")
-        print_summary(summary, output)
-    for result, code in zip(summary.tasks, codes, strict=True):
-        if code:
-            typer.echo(f"Worker exit code for {result.instance_id}: {code}", err=True)
-    return summary
+            print_summary(summary, output)
+        for result, code in zip(summary.tasks, codes, strict=True):
+            if code:
+                typer.echo(
+                    f"Worker exit code for {result.instance_id}: {code}", err=True
+                )
+        return summary
 
 
 @app.command()
+@logging_session()
 def main(
     target: Annotated[
         str | None, typer.Argument(help="Use all to execute every evaluation task.")

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from time import monotonic
@@ -17,6 +18,7 @@ from miniagent.cli.trajectory import (
     TrajectorySkipped,
     try_export_trajectory,
 )
+from miniagent.diagnostics import log_event, operation
 from miniagent.environments import Workspace
 from miniagent.environments.managed_execution import (
     ManagedExecutionError,
@@ -224,6 +226,7 @@ class Application:
             )
         outcome = await self._export_trajectory(interruption_token)
         if isinstance(run_result, RunSuspension):
+            log_event("workspace.retained", workspace_id=run_result.workspace_id)
             return ApplicationResult(
                 trajectory_export=outcome,
                 run_result=run_result,
@@ -232,7 +235,8 @@ class Application:
             )
         if run_result.status is RunStatus.SUCCEEDED and not errors:
             try:
-                await dependencies.workspace.destroy()
+                async with operation("workspace_cleanup"):
+                    await dependencies.workspace.destroy()
             except Exception as exc:  # noqa: BLE001
                 errors.append(
                     FinalizationError(
@@ -241,6 +245,18 @@ class Application:
                         message=f"{type(exc).__name__}: {exc}",
                     )
                 )
+        for error in errors:
+            log_event(
+                "finalization.failed",
+                level=logging.WARNING,
+                phase=error.stage,
+                error_code=error.code,
+            )
+        if run_result.status is not RunStatus.SUCCEEDED or errors:
+            log_event(
+                "workspace.retained",
+                workspace_id=dependencies.workspace.workspace_id,
+            )
         return ApplicationResult(
             trajectory_export=outcome,
             run_result=run_result,
@@ -268,16 +284,25 @@ class Application:
         envelope = deps.recovery_context.application
         if envelope is None:
             return TrajectorySkipped(reason="Frozen application definition unavailable")
-        return await try_export_trajectory(
-            enabled=True,
-            run_id=deps.run_id,
-            run_store=deps.run_store,
-            artifact_store=deps.artifact_store,
-            definition=envelope,
-            timeout_seconds=deps.artifact_collection_timeout_seconds,
-            cleanup_deadline=token.deadline if token else None,
+        async with operation("trajectory_export", lifecycle=False):
+            outcome = await try_export_trajectory(
+                enabled=True,
+                run_id=deps.run_id,
+                run_store=deps.run_store,
+                artifact_store=deps.artifact_store,
+                definition=envelope,
+                timeout_seconds=deps.artifact_collection_timeout_seconds,
+                cleanup_deadline=token.deadline if token else None,
+            )
+        log_event(
+            "trajectory_export.result",
+            status=outcome.status,
+            error_code=getattr(outcome, "code", None),
+            level=logging.WARNING if outcome.status == "failed" else logging.INFO,
         )
+        return outcome
 
+    @operation("artifact_collection")
     async def _finalize_patch(
         self,
         *,

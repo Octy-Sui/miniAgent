@@ -3,6 +3,7 @@ import signal
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 
+from miniagent.diagnostics import log_event
 from miniagent.environments.managed_execution import cleanup_deadline_scope
 from miniagent.runtime import CancellationToken, InterruptionToken
 from miniagent.runtime.interruption import interruption_scope
@@ -24,6 +25,7 @@ async def run_with_signals[T](
 
     def handle(current: signal.Signals) -> None:
         nonlocal received
+        log_event("interruption.requested", signal=current.name)
         if received is not None:
             if main_task is not None:
                 main_task.cancel()

@@ -8,6 +8,8 @@ from typing import Annotated, Literal
 import typer
 from pydantic import BaseModel, Field
 
+from miniagent.agents.default_agent import DEFAULT_AGENT
+from miniagent.cli.logging import logging_session
 from miniagent.cli.main import main as run_agent
 from miniagent.environments import WorkspaceKind
 from miniagent.evaluation.swebench_data import SWEbenchTaskContext
@@ -28,6 +30,7 @@ class TaskManifest(BaseModel):
 
 
 @app.command()
+@logging_session()
 def main(
     instance_id: Annotated[
         str, typer.Option(help="SWE-bench development instance ID.")
@@ -35,7 +38,7 @@ def main(
     model: Annotated[
         str,
         typer.Option(help="Model used by miniagent.", envvar="MINIAGENT_TRIGGER_MODEL"),
-    ] = "deepseek-v4-pro",
+    ] = DEFAULT_AGENT.model.model,
     trajectory: Annotated[
         bool | None,
         typer.Option(
