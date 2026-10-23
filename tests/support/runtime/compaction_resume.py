@@ -41,6 +41,7 @@ async def failed_summary(tmp_path, used):
         RunJournal(
             RunRecorder(run_id=seed.identity.run_id, store=store, recovery_context=None)
         ),
+        artifact_store=FileArtifactStore(tmp_path / "artifacts"),
     )
     await execution.begin_step(
         provider="qwen", model="test", request=request_for(execution.state)
@@ -79,6 +80,8 @@ async def failed_summary(tmp_path, used):
         )
     record = await store.get(seed.identity.run_id)
     execution = RunExecution.attach(
-        record, RunJournal.attach(RunRecorder.attach(store, record), [])
+        record,
+        RunJournal.attach(RunRecorder.attach(store, record), []),
+        artifact_store=execution.artifact_store,
     )
     return runtime, execution, store

@@ -81,8 +81,6 @@ class RunJournal:
         result = await self.recorder.commit(
             state, events=events, approval_changes=changes, snapshot=True
         )
-        if result is None:
-            raise RuntimeError("Recovery requires a persisted journal")
         for approval in result.approvals:
             self._approval_versions[approval.approval.request.approval_id] = (
                 approval.version
@@ -133,14 +131,12 @@ class RunJournal:
         summary_input_tokens: int = 0,
         source_snapshot_id: UUID | None = None,
     ) -> tuple[RunState, NewRunEvent]:
-        record = self.recorder.record
+        record = self.recorder.require_record()
         previous = state.context.current_version
         version = (previous or 0) + 1
-        snapshot_id = uuid4() if record is not None else None
-        snapshot_version = (
-            record.latest_snapshot_version + 1 if record is not None else None
-        )
-        sequence = record.last_event_sequence + 1 if record is not None else None
+        snapshot_id = uuid4()
+        snapshot_version = record.latest_snapshot_version + 1
+        sequence = record.last_event_sequence + 1
         candidate = state.model_copy(
             update={
                 "conversation": conversation,
@@ -208,25 +204,21 @@ class RunJournal:
         )
         return candidate, event
 
-    async def compact(self, state: RunState, event: NewRunEvent) -> CommitResult | None:
+    async def compact(self, state: RunState, event: NewRunEvent) -> CommitResult:
         payload = event.payload
         if not isinstance(payload, CompactionCompleted):
             raise ValueError("compaction commit requires completion event")  # noqa: TRY004
-        record = self.recorder.record
-        change = None
-        if record is not None:
-            if (
-                payload.new_snapshot_version != record.latest_snapshot_version + 1
-                or payload.new_snapshot_id is None
-                or payload.event_sequence != record.last_event_sequence + 1
-            ):
-                raise ValueError(
-                    "compaction reservation does not match confirmed record"
-                )
-            change = SnapshotChange(
-                snapshot_id=payload.new_snapshot_id,
-                expected_version=record.latest_snapshot_version,
-            )
+        record = self.recorder.require_record()
+        if (
+            payload.new_snapshot_version != record.latest_snapshot_version + 1
+            or payload.new_snapshot_id is None
+            or payload.event_sequence != record.last_event_sequence + 1
+        ):
+            raise ValueError("compaction reservation does not match confirmed record")
+        change = SnapshotChange(
+            snapshot_id=payload.new_snapshot_id,
+            expected_version=record.latest_snapshot_version,
+        )
         return await self.recorder.commit(
             state, events=[event], snapshot=True, snapshot_change=change
         )
@@ -290,9 +282,7 @@ class RunJournal:
             ],
             snapshot=True,
         )
-        self._approval_versions[request.approval_id] = (
-            result.approvals[0].version if result is not None else 1
-        )
+        self._approval_versions[request.approval_id] = result.approvals[0].version
 
     async def resolve_approval(
         self,
@@ -322,9 +312,7 @@ class RunJournal:
             raise ApprovalCommitExpired(
                 "Approval expired while committing its resolution"
             ) from exc
-        self._approval_versions[resolution.approval_id] = (
-            result.approvals[0].version if result is not None else 2
-        )
+        self._approval_versions[resolution.approval_id] = result.approvals[0].version
 
     async def invalidate_approval(
         self,

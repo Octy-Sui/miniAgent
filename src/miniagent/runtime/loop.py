@@ -266,8 +266,6 @@ class AgentRuntime:
     async def resume(
         self, record: RunRecord, *, interruption_token: InterruptionToken | None = None
     ) -> RunResult | RunSuspension:
-        if self.run_store is None:
-            raise ValueError("Resume requires a persisted Run store")
         latest = await self.run_store.get(record.state.identity.run_id)
         if latest != record:
             raise ValueError("Resume record is stale")
@@ -490,9 +488,8 @@ class AgentRuntime:
         progress = execution.state.execution.request_progress
         original = None
         store = execution.journal.recorder.store
-        if progress.source_version is not None and store is not None:
-            record = execution.journal.recorder.record
-            assert record is not None
+        if progress.source_version is not None:
+            record = execution.journal.recorder.require_record()
             async for event in iter_run_events(
                 store,
                 execution.state.identity.run_id,
@@ -531,28 +528,24 @@ class AgentRuntime:
             return self._context_failure("CONTEXT_CAPACITY_EXCEEDED", str(exc))
         if plan is None:
             return old_request
-        source = None
         recorder = execution.journal.recorder
-        if recorder.store is not None and recorder.record is not None:
-            source = await recorder.store.load_version(
-                execution.state.identity.run_id,
-                execution.state.execution.request_progress.source_version
-                or recorder.record.latest_snapshot_version,
-            )
-            if source is None:
-                raise ValueError("compaction source Snapshot is unavailable")
-            if (
-                source.state.conversation != execution.state.conversation
-                or source.state.context != execution.state.context
-            ):
-                raise ValueError(
-                    "Compaction source history differs from original source"
-                )
-            plan = replace(
-                plan,
-                source_snapshot_version=source.version,
-                source_event_sequence=source.event_sequence,
-            )
+        source = await recorder.store.load_version(
+            execution.state.identity.run_id,
+            execution.state.execution.request_progress.source_version
+            or recorder.require_record().latest_snapshot_version,
+        )
+        if source is None:
+            raise ValueError("compaction source Snapshot is unavailable")
+        if (
+            source.state.conversation != execution.state.conversation
+            or source.state.context != execution.state.context
+        ):
+            raise ValueError("Compaction source history differs from original source")
+        plan = replace(
+            plan,
+            source_snapshot_version=source.version,
+            source_event_sequence=source.event_sequence,
+        )
         summary_request = build_summary_request(execution.state, plan)
         summary_tokens = self.estimator.estimate(summary_request)
         if summary_tokens + plan.budget.summary_reserve > plan.budget.C - plan.budget.S:
@@ -818,7 +811,7 @@ class AgentRuntime:
             attempts=tuple(attempts),
             new_tokens=new_tokens,
             summary_input_tokens=summary_tokens,
-            source_snapshot_id=source.snapshot_id if source is not None else None,
+            source_snapshot_id=source.snapshot_id,
         )
         return self._build_request(execution.state)
 

@@ -590,6 +590,7 @@ async def test_real_summary_capacity_precheck_preserves_safe_business_only(
                 run_id=state.identity.run_id, store=store, recovery_context=None
             )
         ),
+        artifact_store=runtime_persistence.artifacts,
     )
     provider = QueueProvider([final_response()])
     runtime = AgentRuntime(

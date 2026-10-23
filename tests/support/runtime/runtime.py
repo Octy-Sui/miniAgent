@@ -1,5 +1,4 @@
 import asyncio
-from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -19,12 +18,10 @@ from miniagent.runtime import (
     EvaluationRequest,
     EvaluationResult,
     Evaluator,
-    NewRunEvent,
     RunState,
     RuntimeConfig,
     create_run_state,
 )
-from miniagent.runtime.journal import RunJournal
 from miniagent.tools.base import Tool, ToolArguments
 from miniagent.tools.contracts import ToolCall, ToolDefinition, ToolResult, ToolStatus
 from miniagent.tools.registry import ToolRegistry
@@ -126,15 +123,6 @@ class AllowPolicyEngine:
             reason_code="TEST_ALLOWED",
             reason="Allowed by the test policy.",
         )
-
-
-class FailingCompleteStepJournal(RunJournal):
-    async def complete_step(
-        self,
-        state: RunState,
-        events: Sequence[NewRunEvent],
-    ) -> None:
-        raise RuntimeError("commit failed")
 
 
 def final_response(content: str = "finished") -> ModelResponse:

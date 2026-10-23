@@ -30,7 +30,9 @@ async def completed_protocol(store, execution):
             )
         ],
     )
-    execution = RunExecution.attach(result.record, execution.journal)
+    execution = RunExecution.attach(
+        result.record, execution.journal, artifact_store=execution.artifact_store
+    )
     if execution.state.execution.active_operation is not None:
         await execution.interrupt_operation(unconfirmed=True)
     result = await execution.journal.complete_resume(

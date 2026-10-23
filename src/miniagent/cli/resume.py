@@ -560,7 +560,13 @@ async def resume_application(
                 committed = await journal.start_resume(
                     state, started, approval_resolution=resolution
                 )
-                execution = RunExecution.attach(committed.record, journal)
+                execution = RunExecution.attach(
+                    committed.record,
+                    journal,
+                    artifact_store=FileArtifactStore(
+                        inspected.definition.artifact_root
+                    ),
+                )
 
                 async def prepare():
                     try:

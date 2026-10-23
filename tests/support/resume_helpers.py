@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import UUID, uuid4
 
+from miniagent.artifacts import FileArtifactStore
 from miniagent.models.messages import AssistantMessage
 from miniagent.models.protocol import FinishReason, ModelResponse
 from miniagent.policy import ApprovalRequest
@@ -46,6 +47,7 @@ async def waiting_case(
                 run_id=state.identity.run_id, store=store, recovery_context=None
             )
         ),
+        artifact_store=FileArtifactStore(path.parent / "artifacts"),
     )
     await execution.begin_step(
         provider="test", model="test-model", request=request_for(execution.state)

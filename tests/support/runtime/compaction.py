@@ -77,6 +77,7 @@ async def pipeline(tmp_path, *, old=10001, summary=3000, candidate=1000, respons
                 run_id=plan.state.identity.run_id, store=store, recovery_context=None
             )
         ),
+        artifact_store=FileArtifactStore(tmp_path / "artifacts"),
     )
     provider = QueueProvider([response or summary_response()])
     runtime = AgentRuntime(

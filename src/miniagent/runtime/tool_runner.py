@@ -226,8 +226,6 @@ class ToolCallRunner:
         prepared: PreparedToolCall,
     ) -> CapturedToolReturn:
         raise_if_interrupted()
-        if execution.artifact_store is None:
-            raise ValueError("Tool evidence requires artifact_store")
         await execution.begin_tool_execution(
             canonical_arguments=prepared.canonical_arguments
         )

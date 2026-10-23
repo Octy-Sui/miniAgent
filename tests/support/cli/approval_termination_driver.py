@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from miniagent.artifacts import FileArtifactStore
 from miniagent.cli.signals import run_with_signals
 from miniagent.models.messages import AssistantMessage
 from miniagent.models.protocol import FinishReason, ModelResponse
@@ -35,6 +36,7 @@ async def run(root: Path, mode: str) -> int:
                     run_id=state.identity.run_id, store=store, recovery_context=None
                 )
             ),
+            artifact_store=FileArtifactStore(root / "artifacts"),
         )
         await execution.begin_step(
             provider="test", model="test-model", request=request_for(execution.state)

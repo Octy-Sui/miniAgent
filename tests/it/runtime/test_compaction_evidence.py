@@ -163,7 +163,9 @@ async def test_tc_u05_03_attempt_commit_survives_failed_publication_and_retry(tm
     with sqlite3.connect(store.path) as connection:
         connection.execute("DROP TRIGGER fail_publish")
     execution = RunExecution.attach(
-        record, RunJournal.attach(RunRecorder.attach(store, record), [])
+        record,
+        RunJournal.attach(RunRecorder.attach(store, record), []),
+        artifact_store=execution.artifact_store,
     )
     runtime.provider = QueueProvider([response])
     await runtime._prepare_request(execution, force=True)

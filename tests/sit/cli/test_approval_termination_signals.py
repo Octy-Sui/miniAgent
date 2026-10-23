@@ -58,7 +58,9 @@ async def test_signal_after_approval_termination_keeps_resolution_and_stopping_d
         approval = await store.get_approval(resolved[0].payload.approval_id)
         assert approval.approval.resolution is not None
         execution = RunExecution.attach(
-            record, RunJournal.attach(RunRecorder.attach(store, record), [])
+            record,
+            RunJournal.attach(RunRecorder.attach(store, record), []),
+            artifact_store=runtime_persistence.artifacts,
         )
         record = await completed_protocol(store, execution)
         provider = QueueProvider([])

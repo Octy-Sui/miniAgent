@@ -38,11 +38,11 @@ class RunRecorder:
         self,
         *,
         run_id: UUID,
-        store: RuntimeStore | None,
+        store: RuntimeStore,
         recovery_context: RunRecoveryContext | None,
     ) -> None:
-        if store is None and recovery_context is not None:
-            raise ValueError("Recovery context requires a run store")
+        if store is None:
+            raise ValueError("store is required")
         self.run_id = run_id
         self.store = store
         self.recovery_context = recovery_context
@@ -60,8 +60,6 @@ class RunRecorder:
         return recorder
 
     async def create(self, state: RunState) -> None:
-        if self.store is None:
-            return
         try:
             self.record = await self.store.create(
                 state,
@@ -82,11 +80,8 @@ class RunRecorder:
         approval_changes: Sequence[ApprovalChange] = (),
         snapshot: bool = False,
         snapshot_change: SnapshotChange | None = None,
-    ) -> CommitResult | None:
-        if self.store is None:
-            return None
-        if self.record is None:
-            raise RuntimeError("Run recorder has not been created")
+    ) -> CommitResult:
+        record = self.require_record()
         if state.identity.run_id != self.run_id:
             raise ValueError("Recorded state belongs to another run")
 
@@ -95,7 +90,7 @@ class RunRecorder:
             snapshot_id = uuid4()
             snapshot_change = SnapshotChange(
                 snapshot_id=snapshot_id,
-                expected_version=self.record.latest_snapshot_version,
+                expected_version=record.latest_snapshot_version,
             )
         if not pending_events:
             raise ValueError("A persisted run commit requires at least one event")
@@ -105,7 +100,7 @@ class RunRecorder:
                 RunCommit(
                     state=state,
                     events=pending_events,
-                    expected_sequence=self.record.last_event_sequence,
+                    expected_sequence=record.last_event_sequence,
                     recovery_context=self.recovery_context,
                     approval_changes=list(approval_changes),
                     snapshot=snapshot_change,
@@ -115,15 +110,20 @@ class RunRecorder:
             raise RunPersistenceError(
                 run_id=self.run_id,
                 operation="commit",
-                last_confirmed_sequence=self.record.last_event_sequence,
+                last_confirmed_sequence=record.last_event_sequence,
             ) from exc
         if result.idempotent:
             raise RunPersistenceError(
                 run_id=self.run_id,
                 operation="unexpected idempotent commit",
-                last_confirmed_sequence=self.record.last_event_sequence,
+                last_confirmed_sequence=record.last_event_sequence,
             )
         self.record = result.record
         for event in result.events:
             log_committed_event(event, result.record.state)
         return result
+
+    def require_record(self) -> RunRecord:
+        if self.record is None:
+            raise RuntimeError("Run recorder has not been created")
+        return self.record

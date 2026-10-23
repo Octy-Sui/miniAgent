@@ -36,7 +36,9 @@ async def reopen(store, tools):
         run_id = UUID(connection.execute("select run_id from runs").fetchone()[0])
     record = await store.get(run_id)
     execution = RunExecution.attach(
-        record, RunJournal.attach(RunRecorder.attach(store, record), [])
+        record,
+        RunJournal.attach(RunRecorder.attach(store, record), []),
+        artifact_store=FileArtifactStore(store.path.parent / "artifacts"),
     )
     record = await completed_protocol(store, execution)
     provider = QueueProvider([final_response("must not be requested")])
@@ -154,7 +156,9 @@ async def test_exhausted_context_retry_survives_confirmed_failure_reopen(tmp_pat
     )
     record = await store.get(execution.state.identity.run_id)
     execution = RunExecution.attach(
-        record, RunJournal.attach(RunRecorder.attach(boundary, record), [])
+        record,
+        RunJournal.attach(RunRecorder.attach(boundary, record), []),
+        artifact_store=FileArtifactStore(tmp_path / "artifacts"),
     )
     with pytest.raises(RunPersistenceError):
         await execution.record_model_failure("CONTEXT_CAPACITY_EXCEEDED")

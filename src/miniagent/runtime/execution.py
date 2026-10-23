@@ -203,12 +203,14 @@ class RunExecution:
     state: RunState
     journal: RunJournal
     trace: RunTraceContext
-    artifact_store: ArtifactStore | None = None
+    artifact_store: ArtifactStore
     _active_mark: float = field(default_factory=monotonic)
     _evaluation_attempt_id: UUID | None = None
-    _tool_results: dict[int, ToolResult] = field(default_factory=dict)
-    _ended_executions: dict[UUID, ExecutionEvidence] = field(default_factory=dict)
     pending_approval_resolution: _PendingApprovalResolution | None = None
+
+    def __post_init__(self) -> None:
+        if self.artifact_store is None:
+            raise ValueError("artifact_store is required")
 
     @classmethod
     async def start(
@@ -217,7 +219,7 @@ class RunExecution:
         journal: RunJournal,
         *,
         on_record_created: Callable[[RunRecord], None] | None = None,
-        artifact_store: ArtifactStore | None = None,
+        artifact_store: ArtifactStore,
     ) -> "RunExecution":
         execution = cls(
             state=state,
@@ -234,7 +236,7 @@ class RunExecution:
         record: RunRecord,
         journal: RunJournal,
         *,
-        artifact_store: ArtifactStore | None = None,
+        artifact_store: ArtifactStore,
     ) -> "RunExecution":
         if journal.recorder.record != record:
             raise ValueError("Attached journal differs from current Run record")
@@ -448,8 +450,10 @@ class RunExecution:
         self, *, on_record_created: Callable[[RunRecord], None] | None = None
     ) -> None:
         await self.journal.create(self.state)
-        if on_record_created is not None and self.journal.recorder.record is not None:
-            on_record_created(self.journal.recorder.record.model_copy(deep=True))
+        if on_record_created is not None:
+            on_record_created(
+                self.journal.recorder.require_record().model_copy(deep=True)
+            )
         next_state = start_running(prepare(self.state))
         await self.journal.start_run(
             next_state,
@@ -527,7 +531,7 @@ class RunExecution:
                 covered_messages=plan.covered_messages,
             )
         )
-        record = self.journal.recorder.record
+        record = self.journal.recorder.require_record()
         state = state.model_copy(
             update={
                 "execution": state.execution.model_copy(
@@ -536,9 +540,7 @@ class RunExecution:
                             kind="summary",
                             attempt_id=attempt_id,
                             started_event_id=event.event_id,
-                            started_sequence=record.last_event_sequence + 1
-                            if record
-                            else 1,
+                            started_sequence=record.last_event_sequence + 1,
                             step_number=state.execution.current_step.step_number
                             if state.execution.current_step
                             else None,
@@ -708,7 +710,7 @@ class RunExecution:
         next_trace = deepcopy(self.trace)
         next_trace.begin_step(next_state.execution.steps_started)
         step_started = next_trace.step_event(StepStarted())
-        record = self.journal.recorder.record
+        record = self.journal.recorder.require_record()
         next_state = RunState.model_validate(
             next_state.model_copy(
                 update={
@@ -718,9 +720,7 @@ class RunExecution:
                                 step_number=next_state.execution.steps_started,
                                 message_start=len(self.state.conversation.messages),
                                 started_event_id=step_started.event_id,
-                                started_sequence=record.last_event_sequence + 1
-                                if record
-                                else 1,
+                                started_sequence=record.last_event_sequence + 1,
                             ),
                         }
                     ),
@@ -742,9 +742,7 @@ class RunExecution:
                             kind="model",
                             attempt_id=attempt_id,
                             started_event_id=model_requested.event_id,
-                            started_sequence=record.last_event_sequence + 2
-                            if record
-                            else 2,
+                            started_sequence=record.last_event_sequence + 2,
                             step_number=next_state.execution.steps_started,
                         )
                     }
@@ -849,7 +847,7 @@ class RunExecution:
                 attempt_id=attempt_id,
             )
         )
-        record = self.journal.recorder.record
+        record = self.journal.recorder.require_record()
         state = state.model_copy(
             update={
                 "execution": state.execution.model_copy(
@@ -858,9 +856,7 @@ class RunExecution:
                             kind="model",
                             attempt_id=attempt_id,
                             started_event_id=event.event_id,
-                            started_sequence=record.last_event_sequence + 1
-                            if record
-                            else 1,
+                            started_sequence=record.last_event_sequence + 1,
                             step_number=state.execution.steps_started,
                         )
                     }
@@ -996,18 +992,11 @@ class RunExecution:
         if batch is None or batch.next_index != len(batch.calls):
             raise ValueError("Tool step cannot finish before every call completes")
         store = self.journal.recorder.store
-        if store is not None:
-            facts = await store.list_tool_results(
-                self.state.identity.run_id,
-                step_number=self.state.execution.steps_started,
-            )
-            results = [fact.result for fact in facts]
-        else:
-            if sorted(self._tool_results) != list(range(len(batch.calls))):
-                raise ValueError(
-                    "In-process tool results do not cover the complete batch"
-                )
-            results = [self._tool_results[index] for index in range(len(batch.calls))]
+        facts = await store.list_tool_results(
+            self.state.identity.run_id,
+            step_number=self.state.execution.steps_started,
+        )
+        results = [fact.result for fact in facts]
         if len(results) != len(batch.calls) or any(
             result.tool_call_id != call.id
             for result, call in zip(results, batch.calls, strict=True)
@@ -1029,7 +1018,6 @@ class RunExecution:
             next_state,
             [event],
         )
-        self._tool_results.clear()
         self.state = next_state
         self.trace = next_trace
         if (
@@ -1063,13 +1051,12 @@ class RunExecution:
         attempt_id = uuid4()
         event = next_trace.evaluation_event(EvaluationStart(attempt_id=attempt_id))
         events.append(event)
-        record = self.journal.recorder.record
+        record = self.journal.recorder.require_record()
         operation = OperationRef(
             kind="evaluation",
             attempt_id=attempt_id,
             started_event_id=event.event_id,
-            started_sequence=(record.last_event_sequence if record else 0)
-            + len(events),
+            started_sequence=record.last_event_sequence + len(events),
         )
         next_state = next_state.model_copy(
             update={
@@ -1093,32 +1080,29 @@ class RunExecution:
         if operation is None or not operation.executions:
             return
         store = self.journal.recorder.store
-        evidence = dict(self._ended_executions)
-        if store is not None:
-            evidence = {}
-            record = self.journal.recorder.record
-            assert record is not None
-            async for event in iter_run_events(
-                store,
-                self.state.identity.run_id,
-                after_sequence=operation.started_sequence,
-                through_sequence=record.last_event_sequence,
-                types=(
-                    RunEventType.OPERATION_EXECUTION_IDENTIFIED,
-                    RunEventType.OPERATION_EXECUTION_ENDED,
-                ),
+        evidence: dict[UUID, ExecutionEvidence] = {}
+        record = self.journal.recorder.require_record()
+        async for event in iter_run_events(
+            store,
+            self.state.identity.run_id,
+            after_sequence=operation.started_sequence,
+            through_sequence=record.last_event_sequence,
+            types=(
+                RunEventType.OPERATION_EXECUTION_IDENTIFIED,
+                RunEventType.OPERATION_EXECUTION_ENDED,
+            ),
+        ):
+            payload = event.payload
+            if (
+                isinstance(payload, OperationExecutionIdentified)
+                and payload.attempt_id == operation.attempt_id
             ):
-                payload = event.payload
-                if (
-                    isinstance(payload, OperationExecutionIdentified)
-                    and payload.attempt_id == operation.attempt_id
-                ):
-                    evidence.pop(payload.identity.execution_id, None)
-                elif (
-                    isinstance(payload, OperationExecutionEnded)
-                    and payload.attempt_id == operation.attempt_id
-                ):
-                    evidence[payload.evidence.execution_id] = payload.evidence
+                evidence.pop(payload.identity.execution_id, None)
+            elif (
+                isinstance(payload, OperationExecutionEnded)
+                and payload.attempt_id == operation.attempt_id
+            ):
+                evidence[payload.evidence.execution_id] = payload.evidence
         for identity in operation.executions:
             item = evidence.get(identity.execution_id)
             if (
@@ -1155,7 +1139,7 @@ class RunExecution:
             raise ValueError("Unsupported evaluation component fact")
         event = self.trace.evaluation_event(payload)
         if kind.endswith("_started"):
-            record = self.journal.recorder.record
+            record = self.journal.recorder.require_record()
             attempt_id = getattr(payload, "attempt_id", None)
             if not isinstance(attempt_id, UUID):
                 raise ValueError("Component started fact requires attempt_id")
@@ -1163,7 +1147,7 @@ class RunExecution:
                 kind=operation_kind,
                 attempt_id=attempt_id,
                 started_event_id=event.event_id,
-                started_sequence=record.last_event_sequence + 1 if record else 1,
+                started_sequence=record.last_event_sequence + 1,
                 component=component,
             )
         elif kind.endswith(("_committed", "_failed", "_interrupted")):
@@ -1173,20 +1157,19 @@ class RunExecution:
             elif kind == "evaluation_attempt_interrupted":
                 store = self.journal.recorder.store
                 confirmed = False
-                record = self.journal.recorder.record
-                if store is not None and record is not None:
-                    async for previous in iter_run_events(
-                        store,
-                        self.state.identity.run_id,
-                        through_sequence=record.last_event_sequence,
-                        types=(RunEventType.OPERATION_INTERRUPTED,),
+                record = self.journal.recorder.require_record()
+                async for previous in iter_run_events(
+                    store,
+                    self.state.identity.run_id,
+                    through_sequence=record.last_event_sequence,
+                    types=(RunEventType.OPERATION_INTERRUPTED,),
+                ):
+                    if (
+                        isinstance(previous.payload, OperationInterrupted)
+                        and previous.payload.attempt_id == attempt_id
                     ):
-                        if (
-                            isinstance(previous.payload, OperationInterrupted)
-                            and previous.payload.attempt_id == attempt_id
-                        ):
-                            confirmed = True
-                            break
+                        confirmed = True
+                        break
                 if not confirmed:
                     raise ManagedExecutionError(
                         "Previous evaluation attempt has no confirmed interruption"
@@ -1315,12 +1298,12 @@ class RunExecution:
                 tool_name=correlation.tool_name,
             )
         )
-        record = self.journal.recorder.record
+        record = self.journal.recorder.require_record()
         operation = OperationRef(
             kind="tool",
             attempt_id=attempt_id,
             started_event_id=event.event_id,
-            started_sequence=record.last_event_sequence + 1 if record else 1,
+            started_sequence=record.last_event_sequence + 1,
             step_number=next_state.execution.steps_started,
             call_index=correlation.call_index,
             tool_call_id=correlation.tool_call_id,
@@ -1353,8 +1336,6 @@ class RunExecution:
         return operation.attempt_id
 
     async def capture_tool_result(self, result: ToolResult) -> ToolResultEvidence:
-        if self.artifact_store is None:
-            raise ValueError("Tool evidence requires artifact_store")
         operation = self.state.execution.active_operation
         if operation is None or operation.kind != "tool":
             raise ValueError("Tool evidence requires an active tool attempt")
@@ -1501,8 +1482,6 @@ class RunExecution:
         if termination is not None:
             events.append(next_trace.run_event(TerminationDecided(decision=decision)))
         await self.journal.record_activity(next_state, events)
-        if self.journal.recorder.store is None and effective is not None:
-            self._tool_results[correlation.call_index] = effective.model_copy(deep=True)
         self.state = next_state
         self.trace = next_trace
         return termination
@@ -1633,12 +1612,9 @@ class RunExecution:
             )
         )
         async with asyncio.timeout_at(deadline):
-            if self.journal.recorder.store is None:
-                await self.journal.record_activity(state, events)
-            else:
-                await self.journal.suspend_run(
-                    state, events, approval_resolution=resolution
-                )
+            await self.journal.suspend_run(
+                state, events, approval_resolution=resolution
+            )
         self.state = state
         return RunSuspension(
             run_id=state.identity.run_id,
@@ -1836,7 +1812,6 @@ class _OperationObserver:
             ],
         )
         self.execution.state = state
-        self.execution._ended_executions.pop(identity.execution_id, None)
 
     async def output_recorded(self, output: CommandOutputEvidence) -> None:
         operation = self._operation()
@@ -1875,7 +1850,6 @@ class _OperationObserver:
             or not evidence.issuer_ended
         ):
             raise ManagedExecutionError("Execution chain end is not confirmed")
-        self.execution._ended_executions[evidence.execution_id] = evidence
 
 
 @dataclass(frozen=True, slots=True)

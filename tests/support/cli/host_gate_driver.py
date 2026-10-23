@@ -61,7 +61,9 @@ async def run(args: argparse.Namespace, channel: Connection) -> None:
     )
     workspace = await backend.attach(spec, context.attachment)
     execution = RunExecution.attach(
-        record, RunJournal.attach(RunRecorder.attach(store, record), [])
+        record,
+        RunJournal.attach(RunRecorder.attach(store, record), []),
+        artifact_store=artifacts,
     )
     with evaluation_scope(execution.evaluation_observer()):
         await CandidateSubmission(workspace, artifacts).submit(

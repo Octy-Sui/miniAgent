@@ -443,7 +443,7 @@ class DockerWorkspaceBackend:
                 "/bin/sh",
                 image_id,
                 "-c",
-                "while :; do sleep 3600; done",
+                "tail -f /dev/null",
             )
         )
         result = await self._require_success(

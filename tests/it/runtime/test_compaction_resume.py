@@ -100,7 +100,9 @@ async def test_published_summary_and_business_retry_survive_reopen(
         )
     record = await store.get(execution.state.identity.run_id)
     execution = RunExecution.attach(
-        record, RunJournal.attach(RunRecorder.attach(store, record), [])
+        record,
+        RunJournal.attach(RunRecorder.attach(store, record), []),
+        artifact_store=execution.artifact_store,
     )
     if authorized:
         await execution.interrupt_operation(unconfirmed=True)

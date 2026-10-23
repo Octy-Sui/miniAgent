@@ -46,6 +46,7 @@ async def scope_for(evaluator, request, tmp_path):
         RunJournal(
             RunRecorder(run_id=request.run_id, store=store, recovery_context=None)
         ),
+        artifact_store=evaluator.artifact_store,
     )
     await execution.begin_step(
         provider="test", model="test-model", request=request_for(execution.state)
@@ -74,7 +75,9 @@ async def test_attempt_is_committed_before_directory_and_harness(
     )
     record = await store.get(request.run_id)
     execution = RunExecution.attach(
-        record, RunJournal.attach(RunRecorder.attach(boundary, record), [])
+        record,
+        RunJournal.attach(RunRecorder.attach(boundary, record), []),
+        artifact_store=execution.artifact_store,
     )
     try:
         with evaluation_scope(execution.evaluation_observer()):
@@ -108,7 +111,9 @@ async def test_attempt_commit_uncertainty_stops_before_directory(
         store, action=action, event_type=RunEventType.EVALUATION_ATTEMPT_STARTED
     )
     execution = RunExecution.attach(
-        record, RunJournal.attach(RunRecorder.attach(boundary, record), [])
+        record,
+        RunJournal.attach(RunRecorder.attach(boundary, record), []),
+        artifact_store=execution.artifact_store,
     )
     with (
         evaluation_scope(execution.evaluation_observer()),

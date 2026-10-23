@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
@@ -29,14 +30,14 @@ from miniagent.runtime import (
 )
 from miniagent.runtime.events import ToolEnded
 from miniagent.runtime.execution import RunExecution
+from miniagent.runtime.journal import RunJournal
 from miniagent.runtime.progress import ToolsDisposition
-from miniagent.runtime.recording import RunRecorder
+from miniagent.runtime.recording import RunPersistenceError, RunRecorder
 from miniagent.storage import SQLiteRunStore
 from miniagent.tools.contracts import ToolResult, ToolStatus
 from tests.support.runtime.runtime import (
     AllowPolicyEngine,
     BlockingProvider,
-    FailingCompleteStepJournal,
     MismatchedResultTool,
     QueueProvider,
     RecordingEvaluator,
@@ -51,17 +52,20 @@ from tests.support.trajectory.fixtures import request_for
 
 
 class TestRunExecution:
-    async def test_failed_step_commit_preserves_state_and_trace(self) -> None:
+    async def test_failed_step_commit_preserves_state_and_trace(
+        self, runtime_persistence
+    ) -> None:
         state = run_state()
         execution = await RunExecution.start(
             state,
-            FailingCompleteStepJournal(
+            RunJournal(
                 RunRecorder(
                     run_id=state.identity.run_id,
-                    store=None,
+                    store=runtime_persistence.store,
                     recovery_context=None,
                 )
             ),
+            artifact_store=runtime_persistence.artifacts,
         )
         await execution.begin_step(
             provider="test", model="test-model", request=request_for(execution.state)
@@ -90,13 +94,25 @@ class TestRunExecution:
         previous_trace = execution.trace
         trace_snapshot = deepcopy(previous_trace)
 
-        with pytest.raises(RuntimeError, match="commit failed"):
+        previous_record = await runtime_persistence.store.get(state.identity.run_id)
+        with sqlite3.connect(runtime_persistence.store.path) as connection:
+            connection.execute(
+                "CREATE TRIGGER fail_step BEFORE INSERT ON run_events "
+                "WHEN NEW.type='step_completed' "
+                "BEGIN SELECT RAISE(ABORT, 'commit failed'); END"
+            )
+
+        with pytest.raises(RunPersistenceError, match="during commit"):
             await execution.complete_tool_step()
 
         assert execution.state is previous_state
         assert execution.state == state_snapshot
         assert execution.trace is previous_trace
         assert execution.trace == trace_snapshot
+        assert (
+            await runtime_persistence.store.get(state.identity.run_id)
+            == previous_record
+        )
 
 
 class TestAgentRuntime:

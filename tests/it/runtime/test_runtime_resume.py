@@ -236,7 +236,11 @@ async def test_resume_prepares_existing_created_record_without_run_started(
         RunRecorder(run_id=state.identity.run_id, store=store, recovery_context=None)
     )
     await journal.create(state)
-    execution = RunExecution.attach(await store.get(state.identity.run_id), journal)
+    execution = RunExecution.attach(
+        await store.get(state.identity.run_id),
+        journal,
+        artifact_store=runtime_persistence.artifacts,
+    )
     record = await completed_protocol(store, execution)
     result = await AgentRuntime(
         artifact_store=runtime_persistence.artifacts,

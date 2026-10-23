@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from miniagent.artifacts import ArtifactWrite
+from miniagent.artifacts import ArtifactWrite, FileArtifactStore
 from miniagent.cli.candidate_submission import (
     CandidateArtifactInvalid,
     CandidateSubmission,
@@ -61,6 +61,7 @@ async def evaluation_prefix(workspace, tmp_path):
         RunJournal(
             RunRecorder(run_id=workspace.run_id, store=store, recovery_context=None)
         ),
+        artifact_store=FileArtifactStore(tmp_path / "artifacts"),
     )
     await execution.begin_step(
         provider="test", model="test-model", request=request_for(execution.state)
@@ -92,7 +93,9 @@ async def test_registered_candidate_reuses_exact_artifact(submission_case, tmp_p
     assert diagnostic.patch_ref != first.patch_ref
     record = await store.get(workspace.run_id)
     execution = RunExecution.attach(
-        record, RunJournal.attach(RunRecorder.attach(store, record), [])
+        record,
+        RunJournal.attach(RunRecorder.attach(store, record), []),
+        artifact_store=artifacts,
     )
     with evaluation_scope(execution.evaluation_observer()):
         repeated = await CandidateSubmission(workspace, artifacts).submit(
@@ -177,7 +180,9 @@ async def test_uncommitted_put_is_not_adopted(submission_case, tmp_path):
         event_type=RunEventType.CANDIDATE_SUBMISSION_COMMITTED,
     )
     execution = RunExecution.attach(
-        record, RunJournal.attach(RunRecorder.attach(boundary, record), [])
+        record,
+        RunJournal.attach(RunRecorder.attach(boundary, record), []),
+        artifact_store=artifacts,
     )
     with (
         evaluation_scope(execution.evaluation_observer()),
@@ -193,7 +198,9 @@ async def test_uncommitted_put_is_not_adopted(submission_case, tmp_path):
     )
     assert old.status == "exporting" and old.patch_ref is None
     execution = RunExecution.attach(
-        record, RunJournal.attach(RunRecorder.attach(store, record), [])
+        record,
+        RunJournal.attach(RunRecorder.attach(store, record), []),
+        artifact_store=artifacts,
     )
     await execution.interrupt_operation(unconfirmed=False)
     (workspace.root / "tracked.txt").write_text("new patch\n")
@@ -234,7 +241,9 @@ async def test_committed_empty_or_failed_submission_never_exports_again(
         artifacts.content_root.unlink()
     (workspace.root / "tracked.txt").write_text("new patch must not be exported")
     execution = RunExecution.attach(
-        record, RunJournal.attach(RunRecorder.attach(store, record), [])
+        record,
+        RunJournal.attach(RunRecorder.attach(store, record), []),
+        artifact_store=artifacts,
     )
     with evaluation_scope(execution.evaluation_observer()):
         repeated = await CandidateSubmission(workspace, artifacts).submit(

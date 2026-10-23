@@ -100,6 +100,7 @@ async def retained(configured_local, monkeypatch, *, old_contract=False):
                 recovery_context=context,
             )
         ),
+        artifact_store=deps.artifact_store,
     )
     await execution.begin_step(
         provider=deps.agent.model.provider,
