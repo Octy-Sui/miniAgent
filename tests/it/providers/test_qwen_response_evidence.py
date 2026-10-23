@@ -92,10 +92,8 @@ async def test_tc_u06_01_and_04(variant: str) -> None:
         if variant in {
             "malformed",
             "array",
-            "usage",
             "arguments_object",
             "numeric_id",
-            "usage_shape",
         }:
             with pytest.raises(ModelProviderError) as exc:
                 await provider.generate(request)
@@ -112,6 +110,11 @@ async def test_tc_u06_01_and_04(variant: str) -> None:
             assert "secret-thinking" not in exc.value.evidence.model_dump_json()
             assert "secret-header" not in str(exc.value)
             assert "secret-key" not in str(exc.value)
+        elif variant in {"usage", "usage_shape"}:
+            response = await provider.generate(request)
+            assert response.message.content == "final explanation"
+            assert response.usage is None
+            assert response.usage_issue == "invalid"
         elif variant == "connection":
             with pytest.raises(ModelProviderError) as exc:
                 await provider.generate(request)
@@ -138,7 +141,8 @@ async def test_http_errors_do_not_persist_sdk_error_bodies(tmp_path, status, sum
     from time import monotonic
 
     from miniagent.artifacts import FileArtifactStore
-    from miniagent.runtime import AgentRuntime
+    from miniagent.runtime import AgentRuntime, RuntimeConfig
+    from miniagent.runtime.config import ModelRetryConfig
     from miniagent.storage import SQLiteRunStore
     from miniagent.tools.registry import ToolRegistry
     from miniagent.trajectory import TrajectoryDefinition, encode_trajectory
@@ -179,6 +183,9 @@ async def test_http_errors_do_not_persist_sdk_error_bodies(tmp_path, status, sum
             await store.initialize()
             result = await AgentRuntime(
                 provider=provider,
+                config=RuntimeConfig(
+                    model_retry=ModelRetryConfig(max_consecutive_failures=1)
+                ),
                 tools=ToolRegistry([]),
                 run_store=store,
                 artifact_store=FileArtifactStore(tmp_path / "artifacts"),

@@ -2,10 +2,14 @@ import json
 
 import httpx2 as httpx
 import pytest
-from openai import AsyncOpenAI, BadRequestError
+from openai import AsyncOpenAI
 
 from miniagent.models.messages import UserMessage
-from miniagent.models.protocol import ModelContextLimitError, ModelRequest
+from miniagent.models.protocol import (
+    ModelContextLimitError,
+    ModelProviderError,
+    ModelRequest,
+)
 from miniagent.providers.qwen import QwenProvider
 
 
@@ -31,7 +35,7 @@ async def test_qwen_maps_only_context_limit_errors(code, message, mapped) -> Non
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
     try:
-        with pytest.raises(ModelContextLimitError if mapped else BadRequestError):
+        with pytest.raises(ModelContextLimitError if mapped else ModelProviderError):
             await provider.generate(
                 ModelRequest(model="test", messages=(UserMessage(content="hello"),))
             )

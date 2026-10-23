@@ -90,6 +90,7 @@ from miniagent.runtime import (
     RuntimeStore,
 )
 from miniagent.runtime.cancellation import await_with_stop
+from miniagent.runtime.config import ModelRetryConfig
 from miniagent.runtime.interruption import InterruptionRequested
 from miniagent.runtime.recording import RunPersistenceError
 from miniagent.runtime.state import RunDefinition
@@ -246,7 +247,10 @@ async def bootstrap(config: BootstrapConfig) -> Application:
         config.agent.model.provider,
         config.agent.model.model,
     )
-    runtime_config = RuntimeConfig(context_window_tokens=limits.context_window_tokens)
+    runtime_config = RuntimeConfig(
+        context_window_tokens=limits.context_window_tokens,
+        model_retry=ModelRetryConfig(),
+    )
     runtime_config.validate_output_limit(limits.max_output_tokens)
     agent = config.agent.model_copy(
         update={

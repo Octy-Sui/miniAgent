@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from miniagent.environments.managed_execution import ExecutionIdentity
 from miniagent.evaluation.contracts import EvaluationResult
+from miniagent.models.protocol import ModelFailure
 from miniagent.runtime.result import RunError, TerminationReason
 
 
@@ -30,6 +31,13 @@ class CurrentStep(_Progress):
     started_sequence: int = Field(ge=1)
 
 
+class ModelRetryProgress(_Progress):
+    failures: int = Field(default=0, ge=0)
+    deadline: datetime | None = None
+    next_attempt_at: datetime | None = None
+    last_failure: ModelFailure | None = None
+
+
 class RequestProgress(_Progress):
     branch: Literal["boundary", "business", "forced_compaction"] = "boundary"
     business_retry_used: int = Field(default=0, ge=0, le=1)
@@ -37,6 +45,9 @@ class RequestProgress(_Progress):
     source_version: int | None = Field(default=None, ge=1)
     retry_pending: bool = False
     last_failure: RunError | None = None
+    model_retry: ModelRetryProgress = Field(default_factory=ModelRetryProgress)
+    summary_retry_at: datetime | None = None
+    summary_deadline: datetime | None = None
 
 
 class ComponentEnvelope(_Progress):

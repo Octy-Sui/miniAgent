@@ -607,7 +607,14 @@ _PAYLOAD_FIELDS: dict[str, tuple[str, tuple[str, ...]]] = {
     ),
     "compaction_attempt_recorded": (
         "CompactionAttemptRecorded",
-        ("attempt_id", "response", "normalization_failure", "type", "result"),
+        (
+            "attempt_id",
+            "response",
+            "normalization_failure",
+            "type",
+            "result",
+            "failure",
+        ),
     ),
     "compaction_failed": ("CompactionFailed", ("type", "code", "reason", "attempts")),
     "compaction_completed": (
@@ -754,6 +761,7 @@ _PAYLOAD_FIELDS: dict[str, tuple[str, tuple[str, ...]]] = {
             "attempt_id",
             "operation_kind",
             "unconfirmed",
+            "failure",
             "request_timing",
             "error_code",
         ),

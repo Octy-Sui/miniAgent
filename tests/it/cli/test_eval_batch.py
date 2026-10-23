@@ -56,7 +56,7 @@ async def test_collects_journal_statistics_and_copies_exact_trajectory(tmp_path:
     assert (output / result.trajectory).read_bytes() == content
 
 
-async def test_missing_trajectory_keeps_statistics_and_reports_error(tmp_path: Path):
+async def test_missing_trajectory_keeps_statistics_and_reports_warning(tmp_path: Path):
     database = tmp_path / "runs.sqlite3"
     store = SQLiteRunStore(database)
     await store.initialize()
@@ -71,8 +71,8 @@ async def test_missing_trajectory_keeps_statistics_and_reports_error(tmp_path: P
     assert result.passed is True
     assert result.model_requests == 1
     assert result.trajectory is None
-    assert result.error is not None
-    assert "Trajectory" in result.error
+    assert result.error is None
+    assert "Trajectory" in result.warnings[0]
 
 
 async def test_statistics_include_summary_requests_and_actual_tool_executions(
@@ -252,8 +252,8 @@ async def test_trajectory_copy_failure_preserves_committed_statistics(tmp_path: 
     assert result.model_requests == 1
     assert result.passed is True
     assert result.trajectory is None
-    assert result.error is not None
-    assert "Trajectory" in result.error
+    assert result.error is None
+    assert "Trajectory" in result.warnings[0]
 
 
 async def test_process_launch_failure_does_not_abandon_other_jobs(tmp_path: Path):
@@ -343,3 +343,38 @@ sys.exit(1 if index == "1" else 0)
 async def test_rejects_invalid_concurrency_before_launch(tmp_path: Path, limit: int):
     with pytest.raises(ValueError, match="1.*3"):
         await run_jobs([], tmp_path, limit)
+
+
+async def test_unavailable_event_statistics_preserve_run_result_and_cost(tmp_path):
+    import sqlite3
+
+    database = tmp_path / "runs.sqlite3"
+    store = SQLiteRunStore(database)
+    await store.initialize()
+    artifacts = FileArtifactStore(tmp_path / "artifacts")
+    prices = PriceConfig(
+        models=[
+            ModelPrice(
+                provider="test",
+                model="test-model",
+                input_per_token=Decimal("0.01"),
+                output_per_token=Decimal("0.02"),
+            )
+        ]
+    )
+    run = await AgentRuntime(
+        provider=QueueProvider([final_response()]),
+        tools=ToolRegistry([]),
+        run_store=store,
+        artifact_store=artifacts,
+        pricing=prices,
+    ).run(agent(), "issue")
+    with sqlite3.connect(database) as connection:
+        connection.execute("DROP TABLE run_events")
+    result = await collect_result("one", run.run_id, database, artifacts, tmp_path)
+    assert result.passed is True
+    assert result.cost_usd == Decimal("0.03")
+    assert result.model_metrics is None
+    assert result.model_requests is None
+    assert result.error is None
+    assert any("Statistics" in warning for warning in result.warnings)

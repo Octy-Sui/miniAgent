@@ -13,7 +13,7 @@ from tests.support.runtime.runtime import agent
 from tests.support.trajectory.fixtures import request_for
 
 
-async def started(tmp_path):
+async def started(tmp_path, *, config=None):
     store = SQLiteRunStore(tmp_path / "runs.sqlite3")
     await store.initialize()
     spec = agent()
@@ -21,7 +21,7 @@ async def started(tmp_path):
         run_id=uuid4(),
         task="task",
         agent_spec=spec,
-        config=RuntimeConfig(),
+        config=config or RuntimeConfig(),
         messages=(
             SystemMessage(content=spec.system_prompt),
             UserMessage(content="task"),

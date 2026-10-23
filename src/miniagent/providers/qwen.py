@@ -22,6 +22,7 @@ from miniagent.models.protocol import (
     ProviderResponseEvidence,
     ProviderToolCallEvidence,
 )
+from miniagent.providers.failures import connection_failure, http_failure
 from miniagent.tools.contracts import ToolCall
 
 
@@ -136,7 +137,7 @@ class QwenProvider:
     async def generate(self, request: ModelRequest) -> ModelResponse:
         started = perf_counter()
         try:
-            response = await self.client.chat.completions.create(
+            raw_response = await self.client.chat.completions.with_raw_response.create(
                 model=request.model,
                 messages=[
                     self._to_provider_message(message) for message in request.messages
@@ -157,6 +158,7 @@ class QwenProvider:
                 temperature=request.generation.temperature,
                 max_tokens=request.generation.max_output_tokens,
             )
+            response = raw_response.parse()
         except APIStatusError as exc:
             try:
                 metadata = exc.response.json()
@@ -178,17 +180,13 @@ class QwenProvider:
                 raise ModelContextLimitError(
                     safe_message, request_timing=timing
                 ) from None
-            if exc.status_code == 429 or exc.status_code >= 500:
-                raise ModelProviderError(
-                    safe_message, retryable=True, request_timing=timing
-                ) from None
-            error = type(exc)(safe_message, response=exc.response, body=None)
-            error.__dict__["request_timing"] = timing
-            raise error from None
-        except APIConnectionError:
+            raise ModelProviderError(
+                safe_message, failure=http_failure(exc), request_timing=timing
+            ) from None
+        except APIConnectionError as exc:
             raise ModelProviderError(
                 "Provider connection failed",
-                retryable=True,
+                failure=connection_failure(exc),
                 request_timing=_request_timing(started, {}),
             ) from None
 
@@ -203,20 +201,27 @@ class QwenProvider:
             else None
         )
         provider_message = getattr(choice, "message", None)
-        usage = response.usage
-        prompt_details = getattr(usage, "prompt_tokens_details", None)
-        completion_details = getattr(usage, "completion_tokens_details", None)
+        # The SDK may coerce invalid token values (for example False to 0).
+        usage = raw_response.http_response.json().get("usage")
+        prompt_details = (
+            usage.get("prompt_tokens_details") if isinstance(usage, dict) else None
+        )
+        completion_details = (
+            usage.get("completion_tokens_details") if isinstance(usage, dict) else None
+        )
         raw_usage = (
             {
-                "input_tokens": getattr(usage, "prompt_tokens", None),
-                "cached_input_tokens": getattr(prompt_details, "cached_tokens", None),
-                "output_tokens": getattr(usage, "completion_tokens", None),
-                "reasoning_output_tokens": getattr(
-                    completion_details, "reasoning_tokens", None
-                ),
-                "total_tokens": getattr(usage, "total_tokens", None),
+                "input_tokens": usage.get("prompt_tokens"),
+                "cached_input_tokens": prompt_details.get("cached_tokens")
+                if isinstance(prompt_details, dict)
+                else None,
+                "output_tokens": usage.get("completion_tokens"),
+                "reasoning_output_tokens": completion_details.get("reasoning_tokens")
+                if isinstance(completion_details, dict)
+                else None,
+                "total_tokens": usage.get("total_tokens"),
             }
-            if usage is not None
+            if isinstance(usage, dict)
             else None
         )
         calls = getattr(provider_message, "tool_calls", None)
@@ -262,36 +267,50 @@ class QwenProvider:
                 tool_calls=tuple(tool_calls),
             )
 
-            prompt_details = (
-                response.usage.prompt_tokens_details if response.usage else None
-            )
-            completion_details = (
-                response.usage.completion_tokens_details if response.usage else None
-            )
+            finish_reason = self._map_finish_reason(choice.finish_reason)
 
-            return ModelResponse(
-                request_timing=timing,
-                latency_ms=int(timing.client_duration_ms),
-                message=message,
-                finish_reason=self._map_finish_reason(choice.finish_reason),
-                usage=ModelUsage(
-                    input_tokens=response.usage.prompt_tokens,
-                    cached_input_tokens=(
-                        prompt_details.cached_tokens or 0 if prompt_details else 0
-                    ),
-                    output_tokens=response.usage.completion_tokens,
-                    reasoning_output_tokens=(
-                        completion_details.reasoning_tokens or 0
-                        if completion_details
-                        else 0
-                    ),
-                    total_tokens=response.usage.total_tokens,
-                )
-                if response.usage
-                else None,
-                provider_request_id=response.id,
-            )
         except (ValueError, TypeError, IndexError, KeyError, AttributeError):
             raise ModelResponseNormalizationError(
                 evidence=evidence, code="MODEL_RESPONSE_NORMALIZATION_FAILED"
             ) from None
+
+        normalized_usage = None
+        usage_issue = "missing" if usage is None else None
+        if usage is not None:
+            try:
+                cached_tokens = (
+                    prompt_details.get("cached_tokens")
+                    if prompt_details is not None
+                    else None
+                )
+                reasoning_tokens = (
+                    completion_details.get("reasoning_tokens")
+                    if completion_details is not None
+                    else None
+                )
+                normalized_usage = ModelUsage.model_validate(
+                    {
+                        "input_tokens": usage.get("prompt_tokens"),
+                        "cached_input_tokens": 0
+                        if cached_tokens is None
+                        else cached_tokens,
+                        "output_tokens": usage.get("completion_tokens"),
+                        "reasoning_output_tokens": 0
+                        if reasoning_tokens is None
+                        else reasoning_tokens,
+                        "total_tokens": usage.get("total_tokens"),
+                    },
+                    strict=True,
+                )
+            except (ValueError, TypeError, AttributeError):
+                usage_issue = "invalid"
+        return ModelResponse(
+            request_timing=timing,
+            latency_ms=int(timing.client_duration_ms),
+            message=message,
+            finish_reason=finish_reason,
+            usage=normalized_usage,
+            usage_issue=usage_issue,
+            usage_evidence=evidence.usage if usage_issue else None,
+            provider_request_id=response.id,
+        )

@@ -30,6 +30,7 @@ from tests.support.runtime.runtime import QueueProvider, agent
         "duplicate_calls",
         "unknown_finish",
         "missing_price",
+        "missing_usage_missing_price",
         "normalization",
     ],
 )
@@ -69,7 +70,7 @@ async def test_tc_u03_03(tmp_path, variant, runtime_persistence):
         if variant in {"no_pricing", "missing_usage_no_pricing"}
         else PriceConfig(
             models=[]
-            if variant == "missing_price"
+            if variant in {"missing_price", "missing_usage_missing_price"}
             else [
                 ModelPrice(
                     provider="test",
@@ -110,7 +111,12 @@ async def test_tc_u03_03(tmp_path, variant, runtime_persistence):
     if variant.startswith("missing_usage") or variant == "normalization":
         assert record.state.usage.unconfirmed_model_requests == 1
         assert responded.request_cost is None
-        assert result.error is not None
+        assert (result.error is not None) == (
+            variant in {"normalization", "missing_usage_missing_price"}
+        )
+        if variant == "missing_usage_missing_price":
+            assert result.error is not None
+            assert result.error.code == "MODEL_PRICING_UNAVAILABLE"
     elif variant == "missing_price":
         assert responded.cost_status == "calculation_failed"
         assert result.error is not None
@@ -122,7 +128,12 @@ async def test_tc_u03_03(tmp_path, variant, runtime_persistence):
         assert responded.request_cost is not None
         assert responded.request_cost.total_cost == Decimal("0.000020")
         assert record.state.usage.cost_usd == Decimal("0.000020")
-    if variant not in {"accepted", "no_pricing"}:
+    if variant not in {
+        "accepted",
+        "no_pricing",
+        "missing_usage",
+        "missing_usage_no_pricing",
+    }:
         assert result.error is not None
         assert len(provider.requests) == 1
 

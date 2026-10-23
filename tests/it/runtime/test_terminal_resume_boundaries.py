@@ -132,15 +132,13 @@ async def test_fatal_model_failure_survives_lost_closure_ack(
     with pytest.raises(RunPersistenceError):
         await runtime.run(agent(), "task")
     result = await reopen(store, ToolRegistry([]))
-    assert (
-        result.status is RunStatus.FAILED
-        and result.reason is TerminationReason.MODEL_FAILED
-    )
-    assert result.error and result.error.code == (
-        "PROVIDER_EXCEPTION"
-        if failure == "provider_exception"
-        else "MODEL_USAGE_MISSING"
-    )
+    if failure == "missing_usage":
+        assert result.status is RunStatus.SUCCEEDED
+        assert result.output == "unpriced"
+        assert result.usage.unconfirmed_model_requests == 1
+    else:
+        assert result.status is RunStatus.FAILED
+        assert result.error and result.error.code == "PROVIDER_EXCEPTION"
 
 
 async def test_exhausted_context_retry_survives_confirmed_failure_reopen(tmp_path):

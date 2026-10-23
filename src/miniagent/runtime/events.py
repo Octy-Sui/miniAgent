@@ -22,6 +22,7 @@ from miniagent.evaluation.contracts import EvaluationError, EvaluationResult
 from miniagent.metering.usage import RequestCost
 from miniagent.models.messages import ToolMessage
 from miniagent.models.protocol import (
+    ModelFailure,
     ModelRequest,
     ModelRequestTiming,
     ModelResponse,
@@ -286,6 +287,7 @@ class ToolExecutionEnded(ToolScopePayload):
 
 
 class OperationInterrupted(_Payload):
+    failure: ModelFailure | None = None
     request_timing: ModelRequestTiming | None = None
     error_code: str | None = None
     type: Literal[RunEventType.OPERATION_INTERRUPTED] = (
@@ -495,6 +497,7 @@ class CompactionRequested(_Payload):
 
 
 class CompactionAttemptRecorded(_Payload):
+    failure: ModelFailure | None = None
     attempt_id: UUID
     response: ModelResponse | None = None
     normalization_failure: ProviderResponseEvidence | None = None

@@ -69,6 +69,7 @@ class TaskResult(BaseModel):
     trajectory: str | None = None
     log: str | None = None
     error: str | None = None
+    warnings: list[str] = Field(default_factory=list)
     model_metrics: ModelStatistics | None = None
     tool_metrics: ToolStatistics | None = None
     run_duration_ms: float | None = None
@@ -207,17 +208,8 @@ async def collect_result(
     store = SQLiteRunStore(database, read_only=True)
     record = await store.get(run_id)
     state = record.state
-    counts: Counter[str] = Counter()
-    metrics = MetricsCollector()
-    async for event in iter_run_events(
-        store, run_id, through_sequence=record.last_event_sequence
-    ):
-        counts[event.type.value] += 1
-        metrics.observe(event)
     evaluation = state.execution.evaluation.result
     result = TaskResult(
-        model_metrics=metrics.models(),
-        tool_metrics=metrics.tools(),
         run_duration_ms=(
             (
                 (state.lifecycle.finished_at or state.lifecycle.updated_at)
@@ -240,13 +232,28 @@ async def collect_result(
             state.execution.active_operation is not None
             and state.execution.active_operation.kind in ("model", "summary")
         ),
-        model_requests=counts["model_requested"] + counts["compaction_requested"],
-        compaction_attempts=counts["compaction_requested"],
-        compactions=counts["compaction_completed"],
-        tool_executions=counts["tool_execution_start"],
-        steps=counts["step_started"],
         error=state.lifecycle.error.message if state.lifecycle.error else None,
     )
+    try:
+        counts: Counter[str] = Counter()
+        metrics = MetricsCollector()
+        async for event in iter_run_events(
+            store, run_id, through_sequence=record.last_event_sequence
+        ):
+            counts[event.type.value] += 1
+            metrics.observe(event)
+        result.model_metrics = metrics.models()
+        result.tool_metrics = metrics.tools()
+        result.model_requests = (
+            counts["model_requested"] + counts["compaction_requested"]
+        )
+        result.compaction_attempts = counts["compaction_requested"]
+        result.compactions = counts["compaction_completed"]
+        result.tool_executions = counts["tool_execution_start"]
+        result.steps = counts["step_started"]
+    except Exception as exc:  # noqa: BLE001 -- Optional projections cannot replace the stored Run result.
+        result.model_metrics = result.tool_metrics = None
+        result.warnings.append(f"Statistics unavailable: {type(exc).__name__}: {exc}")
     try:
         cursor = None
         trajectory = None
@@ -259,17 +266,13 @@ async def collect_result(
             if cursor is None:
                 break
         if trajectory is None:
-            result.error = "; ".join(
-                filter(None, [result.error, "Trajectory unavailable"])
-            )
+            result.warnings.append("Trajectory unavailable")
         else:
             filename = f"{instance_id}.trajectory.json"
             (output / filename).write_bytes(await artifacts.read(trajectory))
             result.trajectory = filename
     except Exception as exc:  # noqa: BLE001 -- preserve statistics when artifact collection fails.
-        result.error = "; ".join(
-            filter(None, [result.error, f"Trajectory copy failed: {exc}"])
-        )
+        result.warnings.append(f"Trajectory copy failed: {exc}")
     return result
 
 
@@ -298,7 +301,7 @@ async def run_worker(task: EvalTask, model: str, output: Path) -> None:
             )
         )
         if application_result.finalization_errors:
-            result.error = "; ".join(
+            result.warnings.extend(
                 error.message for error in application_result.finalization_errors
             )
     except Exception as exc:  # noqa: BLE001 -- isolate task failure and publish its result.
@@ -317,6 +320,7 @@ async def run_worker(task: EvalTask, model: str, output: Path) -> None:
             collected.error = (
                 "; ".join(filter(None, [result.error, collected.error])) or None
             )
+            collected.warnings.extend(result.warnings)
             result = collected
     except RunNotFoundError:
         # Preparation can fail before the Run is committed.
@@ -446,6 +450,8 @@ def print_summary(summary: BatchSummary, output: Path) -> None:
             )
         if result.error:
             typer.echo(f"  Error: {result.error}")
+        for warning in result.warnings:
+            typer.echo(f"  Warning: {warning}")
         if result.task_duration_ms is not None:
             typer.echo(
                 f"  Task total ms (including preparation/cleanup): {result.task_duration_ms:.2f}"

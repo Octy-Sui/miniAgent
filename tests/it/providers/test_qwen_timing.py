@@ -2,7 +2,7 @@ import asyncio
 
 import httpx2 as httpx
 import pytest
-from openai import AsyncOpenAI, BadRequestError
+from openai import AsyncOpenAI
 
 from miniagent.models.messages import UserMessage
 from miniagent.models.protocol import ModelProviderError, ModelRequest
@@ -67,9 +67,7 @@ async def test_request_timing_separates_client_rt_and_provider_duration(status):
             timing = result.request_timing
             assert result.latency_ms is not None
         else:
-            with pytest.raises(
-                BadRequestError if status == 400 else ModelProviderError
-            ) as caught:
+            with pytest.raises(ModelProviderError) as caught:
                 await provider.generate(request)
             timing = getattr(caught.value, "request_timing", None)
         assert timing is not None

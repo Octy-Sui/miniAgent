@@ -1,5 +1,5 @@
 from enum import StrEnum
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -72,6 +72,8 @@ class ModelResponse(BaseModel):
     message: AssistantMessage
     finish_reason: FinishReason
     usage: ModelUsage | None = None
+    usage_issue: Literal["missing", "invalid"] | None = None
+    usage_evidence: dict[str, int | None] | None = None
     provider_request_id: str | None = None
     latency_ms: int | None = None
     request_timing: ModelRequestTiming | None = None
@@ -101,6 +103,25 @@ class ModelProvider(Protocol):
     async def generate(self, request: ModelRequest) -> ModelResponse: ...
 
 
+class ModelFailure(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    category: Literal[
+        "rate_limit",
+        "server",
+        "gateway",
+        "connection",
+        "read_timeout",
+        "permanent",
+        "unknown",
+    ] = "unknown"
+    retryable: bool = False
+    status_code: int | None = None
+    provider_code: str | None = None
+    exception_type: str | None = None
+    retry_after_seconds: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
 class ModelProviderError(RuntimeError):
     def __init__(
         self,
@@ -108,8 +129,10 @@ class ModelProviderError(RuntimeError):
         *,
         retryable: bool = False,
         request_timing: ModelRequestTiming | None = None,
+        failure: ModelFailure | None = None,
     ) -> None:
-        self.retryable = retryable
+        self.failure = failure or ModelFailure(retryable=retryable)
+        self.retryable = self.failure.retryable
         self.request_timing = request_timing
         super().__init__(message)
 

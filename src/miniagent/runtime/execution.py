@@ -4,7 +4,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from random import random
 from time import monotonic
 from typing import Literal, Protocol
 from uuid import UUID, uuid4
@@ -24,6 +25,7 @@ from miniagent.evaluation import CandidateOutput, EvaluationResult
 from miniagent.metering.usage import RequestCost, add_request_usage
 from miniagent.models.messages import ToolMessage
 from miniagent.models.protocol import (
+    ModelFailure,
     ModelRequest,
     ModelRequestTiming,
     ModelResponse,
@@ -92,6 +94,7 @@ from miniagent.runtime.result import (
     RunSuspension,
     TerminationReason,
 )
+from miniagent.runtime.retry import next_retry_at
 from miniagent.runtime.state import ConversationState, RunCursor, RunState, RunStatus
 from miniagent.runtime.store_contracts import RunRecord
 from miniagent.runtime.termination import tool_step_failed
@@ -350,6 +353,7 @@ class RunExecution:
         termination: TerminationDecision | None = None,
         request_timing: ModelRequestTiming | None = None,
         error_code: str | None = None,
+        failure: ModelFailure | None = None,
     ) -> None:
         operation = self.state.execution.active_operation
         if operation is None:
@@ -362,6 +366,7 @@ class RunExecution:
             OperationInterrupted(
                 request_timing=request_timing,
                 error_code=error_code,
+                failure=failure,
                 attempt_id=operation.attempt_id,
                 operation_kind=operation.kind,
                 unconfirmed=unconfirmed,
@@ -381,6 +386,39 @@ class RunExecution:
                 ),
             }
         )
+        config = state.definition.config.model_retry
+        if operation.kind == "model" and config is not None:
+            progress = state.execution.request_progress
+            retry = progress.model_retry
+            failure = failure or ModelFailure(category="connection", retryable=True)
+            failures = retry.failures + 1
+            retry = retry.model_copy(
+                update={
+                    "failures": failures,
+                    "last_failure": failure,
+                    "next_attempt_at": next_retry_at(
+                        failure,
+                        failures,
+                        config,
+                        now=datetime.now(UTC),
+                        deadline=retry.deadline
+                        or datetime.now(UTC)
+                        + timedelta(seconds=config.timeout_seconds),
+                        jitter=random(),
+                    ),
+                }
+            )
+            state = state.model_copy(
+                update={
+                    "execution": state.execution.model_copy(
+                        update={
+                            "request_progress": progress.model_copy(
+                                update={"model_retry": retry}
+                            )
+                        }
+                    )
+                }
+            )
         if operation.kind == "summary":
             state = state.model_copy(
                 update={
@@ -447,6 +485,7 @@ class RunExecution:
         used = progress.summary_retry_used + int(progress.retry_pending)
         if used > self.state.definition.config.compaction_max_retries:
             raise ValueError("Summary retry balance exhausted")
+        retry_config = self.state.definition.config.model_retry
         progress = progress.model_copy(
             update={
                 "branch": branch,
@@ -454,6 +493,13 @@ class RunExecution:
                 "retry_pending": False,
                 "source_version": progress.source_version
                 or plan.source_snapshot_version,
+                "summary_retry_at": None,
+                "summary_deadline": progress.summary_deadline
+                or (
+                    datetime.now(UTC) + timedelta(seconds=retry_config.timeout_seconds)
+                    if retry_config
+                    else None
+                ),
                 "last_failure": None,
             }
         )
@@ -511,6 +557,7 @@ class RunExecution:
         failure: RunError | None = None,
         response: ModelResponse | None = None,
         normalization_failure: ProviderResponseEvidence | None = None,
+        provider_failure: ModelFailure | None = None,
     ) -> None:
         operation = self.state.execution.active_operation
         if operation is None or operation.kind != "summary":
@@ -529,6 +576,37 @@ class RunExecution:
                 )
             }
         )
+        retry_config = state.definition.config.model_retry
+        if (
+            provider_failure is not None
+            and provider_failure.retryable
+            and retry_config is not None
+        ):
+            progress = state.execution.request_progress
+            state = state.model_copy(
+                update={
+                    "execution": state.execution.model_copy(
+                        update={
+                            "request_progress": progress.model_copy(
+                                update={
+                                    "summary_retry_at": next_retry_at(
+                                        provider_failure,
+                                        attempt.attempt,
+                                        retry_config,
+                                        now=datetime.now(UTC),
+                                        deadline=progress.summary_deadline
+                                        or datetime.now(UTC)
+                                        + timedelta(
+                                            seconds=retry_config.timeout_seconds
+                                        ),
+                                        jitter=random(),
+                                    ),
+                                }
+                            ),
+                        }
+                    )
+                }
+            )
         if attempt.usage is None:
             state = state.model_copy(
                 update={
@@ -553,6 +631,7 @@ class RunExecution:
             [
                 self.trace.run_event(
                     CompactionAttemptRecorded(
+                        failure=provider_failure,
                         result=attempt,
                         attempt_id=operation.attempt_id,
                         response=response,
@@ -608,7 +687,21 @@ class RunExecution:
         next_state = next_state.model_copy(
             update={
                 "execution": next_state.execution.model_copy(
-                    update={"request_progress": RequestProgress(branch="business")}
+                    update={
+                        "request_progress": RequestProgress(
+                            branch="business",
+                            model_retry=self.state.execution.request_progress.model_retry.model_copy(
+                                update={
+                                    "deadline": datetime.now(UTC)
+                                    + timedelta(
+                                        seconds=self.state.definition.config.model_retry.timeout_seconds
+                                    )
+                                    if self.state.definition.config.model_retry
+                                    else None,
+                                }
+                            ),
+                        )
+                    }
                 )
             }
         )
@@ -707,7 +800,8 @@ class RunExecution:
                     "execution": state.execution.model_copy(
                         update={
                             "request_progress": RequestProgress(
-                                branch="forced_compaction"
+                                branch="forced_compaction",
+                                model_retry=state.execution.request_progress.model_retry,
                             )
                         }
                     )

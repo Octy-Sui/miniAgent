@@ -166,6 +166,8 @@ class RunJournal:
                                 "retry_pending": progress.branch == "forced_compaction",
                                 "source_version": None,
                                 "last_failure": None,
+                                "summary_deadline": None,
+                                "summary_retry_at": None,
                             }
                         ),
                     }

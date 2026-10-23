@@ -29,6 +29,7 @@ from miniagent.metering.usage import calculate_request_cost
 from miniagent.models.messages import SystemMessage, UserMessage
 from miniagent.models.protocol import (
     ModelContextLimitError,
+    ModelFailure,
     ModelProvider,
     ModelProviderError,
     ModelRequest,
@@ -48,7 +49,7 @@ from miniagent.runtime.cancellation import (
     CancellationToken,
     await_with_stop,
 )
-from miniagent.runtime.config import RuntimeConfig
+from miniagent.runtime.config import ModelRetryConfig, RuntimeConfig
 from miniagent.runtime.context import (
     ContextCapacityError,
     InvalidSummaryError,
@@ -135,6 +136,10 @@ class AgentRuntime:
         self.provider = provider
         self.tools = tools
         self.config = config or RuntimeConfig()
+        if self.config.model_retry is None:
+            self.config = self.config.model_copy(
+                update={"model_retry": ModelRetryConfig()}
+            )
         self.cancellation_token = cancellation_token or CancellationToken()
         self.evaluator = evaluator or PassThroughEvaluator()
         self.pricing = pricing
@@ -573,6 +578,37 @@ class AgentRuntime:
             ):
                 failure = progress.last_failure.message
                 break
+            deadlines = [
+                date
+                for date in (progress.summary_deadline, progress.model_retry.deadline)
+                if date is not None
+            ]
+            remaining = (
+                min((date - datetime.now(UTC)).total_seconds() for date in deadlines)
+                if deadlines
+                else None
+            )
+            delay = (
+                max(0, (progress.summary_retry_at - datetime.now(UTC)).total_seconds())
+                if progress.summary_retry_at
+                else 0
+            )
+            if remaining is not None and (
+                remaining <= 0
+                or delay >= remaining
+                or (
+                    progress.summary_retry_at is not None
+                    and progress.summary_retry_at >= min(deadlines)
+                )
+            ):
+                failure = "Summary request retry deadline exceeded"
+                break
+            if delay:
+                await await_with_stop(
+                    asyncio.sleep(delay),
+                    self.cancellation_token,
+                    current_interruption_token(),
+                )
             if self.cancellation_token.is_cancelled:
                 raise CancellationRequested
             raise_if_interrupted()
@@ -586,9 +622,28 @@ class AgentRuntime:
             assert operation is not None
             attempt_id = operation.attempt_id
             try:
+                progress = execution.state.execution.request_progress
+                deadlines = [
+                    date
+                    for date in (
+                        progress.summary_deadline,
+                        progress.model_retry.deadline,
+                    )
+                    if date is not None
+                ]
+                remaining = (
+                    min(
+                        (date - datetime.now(UTC)).total_seconds() for date in deadlines
+                    )
+                    if deadlines
+                    else config.compaction_timeout_seconds
+                )
+                if remaining <= 0:
+                    raise TimeoutError("Summary request retry deadline exceeded")
                 response, request_timing = await await_with_stop(
                     self._generate(
-                        summary_request, timeout=config.compaction_timeout_seconds
+                        summary_request,
+                        timeout=min(config.compaction_timeout_seconds, remaining),
                     ),
                     self.cancellation_token,
                     current_interruption_token(),
@@ -624,6 +679,14 @@ class AgentRuntime:
                     normalization_failure=exc.evidence
                     if isinstance(exc, ModelResponseNormalizationError)
                     else None,
+                    provider_failure=exc.failure
+                    if isinstance(exc, ModelProviderError)
+                    else ModelFailure(
+                        category="read_timeout"
+                        if isinstance(exc, TimeoutError)
+                        else "unknown",
+                        retryable=retryable,
+                    ),
                     failure=RunError(
                         code=type(exc).__name__, message=failure, retryable=retryable
                     ),
@@ -636,7 +699,7 @@ class AgentRuntime:
                 break
             cost = None
             pricing_failure = None
-            if self.pricing is not None and response.usage is not None:
+            if self.pricing is not None:
                 target = execution.state.definition.agent_spec.model
                 if not any(
                     price.provider == target.provider and price.model == target.model
@@ -646,7 +709,7 @@ class AgentRuntime:
                         code="COST_CALCULATION_FAILED",
                         message="No pricing configured for summary model",
                     )
-                else:
+                elif response.usage is not None:
                     cost = calculate_request_cost(
                         provider=target.provider,
                         model=target.model,
@@ -748,6 +811,57 @@ class AgentRuntime:
         )
         return self._build_request(execution.state)
 
+    @staticmethod
+    def _model_time_remaining(execution: RunExecution) -> float | None:
+        deadline = execution.state.execution.request_progress.model_retry.deadline
+        return (
+            max(0, (deadline - datetime.now(UTC)).total_seconds()) if deadline else None
+        )
+
+    async def _wait_model_retry(self, execution: RunExecution) -> RunTermination | None:
+        config = execution.state.definition.config.model_retry
+        if config is None:
+            return None
+        retry = execution.state.execution.request_progress.model_retry
+        if retry.failures >= config.max_consecutive_failures:
+            return self._context_failure(
+                "MODEL_RETRY_EXHAUSTED",
+                "Consecutive model request failure limit reached",
+            )
+        remaining = self._model_time_remaining(execution)
+        delay = (
+            max(0, (retry.next_attempt_at - datetime.now(UTC)).total_seconds())
+            if retry.next_attempt_at
+            else 0
+        )
+        if remaining is not None and (
+            remaining <= 0
+            or delay >= remaining
+            or (
+                retry.next_attempt_at is not None
+                and retry.deadline is not None
+                and retry.next_attempt_at >= retry.deadline
+            )
+        ):
+            return self._context_failure(
+                "MODEL_REQUEST_DEADLINE", "Model request retry deadline exceeded"
+            )
+        if delay:
+            await await_with_stop(
+                asyncio.sleep(delay),
+                self.cancellation_token,
+                current_interruption_token(),
+            )
+        raise_if_interrupted()
+        if self.cancellation_token.is_cancelled:
+            raise CancellationRequested
+        remaining = self._model_time_remaining(execution)
+        if remaining is not None and remaining <= 0:
+            return self._context_failure(
+                "MODEL_REQUEST_DEADLINE", "Model request retry deadline exceeded"
+            )
+        return None
+
     async def _generate(
         self, request: ModelRequest, *, timeout: float | None = None
     ) -> tuple[ModelResponse, ModelRequestTiming]:
@@ -798,6 +912,9 @@ class AgentRuntime:
                 raise ValueError(
                     "Prior model attempt must be interrupted before continuation"
                 )
+            retry_stop = await self._wait_model_retry(execution)
+            if retry_stop is not None:
+                return TerminateRun(retry_stop)
             progress = execution.state.execution.request_progress
             if progress.branch == "forced_compaction":
                 request = await self._prepare_request(execution, force=True)
@@ -814,7 +931,9 @@ class AgentRuntime:
         while True:
             try:
                 response, request_timing = await await_with_stop(
-                    self._generate(request),
+                    self._generate(
+                        request, timeout=self._model_time_remaining(execution)
+                    ),
                     self.cancellation_token,
                     current_interruption_token(),
                 )
@@ -862,6 +981,45 @@ class AgentRuntime:
                     ),
                 )
                 return ContinueRun()
+            except (ModelProviderError, TimeoutError) as exc:
+                failure = (
+                    exc.failure
+                    if isinstance(exc, ModelProviderError)
+                    else ModelFailure(
+                        category="read_timeout",
+                        retryable=True,
+                        exception_type="TimeoutError",
+                    )
+                )
+                config = execution.state.definition.config.model_retry
+                if config is None or not failure.retryable:
+                    decision = TerminationDecision(
+                        status="failed",
+                        reason=TerminationReason.MODEL_FAILED,
+                        error=RunError(
+                            code="PROVIDER_EXCEPTION",
+                            message=f"{type(exc).__name__}: {exc}",
+                        ),
+                    )
+                    await execution.interrupt_operation(
+                        unconfirmed=True,
+                        termination=decision,
+                        failure=failure,
+                        error_code="PROVIDER_EXCEPTION",
+                        request_timing=getattr(exc, "request_timing", None),
+                    )
+                    return ContinueRun()
+                await execution.interrupt_operation(
+                    unconfirmed=True,
+                    failure=failure,
+                    error_code="PROVIDER_EXCEPTION",
+                    request_timing=getattr(exc, "request_timing", None),
+                )
+                retry_stop = await self._wait_model_retry(execution)
+                if retry_stop is not None:
+                    return TerminateRun(retry_stop)
+                await execution.begin_model_retry(request=request)
+                continue
             except Exception as exc:  # noqa: BLE001
                 decision = TerminationDecision(
                     status="failed",
@@ -889,25 +1047,11 @@ class AgentRuntime:
         cost_status = "not_configured"
         decision = None
         if response.usage is None:
-            cost_status = "usage_missing"
-            disposition = TerminateDisposition(
-                decision=TerminationDecision(
-                    status="failed",
-                    reason=TerminationReason.MODEL_FAILED,
-                    error=RunError(
-                        code="MODEL_USAGE_MISSING",
-                        message="Provider response did not include token usage",
-                    ),
-                )
+            cost_status = (
+                "invalid_usage"
+                if response.usage_issue == "invalid"
+                else "usage_missing"
             )
-            await execution.record_model_response(
-                response,
-                None,
-                disposition=disposition,
-                cost_status=cost_status,
-                request_timing=request_timing,
-            )
-            return ContinueRun()
         if self.pricing is not None:
             if not any(
                 price.provider == agent.model.provider
@@ -932,13 +1076,14 @@ class AgentRuntime:
                     request_timing=request_timing,
                 )
                 return ContinueRun()
-            request_cost = calculate_request_cost(
-                provider=agent.model.provider,
-                model=agent.model.model,
-                usage=response.usage,
-                pricing=self.pricing,
-            )
-            cost_status = "calculated"
+            if response.usage is not None:
+                request_cost = calculate_request_cost(
+                    provider=agent.model.provider,
+                    model=agent.model.model,
+                    usage=response.usage,
+                    pricing=self.pricing,
+                )
+                cost_status = "calculated"
         decision = evaluate_model_response(response)
         if decision is None:
             disposition = ToolsDisposition()
