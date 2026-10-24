@@ -15,5 +15,5 @@ DEFAULT_AGENT = AgentSpec(
     system_prompt=SYSTEM_PROMPT,
     model=ModelTarget(provider="qwen", model="qwen3.8-flash"),
     generation=GenerationOptions(temperature=0, max_output_tokens=4096),
-    allowed_tools=("read_file", "shell"),
+    allowed_tools=("shell",),
 )
