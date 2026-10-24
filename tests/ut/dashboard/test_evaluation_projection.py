@@ -374,15 +374,13 @@ def test_successful_shell_and_pass_log_do_not_replace_a_report() -> None:
             result=ToolResult(
                 tool_call_id="shell",
                 status="success",
-                content="ALL PASSED",
-                data={"exit_code": 0},
+                data={"text": "ALL PASSED", "exit_code": 0},
             ),
             raw_result=None,
             return_validation=ToolReturnValidation(
                 disposition="not_returned", reason="fixture_not_returned"
             ),
-            observation=None,
-            observation_missing_reason="fixture_not_observed",
+            response_error="fixture_not_observed",
         ),
     )
     shell = StoredEvent(

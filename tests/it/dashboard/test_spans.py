@@ -83,8 +83,7 @@ async def span_history(database: Path) -> tuple[PageBoundary, dict[str, str]]:
                 return_validation=ToolReturnValidation(
                     disposition="not_returned", reason="fixture_not_returned"
                 ),
-                observation=None,
-                observation_missing_reason="fixture_not_observed",
+                response_error="fixture_not_observed",
             ),
         ),
         (

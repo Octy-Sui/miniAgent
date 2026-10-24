@@ -48,7 +48,7 @@ class TextTool(Tool[TextArguments]):
         return ToolResult(
             tool_call_id=tool_call_id,
             status=ToolStatus.SUCCESS,
-            content=arguments.value,
+            data={"text": arguments.value},
         )
 
 

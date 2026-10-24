@@ -166,8 +166,7 @@ def test_cancelled_execution_is_not_counted_as_unexecuted():
             return_validation=ToolReturnValidation(
                 disposition="not_returned", reason="run_terminated"
             ),
-            observation=None,
-            observation_missing_reason="cancelled",
+            response_error="cancelled",
             status="cancelled",
             call_index=0,
             tool_call_id="call",

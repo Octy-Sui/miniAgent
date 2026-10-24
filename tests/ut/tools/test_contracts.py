@@ -43,7 +43,7 @@ async def test_registry_validates_arguments_and_isolates_definition_copies() -> 
     assert registry.definitions(["text"])[0].input_schema
     assert isinstance(prepared, PreparedToolCall)
     assert prepared.canonical_arguments == {"value": "hello"}
-    assert (await prepared.invoke("valid")).content == "hello"
+    assert (await prepared.invoke("valid")).data["text"] == "hello"
     assert isinstance(invalid, ToolError)
     assert invalid.code == "INVALID_TOOL_ARGUMENTS"
     assert invalid.issues[0].location == ["value"]
@@ -97,14 +97,14 @@ def test_tool_result_requires_error_to_match_status() -> None:
         ToolResult(
             tool_call_id="call",
             status=ToolStatus.ERROR,
-            content="failed",
+            data={"text": "failed"},
         )
 
     with pytest.raises(ValidationError, match="cannot contain an error"):
         ToolResult(
             tool_call_id="call",
             status=ToolStatus.SUCCESS,
-            content="done",
+            data={"text": "done"},
             error=ToolError(code="UNEXPECTED", message="Unexpected."),
         )
 
@@ -113,9 +113,8 @@ def test_tool_result_rendering_is_bounded_and_preserves_structure() -> None:
     result = ToolResult(
         tool_call_id="call",
         status=ToolStatus.ERROR,
-        content="😀" * 100,
+        data={"text": "😀" * 100, "large": "x" * 4_000},
         duration_ms=12,
-        data={"large": "x" * 4_000},
         error=ToolError(
             code="FAILED",
             message="Command failed.",
@@ -130,11 +129,11 @@ def test_tool_result_rendering_is_bounded_and_preserves_structure() -> None:
     payload = orjson.loads(rendered)
 
     assert len(rendered.encode("utf-8")) <= 2048
-    assert payload["content"] == "😀" * 16
+    assert payload["data"]["text"] == "😀" * 16
     assert payload["error"]["code"] == "FAILED"
     assert payload["output"]["content_truncated"] is True
-    assert payload["output"]["omitted_fields"] == ["data"]
-    assert "data" not in payload
+    assert payload["output"]["omitted_fields"] == []
+    assert payload["data"]["large"] == "x" * 65
     assert payload["duration_ms"] == 12
     assert result.model_dump() == original
 

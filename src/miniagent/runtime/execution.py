@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -23,7 +24,6 @@ from miniagent.environments.managed_execution import (
 )
 from miniagent.evaluation import CandidateOutput, EvaluationResult
 from miniagent.metering.usage import RequestCost, add_request_usage
-from miniagent.models.messages import ToolMessage
 from miniagent.models.protocol import (
     ModelFailure,
     ModelRequest,
@@ -136,7 +136,6 @@ from miniagent.tools.contracts import (
     ToolResultEvidence,
     ToolReturnValidation,
 )
-from miniagent.tools.rendering import render_tool_result
 
 
 class EvaluationObserver(Protocol):
@@ -1339,11 +1338,11 @@ class RunExecution:
         operation = self.state.execution.active_operation
         if operation is None or operation.kind != "tool":
             raise ValueError("Tool evidence requires an active tool attempt")
-        encoded = result.model_dump_json().encode("utf-8")
+        encoded = json.dumps(result.tool_result_metadata(), ensure_ascii=False).encode(
+            "utf-8"
+        )
         if len(encoded) <= 65536:
-            return InlineToolResultEvidence(
-                result=ToolResult.model_validate_json(encoded)
-            )
+            return InlineToolResultEvidence(result=result)
 
         def deadline() -> float | None:
             token = current_interruption_token()
@@ -1393,10 +1392,8 @@ class RunExecution:
     ) -> RunTermination | None:
         await self._require_operation_ended()
         operation = self.state.execution.active_operation
-        result = result.model_copy(deep=True)
         if return_validation is None:
             if operation is not None and operation.kind == "tool":
-                raw_result = await self.capture_tool_result(result)
                 return_validation = ToolReturnValidation(disposition="accepted")
             else:
                 return_validation = ToolReturnValidation(
@@ -1406,16 +1403,11 @@ class RunExecution:
         if isinstance(raw_result, ArtifactToolResultEvidence):
             source_artifacts.append(raw_result.ref)
         message = None
-        effective = None
         termination = None
         try:
-            message = ToolMessage(
-                tool_call_id=result.tool_call_id,
-                content=render_tool_result(
-                    result, self.state.definition.config.tool_output_limits
-                ),
+            message = result.to_response_item(
+                self.state.definition.config.tool_output_limits
             )
-            effective = ToolResult.model_validate_json(message.content)
         except (TypeError, ValueError):
             message = None
             termination = RunTermination(
@@ -1437,14 +1429,8 @@ class RunExecution:
         next_trace = deepcopy(self.trace)
         correlation = next_trace.tool_correlation
         events = []
-        status = effective.status.value if effective is not None else "error"
-        error_code = (
-            effective.error.code
-            if effective is not None and effective.error
-            else termination.error.code
-            if termination and termination.error
-            else None
-        )
+        status = result.status.value
+        error_code = result.error.code if result.error else None
         if next_trace.has_tool_execution:
             events.append(
                 next_trace.tool_execution_event(
@@ -1468,13 +1454,10 @@ class RunExecution:
                     tool_name=correlation.tool_name,
                     status=status,
                     error_code=error_code,
-                    result=effective,
+                    result=result,
                     raw_result=raw_result,
                     return_validation=return_validation,
-                    observation=message,
-                    observation_missing_reason="render_failed"
-                    if message is None
-                    else None,
+                    response_error="render_failed" if message is None else None,
                 )
             ).model_copy(update={"artifacts": list(dict.fromkeys(source_artifacts))})
         )
@@ -1715,8 +1698,7 @@ class RunExecution:
                         return_validation=ToolReturnValidation(
                             disposition="not_returned", reason="run_terminated"
                         ),
-                        observation=None,
-                        observation_missing_reason=termination.reason.value,
+                        response_error=termination.reason.value,
                         call_index=correlation.call_index,
                         tool_call_id=correlation.tool_call_id,
                         tool_name=correlation.tool_name,

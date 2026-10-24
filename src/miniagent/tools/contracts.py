@@ -1,5 +1,5 @@
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -12,6 +12,9 @@ from pydantic import (
 
 from miniagent.artifacts.contracts import ArtifactRef
 from miniagent.environments.contracts import WorkspaceDelta
+
+if TYPE_CHECKING:
+    from miniagent.models.messages import ToolMessage
 
 
 class ToolDefinition(BaseModel):
@@ -87,16 +90,29 @@ class ToolOutputLimits(BaseModel):
 
 
 class ToolResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     tool_call_id: str
     status: ToolStatus
-    content: str
     duration_ms: int | None = Field(default=None, ge=0)
-    data: dict[str, JsonValue] | None = None
+    data: dict[str, JsonValue] = Field(default_factory=dict)
     error: ToolError | None = None
     artifacts: list[ArtifactRef] = Field(default_factory=list)
     metrics: dict[str, JsonValue] = Field(default_factory=dict)
     workspace_delta: WorkspaceDelta | None = None
     output: ToolOutputInfo = Field(default_factory=ToolOutputInfo)
+
+    def to_response_item(self, limits: ToolOutputLimits | None = None) -> "ToolMessage":
+        from miniagent.models.messages import ToolMessage
+        from miniagent.tools.rendering import render_tool_result
+
+        return ToolMessage(
+            tool_call_id=self.tool_call_id,
+            content=render_tool_result(self, limits or ToolOutputLimits()),
+        )
+
+    def tool_result_metadata(self) -> dict[str, JsonValue]:
+        return self.model_dump(mode="json")
 
     @model_validator(mode="after")
     def validate_error(self) -> "ToolResult":

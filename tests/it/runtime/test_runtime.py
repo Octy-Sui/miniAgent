@@ -86,7 +86,7 @@ class TestRunExecution:
             ToolResult(
                 tool_call_id=call.id,
                 status=ToolStatus.SUCCESS,
-                content="ok",
+                data={"text": "ok"},
             )
         )
         previous_state = execution.state

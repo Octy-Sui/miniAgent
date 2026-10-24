@@ -83,7 +83,7 @@ class SuccessfulTool(Tool[EmptyArguments]):
         return ToolResult(
             tool_call_id=tool_call_id,
             status=ToolStatus.SUCCESS,
-            content="done",
+            data={"text": "done"},
         )
 
 
@@ -97,7 +97,7 @@ class MismatchedResultTool(SuccessfulTool):
         return ToolResult(
             tool_call_id="different-call",
             status=ToolStatus.SUCCESS,
-            content="done",
+            data={"text": "done"},
         )
 
 

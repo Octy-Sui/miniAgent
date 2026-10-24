@@ -41,5 +41,5 @@ class ObservedTool(Tool[EmptyArguments]):
         await observer.identified(identity)
         self.effects.append("external action permitted")
         return ToolResult(
-            tool_call_id=tool_call_id, status=ToolStatus.SUCCESS, content="done"
+            tool_call_id=tool_call_id, status=ToolStatus.SUCCESS, data={"text": "done"}
         )

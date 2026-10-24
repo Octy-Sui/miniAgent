@@ -22,7 +22,7 @@ async def test_tool_query_projects_only_effective_result(tmp_path, monkeypatch):
         through_sequence=record.last_event_sequence,
     )
     assert len(facts) == 1
-    assert facts[0].result.content == "confirmed outcome"
+    assert facts[0].result.data["text"] == "confirmed outcome"
     assert facts[0].tool_call_id == "c0"
     queries = [sql for sql in statements if "FROM run_events" in sql]
     assert all("SELECT * FROM run_events" not in sql for sql in queries)
@@ -57,5 +57,5 @@ async def test_large_model_request_does_not_enter_effective_result_decode(
 
     monkeypatch.setattr(sqlite3, "connect", traced_connect)
     facts = await store.list_tool_results(record.state.identity.run_id, step_number=3)
-    assert facts[0].result.content == "confirmed outcome"
+    assert facts[0].result.data["text"] == "confirmed outcome"
     assert not any("SELECT * FROM run_events" in sql for sql in statements)

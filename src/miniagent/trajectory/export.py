@@ -361,15 +361,15 @@ async def encode_trajectory(
                         "TRAJECTORY_STRUCTURE", "Tool attempt conflicts with execution"
                     )
                 if (
-                    data.get("observation") is None
-                    and data.get("observation_missing_reason") != "interrupted"
+                    data.get("response_error") is not None
+                    and data.get("response_error") != "interrupted"
                 ):
                     issues.append(
                         CoverageIssue(
                             code="OBSERVATION_MISSING",
                             sequence=event.sequence,
                             attempt_id=UUID(attempt) if attempt else None,
-                            reason=str(data.get("observation_missing_reason")),
+                            reason=str(data.get("response_error")),
                         )
                     )
             elif kind in (
@@ -717,8 +717,7 @@ _PAYLOAD_FIELDS: dict[str, tuple[str, tuple[str, ...]]] = {
             "attempt_id",
             "raw_result",
             "return_validation",
-            "observation",
-            "observation_missing_reason",
+            "response_error",
             "type",
             "status",
             "error_code",

@@ -14,7 +14,6 @@ def tool_result_from_execution(
     *,
     tool_call_id: str,
     status: ToolStatus,
-    content: str,
     data: dict[str, JsonValue] | None = None,
     error: ToolError | None = None,
     metrics: dict[str, JsonValue] | None = None,
@@ -32,9 +31,8 @@ def tool_result_from_execution(
     return ToolResult(
         tool_call_id=tool_call_id,
         status=status,
-        content=content,
+        data=data or {},
         duration_ms=execution.duration_ms,
-        data=data,
         error=error,
         artifacts=list(dict.fromkeys(artifacts)),
         metrics=metrics or {},

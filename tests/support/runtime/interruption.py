@@ -32,5 +32,5 @@ class BlockingTool(Tool[EmptyArguments]):
             return ToolResult(
                 tool_call_id=tool_call_id,
                 status=ToolStatus.SUCCESS,
-                content="must not be invented as completed",
+                data={"text": "must not be invented as completed"},
             )

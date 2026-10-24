@@ -9,6 +9,8 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    SerializationInfo,
+    field_serializer,
     model_validator,
 )
 
@@ -20,7 +22,6 @@ from miniagent.environments.managed_execution import (
 )
 from miniagent.evaluation.contracts import EvaluationError, EvaluationResult
 from miniagent.metering.usage import RequestCost
-from miniagent.models.messages import ToolMessage
 from miniagent.models.protocol import (
     ModelFailure,
     ModelRequest,
@@ -218,8 +219,7 @@ class ToolEnded(ToolScopePayload):
     attempt_id: UUID | None = None
     raw_result: ToolResultEvidence | None
     return_validation: ToolReturnValidation
-    observation: ToolMessage | None
-    observation_missing_reason: str | None
+    response_error: str | None = None
 
     type: Literal[RunEventType.TOOL_END] = RunEventType.TOOL_END
     status: str
@@ -227,10 +227,36 @@ class ToolEnded(ToolScopePayload):
     reason: str | None = None
     result: ToolResult | None = None
 
+    @field_serializer("result")
+    def serialize_result(
+        self, result: ToolResult | None, info: SerializationInfo
+    ) -> dict[str, JsonValue] | None:
+        if result is None:
+            return None
+        if (
+            info.exclude_unset
+            or info.exclude_defaults
+            or info.exclude_none
+            or info.include is not None
+            or info.exclude is not None
+        ):
+            return result.model_dump(
+                mode="json",
+                include=info.include,
+                exclude=info.exclude,
+                exclude_unset=info.exclude_unset,
+                exclude_defaults=info.exclude_defaults,
+                exclude_none=info.exclude_none,
+            )
+        return result.tool_result_metadata()
+
     @model_validator(mode="after")
     def validate_result(self) -> "ToolEnded":
-        if self.return_validation.disposition == "accepted" and self.raw_result is None:
-            raise ValueError("Accepted tool return requires raw evidence")
+        if self.return_validation.disposition == "accepted":
+            if self.result is None:
+                raise ValueError("Accepted tool return requires a result")
+            if self.raw_result is not None:
+                raise ValueError("Accepted tool return must not duplicate raw evidence")
         if (
             self.return_validation.disposition == "rejected"
             and self.raw_result is None
@@ -242,22 +268,6 @@ class ToolEnded(ToolScopePayload):
             and self.raw_result is not None
         ):
             raise ValueError("Non-returned tool cannot have raw evidence")
-        if self.observation is not None:
-            if (
-                self.result is None
-                or ToolResult.model_validate_json(self.observation.content)
-                != self.result
-            ):
-                raise ValueError("Tool observation differs from effective result")
-            if (
-                self.observation.tool_call_id != self.tool_call_id
-                or self.observation_missing_reason is not None
-            ):
-                raise ValueError(
-                    "Tool observation scope or missing reason is inconsistent"
-                )
-        elif not self.observation_missing_reason:
-            raise ValueError("Missing tool observation requires a reason")
         if self.result is None:
             return self
         if self.result.tool_call_id != self.tool_call_id:

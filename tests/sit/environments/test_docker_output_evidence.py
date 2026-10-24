@@ -458,6 +458,7 @@ async def test_real_docker_read_file_does_not_reread_changed_source(
     assert changed
     stdout = next(ref for ref in result.artifacts if ref.type == "command_stdout")
     assert await artifacts.read(stdout) == original
-    assert result.content.startswith(original[:1024].decode())
+    assert isinstance(result.data["text"], str)
+    assert result.data["text"].startswith(original[:1024].decode())
     assert result.output.stdout_truncated
     assert len(observer.commands) == len(observer.outputs) == 1

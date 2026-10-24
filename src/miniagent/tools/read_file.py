@@ -52,7 +52,7 @@ class ReadFileTool(Tool[ReadFileArguments]):
             return ToolResult(
                 tool_call_id=tool_call_id,
                 status=ToolStatus.DENIED,
-                content=f"Access denied: {path}",
+                data={"text": f"Access denied: {path}"},
                 error=ToolError(
                     code="PATH_OUTSIDE_WORKSPACE",
                     message="Path escapes workspace.",
@@ -82,7 +82,7 @@ class ReadFileTool(Tool[ReadFileArguments]):
                 result,
                 tool_call_id=tool_call_id,
                 status=ToolStatus.DENIED,
-                content=f"Access denied: {path}",
+                data={"text": f"Access denied: {path}"},
                 error=ToolError(
                     code="PATH_OUTSIDE_WORKSPACE",
                     message="Resolved path escapes workspace.",
@@ -93,7 +93,7 @@ class ReadFileTool(Tool[ReadFileArguments]):
                 result,
                 tool_call_id=tool_call_id,
                 status=ToolStatus.ERROR,
-                content=f"File not found: {path}",
+                data={"text": f"File not found: {path}"},
                 error=ToolError(
                     code="FILE_NOT_FOUND",
                     message=f"File does not exist: {path}",
@@ -104,7 +104,7 @@ class ReadFileTool(Tool[ReadFileArguments]):
                 result,
                 tool_call_id=tool_call_id,
                 status=ToolStatus.ERROR,
-                content=f"Cannot read binary file: {path}",
+                data={"text": f"Cannot read binary file: {path}"},
                 error=ToolError(
                     code="DECODE_ERROR",
                     message="File is not valid UTF-8 text.",
@@ -115,7 +115,7 @@ class ReadFileTool(Tool[ReadFileArguments]):
                 result,
                 tool_call_id=tool_call_id,
                 status=ToolStatus.ERROR,
-                content=f"Cannot read file: {path}\n{result.stderr}",
+                data={"text": f"Cannot read file: {path}\n{result.stderr}"},
                 error=ToolError(
                     code="READ_FAILED",
                     message=f"Cannot read file: {path}",
@@ -126,11 +126,7 @@ class ReadFileTool(Tool[ReadFileArguments]):
                 result,
                 tool_call_id=tool_call_id,
                 status=ToolStatus.ERROR,
-                content=result.stdout,
-                data={
-                    "path": path,
-                    "truncated": True,
-                },
+                data={"text": result.stdout, "path": path, "truncated": True},
                 error=ToolError(
                     code="OUTPUT_TRUNCATED",
                     message="File exceeds the workspace output limit.",
@@ -141,8 +137,8 @@ class ReadFileTool(Tool[ReadFileArguments]):
             result,
             tool_call_id=tool_call_id,
             status=ToolStatus.SUCCESS,
-            content=result.stdout,
             data={
+                "text": result.stdout,
                 "path": path,
                 "size": len(result.stdout.encode()),
             },

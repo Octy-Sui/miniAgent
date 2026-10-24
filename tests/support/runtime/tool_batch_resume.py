@@ -51,7 +51,7 @@ class LineTool(Tool[LineArguments]):
         return ToolResult(
             tool_call_id=tool_call_id,
             status=ToolStatus(arguments.status),
-            content="confirmed outcome",
+            data={"text": "confirmed outcome"},
             error=ToolError(code="CONFIRMED_FAILURE", message="confirmed failure")
             if arguments.status != "success"
             else None,

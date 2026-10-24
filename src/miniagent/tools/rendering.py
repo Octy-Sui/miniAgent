@@ -1,8 +1,4 @@
-# File   : tool_output.py
-# Created: 2026-09-17 15:36:23
-# Author : octy Sui
-
-from collections.abc import MutableMapping
+from collections.abc import Iterator
 from typing import Any
 
 import orjson
@@ -11,120 +7,117 @@ from miniagent.tools.contracts import ToolOutputLimits, ToolResult
 
 
 def render_tool_result(result: ToolResult, limits: ToolOutputLimits) -> str:
-    output = result.output.model_copy(deep=True)
-    content = _utf8_prefix(result.content, limits.max_content_bytes)
-    output.content_truncated = content != result.content
-    output.omitted_fields = []
+    payload = result.tool_result_metadata()
+    output = payload["output"]
+    assert isinstance(output, dict)
+    fields = list(_text_fields(payload["data"]))
+    for container, key in fields:
+        value = container[key]
+        shortened = _utf8_prefix(value, limits.max_content_bytes)
+        if shortened != value:
+            container[key] = shortened
+            _mark_truncated(output, key)
 
-    payload: dict[str, Any] = {
-        "tool_call_id": result.tool_call_id,
-        "status": result.status.value,
-        "content": content,
-        "output": output.model_dump(mode="json"),
-    }
-    if result.duration_ms is not None:
-        payload["duration_ms"] = result.duration_ms
-    if result.data is not None:
-        payload["data"] = result.data
-    if result.error is not None:
-        payload["error"] = result.error.model_dump(mode="json")
-    if result.artifacts:
-        payload["artifacts"] = [
-            artifact.model_dump(mode="json", exclude_none=True)
-            for artifact in result.artifacts
-        ]
-    if result.metrics:
-        payload["metrics"] = result.metrics
-    if result.workspace_delta is not None:
-        payload["workspace_delta"] = result.workspace_delta.model_dump(mode="json")
-
-    for field in ("data", "metrics", "workspace_delta", "artifacts"):
+    for field in ("metrics", "workspace_delta", "artifacts"):
         if _encoded_size(payload) <= limits.max_message_bytes:
             break
-        if field in payload:
+        if payload.get(field):
             del payload[field]
-            _record_omission(payload, field)
-
-    if (
-        _encoded_size(payload) > limits.max_message_bytes
-        and isinstance(payload.get("error"), MutableMapping)
-        and payload["error"].get("issues")
-    ):
-        del payload["error"]["issues"]
-        _record_omission(payload, "error.issues")
+            _record_omission(output, field)
 
     if _encoded_size(payload) > limits.max_message_bytes:
-        original_content = payload["content"]
-        payload["content"] = ""
-        payload["output"]["content_truncated"] = True
-
-        error = payload.get("error")
-        if _encoded_size(payload) > limits.max_message_bytes and isinstance(
-            error, MutableMapping
-        ):
-            original_message = error["message"]
-            error["message"] = ""
-            _record_omission(payload, "error.message")
-            if _encoded_size(payload) > limits.max_message_bytes:
-                raise ValueError("Tool result metadata exceeds the message limit")
-            error["message"] = _largest_fitting_prefix(
-                payload,
-                error,
-                "message",
-                original_message,
-                limits.max_message_bytes,
-            )
-
-        payload["content"] = _largest_fitting_prefix(
-            payload,
-            payload,
-            "content",
-            original_content,
-            limits.max_message_bytes,
-        )
+        _fit_payload(payload, fields, limits.max_message_bytes)
 
     encoded = orjson.dumps(payload)
     if len(encoded) > limits.max_message_bytes:
-        raise ValueError("Tool result exceeds the message limit")
+        raise ValueError("Tool result metadata exceeds the message limit")
     return encoded.decode("utf-8")
 
 
+def _fit_payload(
+    payload: dict[str, Any], fields: list[tuple[Any, str | int]], max_bytes: int
+) -> None:
+    output = payload["output"]
+    error = payload.get("error")
+    original_omissions = set(output["omitted_fields"])
+    if isinstance(error, dict):
+        if error.get("issues"):
+            error["issues"] = []
+            _record_omission(output, "error.issues")
+        fields = [(error, "message"), *fields]
+        _record_omission(output, "error.message")
+
+    values = [(container, key, container[key]) for container, key in fields]
+    for container, key, _ in values:
+        container[key] = ""
+    baseline = _encoded_size(payload)
+    if baseline > max_bytes:
+        del payload["data"]
+        _record_omission(output, "data")
+        output["content_truncated"] = True
+        values = [item for item in values if item[0] is error]
+        baseline = _encoded_size(payload)
+    if baseline > max_bytes:
+        raise ValueError("Tool result metadata exceeds the message limit")
+
+    remaining = max_bytes - baseline
+    values.sort(key=lambda item: (item[0] is not error, len(item[2])))
+    for container, key, value in values:
+        fitted = _encoded_prefix(value, remaining)
+        container[key] = fitted
+        remaining -= len(orjson.dumps(fitted)) - 2
+        if fitted != value:
+            if container is not error:
+                _mark_truncated(output, key)
+        elif container is error and "error.message" not in original_omissions:
+            output["omitted_fields"].remove("error.message")
+
+
+def _text_fields(value: Any) -> Iterator[tuple[Any, str | int]]:
+    if isinstance(value, dict):
+        children = value.items()
+    elif isinstance(value, list):
+        children = enumerate(value)
+    else:
+        return
+    for key, child in children:
+        if isinstance(child, str):
+            yield value, key
+        else:
+            yield from _text_fields(child)
+
+
+def _mark_truncated(output: dict[str, Any], key: str | int) -> None:
+    output["content_truncated"] = True
+    if key in ("stdout", "stderr"):
+        output[f"{key}_truncated"] = True
+
+
+def _record_omission(output: dict[str, Any], field: str) -> None:
+    if field not in output["omitted_fields"]:
+        output["omitted_fields"].append(field)
+
+
 def _utf8_prefix(value: str, max_bytes: int) -> str:
-    if len(value.encode("utf-8")) <= max_bytes:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
         return value
-    low = 0
-    high = len(value)
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def _encoded_prefix(value: str, max_bytes: int) -> str:
+    if max_bytes <= 0:
+        return ""
+    if len(orjson.dumps(value)) - 2 <= max_bytes:
+        return value
+    low, high = 0, min(len(value), max_bytes)
     while low < high:
         middle = (low + high + 1) // 2
-        if len(value[:middle].encode("utf-8")) <= max_bytes:
+        if len(orjson.dumps(value[:middle])) - 2 <= max_bytes:
             low = middle
         else:
             high = middle - 1
     return value[:low]
-
-
-def _largest_fitting_prefix(
-    payload: dict[str, Any],
-    container: MutableMapping[str, Any],
-    field: str,
-    value: str,
-    max_bytes: int,
-) -> str:
-    low = 0
-    high = len(value)
-    while low < high:
-        middle = (low + high + 1) // 2
-        container[field] = value[:middle]
-        if _encoded_size(payload) <= max_bytes:
-            low = middle
-        else:
-            high = middle - 1
-    container[field] = value[:low]
-    return value[:low]
-
-
-def _record_omission(payload: dict[str, Any], field: str) -> None:
-    payload["output"]["omitted_fields"].append(field)
 
 
 def _encoded_size(payload: dict[str, Any]) -> int:

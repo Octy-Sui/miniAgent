@@ -25,16 +25,14 @@ async def tool_page(database: Path):
                 result=ToolResult(
                     tool_call_id="same",
                     status="success",
-                    content="token=private-value\nvisible",
-                    data={"exit_code": 0},
+                    data={"text": "token=private-value\nvisible", "exit_code": 0},
                     output=ToolOutputInfo(stdout_truncated=True),
                 ),
                 raw_result=None,
                 return_validation=ToolReturnValidation(
                     disposition="not_returned", reason="fixture_not_returned"
                 ),
-                observation=None,
-                observation_missing_reason="fixture_not_observed",
+                response_error="fixture_not_observed",
             ),
         ):
             await store.append(

@@ -61,7 +61,12 @@ class ShellTool(Tool[ShellArguments]):
                 result,
                 tool_call_id=tool_call_id,
                 status=ToolStatus.TIMEOUT,
-                content=(f"Command timed out after {self.timeout}s:\n{command}"),
+                data={
+                    "command": command,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "exit_code": result.exit_code,
+                },
                 error=ToolError(
                     code="COMMAND_TIMEOUT",
                     message="Shell command timed out.",
@@ -69,18 +74,10 @@ class ShellTool(Tool[ShellArguments]):
             )
         exit_code = result.exit_code
 
-        content = (
-            f"$ {command}\n"
-            f"\nstdout:\n{result.stdout}"
-            f"\nstderr:\n{result.stderr}"
-            f"\nexit_code: {exit_code}"
-        )
-
         return tool_result_from_execution(
             result,
             tool_call_id=tool_call_id,
             status=(ToolStatus.SUCCESS if exit_code == 0 else ToolStatus.ERROR),
-            content=content,
             data={
                 "command": command,
                 "stdout": result.stdout,

@@ -114,9 +114,8 @@ async def test_tool_end_round_trips_full_result_after_reopen(
     result = ToolResult(
         tool_call_id="call-1",
         status=ToolStatus.SUCCESS,
-        content="complete output",
+        data={"text": "complete output", "count": 2},
         duration_ms=37,
-        data={"count": 2},
         metrics={"exit_code": 0},
         workspace_delta=WorkspaceDelta(files_modified=["src/app.py"]),
     )
@@ -132,8 +131,7 @@ async def test_tool_end_round_trips_full_result_after_reopen(
             return_validation=ToolReturnValidation(
                 disposition="not_returned", reason="fixture_not_returned"
             ),
-            observation=None,
-            observation_missing_reason="fixture_not_observed",
+            response_error="fixture_not_observed",
         ),
         step_number=1,
         span_id="2222222222222222",

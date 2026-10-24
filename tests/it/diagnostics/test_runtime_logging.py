@@ -122,9 +122,11 @@ async def test_tool_summary_includes_exit_code_and_duration_without_output(
             return ToolResult(
                 tool_call_id=tool_call_id,
                 status=ToolStatus.SUCCESS,
-                content="private output",
+                data={
+                    "exit_code": 0,
+                    "stdout": "private output",
+                },
                 duration_ms=123,
-                data={"exit_code": 0, "stdout": "private output"},
             )
 
     caplog.set_level(logging.INFO, logger="miniagent")

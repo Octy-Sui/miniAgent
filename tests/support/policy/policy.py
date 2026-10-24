@@ -49,7 +49,7 @@ class RecordingShell(Tool[CommandArguments]):
         return ToolResult(
             tool_call_id=tool_call_id,
             status=ToolStatus.SUCCESS,
-            content="executed",
+            data={"text": "executed"},
         )
 
 

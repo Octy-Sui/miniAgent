@@ -257,6 +257,6 @@ class ApprovalCoordinator:
         return ToolResult(
             tool_call_id=decision.request.tool_call_id,
             status=ToolStatus.DENIED,
-            content=f"Tool call denied by policy: {decision.reason}",
+            data={"text": f"Tool call denied by policy: {decision.reason}"},
             error=ToolError(code="POLICY_DENIED", message=decision.reason_code),
         )

@@ -21,7 +21,9 @@ async def test_evidence_is_always_captured_and_survives_workspace_cleanup(
     results = [event.payload for event in events if event.type.value == "tool_end"]
     assert len(results) == 3
     assert all(
-        result.raw_result is not None and result.observation is not None
+        result.result is not None
+        and result.raw_result is None
+        and result.response_error is None
         for result in results
     )
     store = FileArtifactStore(worker.root / "artifacts")

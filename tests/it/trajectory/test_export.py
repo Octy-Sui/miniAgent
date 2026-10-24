@@ -251,7 +251,7 @@ async def test_unavailable_observation_is_explicit_partial(tmp_path):
                 tool_call_id=tool_call_id,
                 status="success",
                 duration_ms=1 << 100,
-                content="raw retained",
+                data={"text": "raw retained"},
             )
 
     store = SQLiteRunStore(tmp_path / "run.db")
@@ -275,8 +275,9 @@ async def test_unavailable_observation_is_explicit_partial(tmp_path):
     ended = next(e for e in document["events"] if e["payload"]["type"] == "tool_end")[
         "payload"
     ]
-    assert ended["raw_result"]["result"]["content"] == "raw retained"
-    assert ended["observation"] is None
+    assert ended["result"]["data"]["text"] == "raw retained"
+    assert "observation" not in ended
+    assert ended["response_error"] == "render_failed"
 
 
 async def test_frozen_definition_positive_whitelist_and_credential_exclusion(tmp_path):

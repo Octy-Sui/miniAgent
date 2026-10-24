@@ -133,7 +133,7 @@ async def test_trusted_result_commits_before_pause_only_with_budget(
             return ToolResult(
                 tool_call_id=tool_call_id,
                 status=ToolStatus.SUCCESS,
-                content="trusted actual result",
+                data={"text": "trusted actual result"},
             )
 
     tool = ReturningTool()

@@ -10,7 +10,6 @@ from miniagent.environments.managed_execution import (
     ManagedExecutionError,
     execution_scope,
 )
-from miniagent.models.messages import ToolMessage
 from miniagent.policy import (
     PolicyContext,
     PolicyDecision,
@@ -57,7 +56,6 @@ class CapturedToolReturn:
 
 @dataclass(frozen=True, slots=True)
 class ToolBatchOutcome:
-    results: list[ToolResult]
     termination: RunTermination | None = None
 
 
@@ -85,7 +83,6 @@ class ToolCallRunner:
     ) -> ToolBatchOutcome:
         if batch is None:
             raise ValueError("Tool execution requires an active batch")
-        results: list[ToolResult] = []
         for call_index in range(batch.next_index, len(batch.calls)):
             raise_if_interrupted()
             call = batch.calls[call_index]
@@ -102,7 +99,9 @@ class ToolCallRunner:
                 result = ToolResult(
                     tool_call_id=call.id,
                     status=ToolStatus.DENIED,
-                    content=f"Tool not allowed for agent {agent.name}: {call.name}",
+                    data={
+                        "text": f"Tool not allowed for agent {agent.name}: {call.name}"
+                    },
                     error=ToolError(code="TOOL_NOT_ALLOWED", message=call.name),
                 )
             else:
@@ -111,7 +110,7 @@ class ToolCallRunner:
                     result = ToolResult(
                         tool_call_id=call.id,
                         status=ToolStatus.ERROR,
-                        content=f"Invalid arguments for {call.name}.",
+                        data={"text": f"Invalid arguments for {call.name}."},
                         error=prepared,
                     )
                 else:
@@ -131,7 +130,6 @@ class ToolCallRunner:
                         raise
                     except Exception as exc:  # noqa: BLE001
                         return ToolBatchOutcome(
-                            results=results,
                             termination=RunTermination(
                                 status=RunStatus.FAILED,
                                 reason=TerminationReason.INTERNAL_ERROR,
@@ -150,7 +148,6 @@ class ToolCallRunner:
                         )
                         if authorization.termination is not None:
                             return ToolBatchOutcome(
-                                results=results,
                                 termination=authorization.termination,
                             )
                         if authorization.tool_result is not None:
@@ -185,11 +182,8 @@ class ToolCallRunner:
                 artifacts=captured.artifacts if captured else tuple(result.artifacts),
             )
             if termination is not None:
-                return ToolBatchOutcome(results=results, termination=termination)
-            observation = execution.state.conversation.messages[-1]
-            assert isinstance(observation, ToolMessage)
-            results.append(ToolResult.model_validate_json(observation.content))
-        return ToolBatchOutcome(results=results)
+                return ToolBatchOutcome(termination=termination)
+        return ToolBatchOutcome()
 
     async def _decide_policy(
         self,
@@ -262,7 +256,7 @@ class ToolCallRunner:
             effective = ToolResult(
                 tool_call_id=call.id,
                 status=ToolStatus.ERROR,
-                content=f"Tool execution failed: {call.name}",
+                data={"text": f"Tool execution failed: {call.name}"},
                 error=ToolError(
                     code="TOOL_EXECUTION_EXCEPTION",
                     message="Tool execution raised an unexpected exception.",
@@ -287,11 +281,10 @@ class ToolCallRunner:
                 ),
             )
         result = result.model_copy(deep=True)
-        raw_result = await execution.capture_tool_result(result)
         artifacts = tuple(result.artifacts)
         if result.tool_call_id != call.id:
             return CapturedToolReturn(
-                raw_result,
+                await execution.capture_tool_result(result),
                 self._invalid_tool_result(
                     call.id, call.name, "Tool result does not match the current call."
                 ),
@@ -304,7 +297,7 @@ class ToolCallRunner:
             result.error.code
         ):
             return CapturedToolReturn(
-                raw_result,
+                await execution.capture_tool_result(result),
                 self._invalid_tool_result(
                     call.id, call.name, "Tool returned an invalid error code."
                 ),
@@ -314,7 +307,7 @@ class ToolCallRunner:
                 artifacts,
             )
         return CapturedToolReturn(
-            raw_result, result, ToolReturnValidation(disposition="accepted"), artifacts
+            None, result, ToolReturnValidation(disposition="accepted"), artifacts
         )
 
     @staticmethod
@@ -325,7 +318,7 @@ class ToolCallRunner:
         return ToolResult(
             tool_call_id=tool_call_id,
             status=ToolStatus.DENIED,
-            content=f"Tool call denied by policy: {decision.reason}",
+            data={"text": f"Tool call denied by policy: {decision.reason}"},
             error=ToolError(code="POLICY_DENIED", message=decision.reason_code),
         )
 
@@ -338,6 +331,6 @@ class ToolCallRunner:
         return ToolResult(
             tool_call_id=tool_call_id,
             status=ToolStatus.ERROR,
-            content=f"Invalid result from tool: {tool_name}",
+            data={"text": f"Invalid result from tool: {tool_name}"},
             error=ToolError(code="INVALID_TOOL_RESULT", message=message),
         )

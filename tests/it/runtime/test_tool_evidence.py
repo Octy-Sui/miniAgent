@@ -47,14 +47,14 @@ def sized_result(
     result = ToolResult(
         tool_call_id="wrong-id" if wrong_id else "call",
         status=ToolStatus.ERROR if wrong_code else ToolStatus.SUCCESS,
-        content="",
+        data={"text": ""},
         error=ToolError(code="bad code", message="original error")
         if wrong_code
         else None,
     )
     padding = size - len(result.model_dump_json().encode())
     assert padding > 0
-    return result.model_copy(update={"content": "x" * padding})
+    return result.model_copy(update={"data": {"text": "x" * padding}})
 
 
 async def run_return(tmp_path, returned, *, allowed=True, invalid_arguments=False):
@@ -83,30 +83,27 @@ async def run_return(tmp_path, returned, *, allowed=True, invalid_arguments=Fals
     return result, record, ended.payload, artifacts, provider
 
 
-@pytest.mark.parametrize(
-    "size", [65535, 65536, 65537], ids=["TC-U07-05", "TC-U07-06", "TC-U07-07"]
-)
-async def test_raw_size_boundaries_and_exact_final_observation(tmp_path, size):
+async def test_complete_result_is_stored_once_while_model_message_is_bounded(tmp_path):
+    size = 70000
     original = sized_result(size)
-    assert len(original.model_dump_json().encode()) == size
-    _result, record, event, artifacts, provider = await run_return(tmp_path, original)
+    _result, record, event, _artifacts, provider = await run_return(tmp_path, original)
     ended = event
     assert ended.return_validation.disposition == "accepted"
-    if size <= 65536:
-        assert ended.raw_result.kind == "inline"
-        assert ended.raw_result.result == original
-    else:
-        assert ended.raw_result.kind == "artifact"
-        assert (
-            ToolResult.model_validate_json(
-                await FileArtifactStore(artifacts.root).read(ended.raw_result.ref)
-            )
-            == original
+    assert ended.raw_result is None
+    assert ended.result == original
+    message = record.state.conversation.messages[-1]
+    payload = json.loads(message.content)
+    assert len(payload["data"]["text"].encode()) <= 16384
+    assert payload["output"]["content_truncated"]
+    with sqlite3.connect(tmp_path / "runs.db") as connection:
+        stored = json.loads(
+            connection.execute(
+                "SELECT payload_json FROM run_events WHERE type='tool_end'"
+            ).fetchone()[0]
         )
-    assert len(ended.result.content.encode()) <= 16384
-    assert ended.result.output.content_truncated
-    assert ended.observation == record.state.conversation.messages[-1]
-    assert ToolResult.model_validate_json(ended.observation.content) == ended.result
+    assert "observation" not in stored
+    assert stored["raw_result"] is None
+    assert stored["result"]["data"]["text"] == original.data["text"]
     assert len(provider.requests) == 1
     queried = await SQLiteRunStore(tmp_path / "runs.db").list_tool_results(
         record.state.identity.run_id, step_number=1
@@ -116,7 +113,8 @@ async def test_raw_size_boundaries_and_exact_final_observation(tmp_path, size):
         record.state.identity.run_id
     )
     assert snapshot is not None
-    assert original.content not in snapshot.model_dump_json()
+    assert isinstance(original.data["text"], str)
+    assert original.data["text"] not in snapshot.model_dump_json()
     assert len(snapshot.model_dump_json().encode()) < size
 
 
@@ -148,17 +146,15 @@ async def test_tc_u07_02(tmp_path, variant, size):
     assert len(provider.requests) == 1
 
 
-async def test_tc_u07_08(tmp_path):
+async def test_unicode_result_round_trips_without_duplicate_raw_evidence(tmp_path):
     original = ToolResult(
-        tool_call_id="call", status="success", content='汉"\\\n' * 8000
+        tool_call_id="call", status="success", data={"text": '汉"\\\n' * 8000}
     )
-    assert len(original.content) < 65536 < len(original.model_dump_json().encode())
-    _result, _record, event, artifacts, _provider = await run_return(tmp_path, original)
-    assert event.raw_result.kind == "artifact"
-    assert (
-        ToolResult.model_validate_json(await artifacts.read(event.raw_result.ref))
-        == original
+    _result, _record, event, _artifacts, _provider = await run_return(
+        tmp_path, original
     )
+    assert event.result == original
+    assert event.raw_result is None
 
 
 async def test_tc_u07_03_no_arbitrary_representation(tmp_path):
@@ -193,7 +189,7 @@ async def test_tc_u10_01_and_u07_04(tmp_path, variant):
         else ToolResult(
             tool_call_id="call",
             status=variant if variant in {"error", "timeout"} else "success",
-            content="original outcome",
+            data={"text": "original outcome"},
             error=ToolError(code="TOOL_FAILED", message="failure")
             if variant in {"error", "timeout"}
             else None,
@@ -206,8 +202,10 @@ async def test_tc_u10_01_and_u07_04(tmp_path, variant):
         invalid_arguments=variant == "invalid_arguments",
     )
     ended = event
-    assert ended.observation == record.state.conversation.messages[-1]
-    assert ToolResult.model_validate_json(ended.observation.content) == ended.result
+    assert ended.result is not None
+    message = record.state.conversation.messages[-1]
+    assert json.loads(message.content)["status"] == ended.result.status.value
+    assert "observation" not in ended.model_dump()
     if variant in {"denied", "invalid_arguments", "exception"}:
         assert ended.raw_result is None
         assert ended.return_validation.disposition == "not_returned"
@@ -218,13 +216,13 @@ async def test_tc_u10_03_unrenderable_metadata_keeps_raw_without_observation(tmp
     original = ToolResult(
         tool_call_id="call",
         status="success",
-        content="original outcome",
+        data={"text": "original outcome"},
         duration_ms=1 << 100,
     )
     result, record, event, _artifacts, provider = await run_return(tmp_path, original)
-    assert event.raw_result.result == original
-    assert event.observation is None
-    assert event.observation_missing_reason is not None
+    assert event.result == original
+    assert event.raw_result is None
+    assert event.response_error == "render_failed"
     assert all(message.role != "tool" for message in record.state.conversation.messages)
     assert result.error.code == "TOOL_OBSERVATION_UNAVAILABLE"
     assert len(provider.requests) == 1
@@ -275,7 +273,8 @@ async def test_requested_and_canonical_arguments_are_separate(tmp_path):
     from miniagent.runtime.events import ToolExecutionStarted, ToolStarted
 
     _result, record, _ended, _artifacts, _provider = await run_return(
-        tmp_path, ToolResult(tool_call_id="call", status="success", content="done")
+        tmp_path,
+        ToolResult(tool_call_id="call", status="success", data={"text": "done"}),
     )
     events = await SQLiteRunStore(tmp_path / "runs.db").list_events(
         record.state.identity.run_id
@@ -292,34 +291,24 @@ async def test_requested_and_canonical_arguments_are_separate(tmp_path):
     assert executed.canonical_arguments == {"value": "default"}
 
 
-@pytest.mark.parametrize("variant", ["missing_raw", "observation_different"])
+@pytest.mark.parametrize("variant", ["missing_result", "duplicate_raw"])
 def test_tool_evidence_rejects_inconsistent_fields(variant):
     from pydantic import ValidationError
 
-    from miniagent.models.messages import ToolMessage
     from miniagent.tools.contracts import InlineToolResultEvidence, ToolReturnValidation
 
-    result = ToolResult(tool_call_id="call", status="success", content="visible")
-    observed = (
-        result.model_copy(update={"content": "different"})
-        if variant == "observation_different"
-        else result
-    )
-    with pytest.raises(ValidationError, match="raw|observation"):
+    result = ToolResult(tool_call_id="call", status="success", data={"text": "visible"})
+    with pytest.raises(ValidationError, match="result|duplicate"):
         ToolEnded(
             call_index=0,
             tool_call_id="call",
             tool_name="ok",
             status="success",
-            result=result,
-            raw_result=None
-            if variant == "missing_raw"
-            else InlineToolResultEvidence(result=result),
+            result=None if variant == "missing_result" else result,
+            raw_result=InlineToolResultEvidence(result=result)
+            if variant == "duplicate_raw"
+            else None,
             return_validation=ToolReturnValidation(disposition="accepted"),
-            observation=ToolMessage(
-                tool_call_id="call", content=observed.model_dump_json()
-            ),
-            observation_missing_reason=None,
         )
 
 
@@ -328,7 +317,8 @@ async def test_effective_projection_rejects_corrupt_source(tmp_path, variant):
     from miniagent.runtime.store_contracts import CorruptStoredDataError
 
     _result, record, _ended, _artifacts, _provider = await run_return(
-        tmp_path, ToolResult(tool_call_id="call", status="success", content="visible")
+        tmp_path,
+        ToolResult(tool_call_id="call", status="success", data={"text": "visible"}),
     )
     with sqlite3.connect(tmp_path / "runs.db") as connection:
         connection.execute("DROP TRIGGER run_events_no_update")
@@ -366,16 +356,66 @@ async def test_raw_publication_obeys_late_cleanup_deadline(tmp_path, monkeypatch
         cleanup_deadline_scope(lambda: deadline[0]),
         pytest.raises(TimeoutError, match="deadline"),
     ):
-        await run_return(tmp_path, sized_result(200000))
+        await run_return(tmp_path, sized_result(200000, wrong_id=True))
     assert not list((tmp_path / "artifacts").rglob("*.json"))
 
 
 async def test_allowed_tool_body_preserves_sensitive_looking_text(tmp_path):
     sentinel = "api_key=synthetic-only; <thinking>ordinary tool text</thinking>"
     original = ToolResult(
-        tool_call_id="call", status=ToolStatus.SUCCESS, content=sentinel
+        tool_call_id="call", status=ToolStatus.SUCCESS, data={"text": sentinel}
     )
-    _, _, ended, _, _ = await run_return(tmp_path, original)
-    assert ended.raw_result.kind == "inline"
-    assert ended.raw_result.result.content == sentinel
-    assert ToolResult.model_validate_json(ended.observation.content).content == sentinel
+    _, record, ended, _, _ = await run_return(tmp_path, original)
+    assert ended.raw_result is None
+    assert ended.result.data["text"] == sentinel
+    assert (
+        json.loads(record.state.conversation.messages[-1].content)["data"]["text"]
+        == sentinel
+    )
+
+
+async def test_result_is_committed_before_next_model_request(tmp_path):
+    from tests.support.runtime.runtime import final_response
+
+    store = SQLiteRunStore(tmp_path / "runs.db")
+    await store.initialize()
+    original = ToolResult(
+        tool_call_id="call",
+        status=ToolStatus.SUCCESS,
+        data={"stdout": "汉字\n" * 10000, "stderr": "warning", "exit_code": 0},
+    )
+
+    class InspectingProvider(QueueProvider):
+        async def generate(self, request):
+            if self.requests:
+                with sqlite3.connect(store.path) as connection:
+                    persisted = json.loads(
+                        connection.execute(
+                            "SELECT payload_json FROM run_events WHERE type='tool_end'"
+                        ).fetchone()[0]
+                    )
+                    state = json.loads(
+                        connection.execute("SELECT state_json FROM runs").fetchone()[0]
+                    )
+                assert persisted["result"]["data"] == original.data
+                assert persisted["raw_result"] is None
+                assert "observation" not in persisted
+                message = next(
+                    message for message in request.messages if message.role == "tool"
+                )
+                assert json.loads(message.content)["data"]["stderr"] == "warning"
+                assert (
+                    state["conversation"]["messages"][-1]["content"] == message.content
+                )
+            return await super().generate(request)
+
+    provider = InspectingProvider([tool_response(), final_response()])
+    await AgentRuntime(
+        provider=provider,
+        tools=ToolRegistry([ReturnedTool(original, tmp_path / "calls")]),
+        run_store=store,
+        artifact_store=FileArtifactStore(tmp_path / "artifacts"),
+        config=RuntimeConfig(max_steps=2),
+        policy_engine=AllowPolicyEngine(),
+    ).run(agent(allowed_tools=["ok"]), "task")
+    assert len(provider.requests) == 2

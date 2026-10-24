@@ -54,7 +54,10 @@ async def test_resume_creates_new_trajectory_without_rewriting_old(spawn_worker)
         e["payload"] for e in after["events"] if e["payload"]["type"] == "tool_end"
     ]
     assert len(ended) == 3
-    assert all(e["observation"] and e["raw_result"] for e in ended)
+    assert all(
+        e["result"] and e["raw_result"] is None and e["response_error"] is None
+        for e in ended
+    )
     artifacts = FileArtifactStore(first.root / "artifacts")
     for event in after["events"]:
         if event["payload"]["type"] == "operation_output_recorded":

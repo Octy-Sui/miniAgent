@@ -190,7 +190,7 @@ async def test_tool_statistics_use_validated_status_and_execution_duration(
             return ToolResult(
                 tool_call_id=tool_call_id,
                 status=status,
-                content="result",
+                data={"text": "result"},
                 duration_ms=123,
                 error=None
                 if status is ToolStatus.SUCCESS

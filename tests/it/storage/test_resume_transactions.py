@@ -121,7 +121,9 @@ async def test_tool_results_require_exact_business_scope(tmp_path, mutation):
         )
     )
     result = ToolResult(
-        tool_call_id="call-1", status=ToolStatus.SUCCESS, content="persisted result"
+        tool_call_id="call-1",
+        status=ToolStatus.SUCCESS,
+        data={"text": "persisted result"},
     )
     await execution.complete_tool(result)
     if mutation:

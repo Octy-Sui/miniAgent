@@ -152,7 +152,7 @@ async def consume(root: Path, consumer: str) -> dict:
             ToolResult(
                 tool_call_id="call",
                 status="denied",
-                content="denied",
+                data={"text": "denied"},
                 error=ToolError(code="POLICY_DENIED", message="No command permission"),
             )
         )
@@ -268,7 +268,9 @@ async def consume(root: Path, consumer: str) -> dict:
                 result = None
         elif consumer == "g5":
             result = await execution.complete_tool(
-                ToolResult(tool_call_id=call.id, status="success", content="done")
+                ToolResult(
+                    tool_call_id=call.id, status="success", data={"text": "done"}
+                )
             )
         elif consumer == "g6":
             assert workspace is not None
