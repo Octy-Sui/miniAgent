@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from miniagent.agents.default_agent import DEFAULT_AGENT
 from miniagent.cli.application import Application
 from miniagent.cli.bootstrap import BootstrapConfig, bootstrap
 from miniagent.environments import Command, ExecutionStatus, WorkspaceKind
@@ -18,6 +17,7 @@ from miniagent.runtime import (
     RunStatus,
     TerminationReason,
 )
+from tests.support.cli.agent import DEFAULT_AGENT
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("MINIAGENT_REAL_SWEBENCH") != "1",

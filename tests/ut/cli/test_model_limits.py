@@ -1,9 +1,9 @@
 import pytest
 
-from miniagent.agents.default_agent import DEFAULT_AGENT
 from miniagent.cli.model_limits import ModelLimits
 from miniagent.runtime.config import RuntimeConfig
 from miniagent.runtime.state import RunDefinition
+from tests.support.cli.agent import DEFAULT_AGENT
 
 
 @pytest.mark.parametrize(

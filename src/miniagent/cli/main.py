@@ -11,11 +11,12 @@ from uuid import UUID
 
 import typer
 
-from miniagent.agents.default_agent import DEFAULT_AGENT
+from miniagent.agents.default_agent import build_default_agent
 from miniagent.cli.bootstrap import BootstrapConfig, execute_new_run
 from miniagent.cli.console_approval import ConsoleApprovalHandler
 from miniagent.cli.logging import logging_session
 from miniagent.cli.model_limits import ModelLimitsError
+from miniagent.cli.prompts import PromptConfig, PromptConfigError, load_prompts
 from miniagent.cli.rendering import (
     print_application_result,
     print_resume_plan,
@@ -53,8 +54,10 @@ def parse_config(
     *,
     swebench_task: SWEbenchTaskContext | None = None,
     trajectory: bool | None = None,
+    prompts: PromptConfig | None = None,
 ) -> BootstrapConfig:
-    agent = DEFAULT_AGENT
+    prompts = prompts if prompts is not None else load_prompts()
+    agent = build_default_agent(prompts.system_prompt)
     if model is not None:
         agent = agent.model_copy(
             update={
@@ -66,7 +69,7 @@ def parse_config(
         )
     return BootstrapConfig(
         agent=agent,
-        task=task,
+        task=prompts.render_instance(task) if swebench_task is not None else task,
         source_dir=Path.cwd(),
         workspace_kind=workspace,
         docker_image=docker_image,
@@ -86,16 +89,15 @@ async def main(
     trajectory: bool | None = None,
 ) -> None:
     with logging_session():
-        config = parse_config(
-            task,
-            model,
-            workspace,
-            docker_image,
-            swebench_task=swebench_task,
-            trajectory=trajectory,
-        )
-
         try:
+            config = parse_config(
+                task,
+                model,
+                workspace,
+                docker_image,
+                swebench_task=swebench_task,
+                trajectory=trajectory,
+            )
             result, received_signal = await run_with_signals(
                 lambda cancellation, interruption: execute_new_run(
                     config,
@@ -120,7 +122,7 @@ async def main(
         except RunInUseError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=1) from None
-        except ModelLimitsError as exc:
+        except (ModelLimitsError, PromptConfigError) as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=1) from None
         except ValueError:

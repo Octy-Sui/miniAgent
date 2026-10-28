@@ -141,6 +141,9 @@ def configured_host(
     values = {
         "OPENAI_API_KEY": "test",
         "OPENAI_BASE_URL": "https://example.test",
+        "PROMPT_FILE": str(
+            Path(__file__).resolve().parents[3] / "config/deepseek_prompt.yaml"
+        ),
         "SWEBENCH_DATA_ROOT": str(prepared_bundle),
         "SWEBENCH_WORK_ROOT": str(tmp_path / "runs"),
         "SWEBENCH_EXECUTABLE": str(harness_executable),

@@ -5,12 +5,12 @@ from urllib.parse import unquote, urlparse
 
 import pytest
 
-from miniagent.agents.default_agent import DEFAULT_AGENT
 from miniagent.artifacts import FileArtifactStore
 from miniagent.cli.application import Application, ApplicationResult
 from miniagent.cli.bootstrap import BootstrapConfig, bootstrap
 from miniagent.models.protocol import FinishReason
 from miniagent.runtime import CancellationToken, RunStatus
+from tests.support.cli.agent import DEFAULT_AGENT
 from tests.support.cli.bootstrap import (
     StaticProvider,
     configure_settings,

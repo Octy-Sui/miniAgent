@@ -2,10 +2,10 @@ from datetime import UTC, datetime
 
 import pytest
 
-from miniagent.agents.default_agent import DEFAULT_AGENT
 from miniagent.cli import trajectory
 from miniagent.runtime.config import RuntimeConfig
 from miniagent.trajectory import TrajectoryDefinition
+from tests.support.cli.agent import DEFAULT_AGENT
 
 
 @pytest.mark.parametrize(

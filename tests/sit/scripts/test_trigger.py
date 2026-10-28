@@ -13,6 +13,7 @@ def trigger_environment(
     docker_cli: Path,
     harness_executable: Path,
 ) -> dict[str, str]:
+    (tmp_path / "docker").symlink_to(docker_cli)
     limits = tmp_path / "limits.toml"
     limits.write_text("models = []\n")
     return {
@@ -25,6 +26,7 @@ def trigger_environment(
         "EVALUATION_DOCKER_EXECUTABLE": str(docker_cli),
         "MODEL_LIMITS_FILE": str(limits),
         "RUN_DATABASE_PATH": str(tmp_path / "journal.sqlite3"),
+        "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
     }
 
 

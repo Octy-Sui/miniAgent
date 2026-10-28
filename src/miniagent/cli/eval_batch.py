@@ -13,9 +13,10 @@ from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 import typer
+import yaml
 from pydantic import BaseModel, Field
 
-from miniagent.agents.default_agent import DEFAULT_AGENT
+from miniagent.agents.default_agent import DEFAULT_MODEL
 from miniagent.artifacts import FileArtifactStore
 from miniagent.cli.bootstrap import execute_new_run
 from miniagent.cli.eval_metrics import (
@@ -28,6 +29,7 @@ from miniagent.cli.eval_metrics import (
 )
 from miniagent.cli.logging import logging_session
 from miniagent.cli.main import parse_config
+from miniagent.cli.prompts import PromptConfig, PromptConfigError, load_prompts
 from miniagent.cli.settings import RunLocationSettings, Settings
 from miniagent.cli.signals import run_with_signals
 from miniagent.diagnostics import log_event, operation
@@ -278,7 +280,9 @@ async def collect_result(
     return result
 
 
-async def run_worker(task: EvalTask, model: str, output: Path) -> None:
+async def run_worker(
+    task: EvalTask, model: str, output: Path, prompts: PromptConfig | None = None
+) -> None:
     with logging_session():
         started = perf_counter()
         run_id = uuid4()
@@ -286,15 +290,13 @@ async def run_worker(task: EvalTask, model: str, output: Path) -> None:
         try:
             config = replace(
                 parse_config(
-                    task=(
-                        "Reproduce the problem, implement the minimal fix, "
-                        f"and run the relevant tests.\n\n{task.problem_statement}"
-                    ),
+                    task=task.problem_statement,
                     model=model,
                     workspace=WorkspaceKind.DOCKER,
                     docker_image=task.image,
                     swebench_task=SWEbenchTaskContext(instance_id=task.instance_id),
                     trajectory=True,
+                    prompts=prompts,
                 ),
                 run_id=run_id,
             )
@@ -526,6 +528,12 @@ async def execute_batch(
 ) -> BatchSummary:
     with logging_session():
         started = perf_counter()
+        prompts = load_prompts()
+        prompt_snapshot = (output / "prompts.yaml").resolve()
+        prompt_snapshot.write_text(
+            yaml.safe_dump(prompts.model_dump(), allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
         commands = [
             [
                 sys.executable,
@@ -538,6 +546,8 @@ async def execute_batch(
                 model,
                 "--output-directory",
                 str(output),
+                "--prompt-file",
+                str(prompt_snapshot),
             ]
             for task in tasks
         ]
@@ -590,12 +600,13 @@ def main(
     model: Annotated[
         str,
         typer.Option(envvar="MINIAGENT_EVAL_MODEL", help="Model used by miniagent."),
-    ] = DEFAULT_AGENT.model.model,
+    ] = DEFAULT_MODEL.model,
     concurrency: Annotated[
         int, typer.Option(min=1, max=3, help="Maximum concurrent tasks.")
     ] = 3,
     worker: Annotated[bool, typer.Option(hidden=True)] = False,
     output_directory: Annotated[Path | None, typer.Option(hidden=True)] = None,
+    prompt_file: Annotated[Path | None, typer.Option(hidden=True)] = None,
 ) -> None:
     """Run SWE-bench evaluation tasks and collect trajectories and statistics."""
     os.chdir(PROJECT_ROOT)
@@ -609,13 +620,19 @@ def main(
     if worker:
         if len(tasks) != 1 or output_directory is None:
             raise typer.BadParameter("Worker requires one task and an output directory")
-        asyncio.run(run_worker(tasks[0], model, output_directory))
+        try:
+            prompts = load_prompts(prompt_file)
+        except PromptConfigError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        asyncio.run(run_worker(tasks[0], model, output_directory, prompts))
         return
     output = create_output_directory(PROJECT_ROOT / "eval", datetime.now().astimezone())
     typer.echo(f"Selected {len(tasks)} tasks; concurrency={concurrency}; model={model}")
     typer.echo(f"Results: {output}")
     try:
         summary = asyncio.run(execute_batch(tasks, model, output, concurrency))
+    except PromptConfigError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     except KeyboardInterrupt:
         raise typer.Exit(code=130) from None
     except asyncio.CancelledError:

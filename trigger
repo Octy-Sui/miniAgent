@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 import typer
 from pydantic import BaseModel, Field
 
-from miniagent.agents.default_agent import DEFAULT_AGENT
+from miniagent.agents.default_agent import DEFAULT_MODEL
 from miniagent.cli.logging import logging_session
 from miniagent.cli.main import main as run_agent
 from miniagent.environments import WorkspaceKind
@@ -38,7 +38,7 @@ def main(
     model: Annotated[
         str,
         typer.Option(help="Model used by miniagent.", envvar="MINIAGENT_TRIGGER_MODEL"),
-    ] = DEFAULT_AGENT.model.model,
+    ] = DEFAULT_MODEL.model,
     trajectory: Annotated[
         bool | None,
         typer.Option(
@@ -70,10 +70,7 @@ def main(
     try:
         asyncio.run(
             run_agent(
-                task=(
-                    "Reproduce the problem, implement the minimal fix, "
-                    f"and run the relevant tests.\n\n{task.problem_statement}"
-                ),
+                task=task.problem_statement,
                 workspace=WorkspaceKind.DOCKER,
                 docker_image=task.image,
                 model=model,

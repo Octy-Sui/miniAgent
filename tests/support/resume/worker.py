@@ -12,7 +12,6 @@ from uuid import UUID
 
 import pytest
 
-from miniagent.agents.default_agent import DEFAULT_AGENT
 from miniagent.artifacts import FileArtifactStore
 from miniagent.cli import bootstrap as composition
 from miniagent.cli import resume as recovery
@@ -28,6 +27,7 @@ from miniagent.runtime.events import RunEventType
 from miniagent.runtime.recording import RunPersistenceError
 from miniagent.storage import SQLiteRunStore
 from miniagent.tools.contracts import ToolCall
+from tests.support.cli.agent import DEFAULT_AGENT
 from tests.support.resume_helpers import StoreBoundary
 
 

@@ -3,7 +3,6 @@ import json
 import pytest
 from typer.testing import CliRunner
 
-from miniagent.agents.default_agent import DEFAULT_AGENT
 from miniagent.cli.bootstrap import BootstrapConfig, bootstrap
 from miniagent.cli.candidate_submission import WorkspaceCandidateEvaluator
 from miniagent.cli.main import app
@@ -13,6 +12,7 @@ from miniagent.evaluation.swebench_data import (
     EvaluationPreparationError,
     SWEbenchTaskContext,
 )
+from tests.support.cli.agent import DEFAULT_AGENT
 
 
 async def test_docker_context_required_before_workspace_creation(configured_host):

@@ -5,7 +5,6 @@ from uuid import uuid4
 
 import pytest
 
-from miniagent.agents.default_agent import DEFAULT_AGENT
 from miniagent.environments.config import LocalOptions, LocalWorkspaceSpec
 from miniagent.environments.persistence import persist_workspace_spec
 from miniagent.runtime.config import RuntimeConfig
@@ -15,6 +14,7 @@ from miniagent.runtime.snapshots import NewRunSnapshot
 from miniagent.runtime.state import create_run_state
 from miniagent.runtime.store_contracts import RunCommit, UnsupportedStorageVersionError
 from miniagent.storage.sqlite import SQLiteRunStore
+from tests.support.cli.agent import DEFAULT_AGENT
 
 
 def state():

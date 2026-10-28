@@ -5,7 +5,6 @@ from uuid import uuid4
 
 import pytest
 
-from miniagent.agents.default_agent import DEFAULT_AGENT
 from miniagent.cli.application import Application
 from miniagent.cli.bootstrap import BootstrapConfig, bootstrap, execute_new_run
 from miniagent.cli.run_definition import parse_application_definition
@@ -22,6 +21,7 @@ from miniagent.runtime.recording import RunPersistenceError
 from miniagent.runtime.store_contracts import RunNotFoundError
 from miniagent.storage import SQLiteRunStore
 from miniagent.storage.run_lock import RunInUseError, RunLock
+from tests.support.cli.agent import DEFAULT_AGENT
 from tests.support.cli.bootstrap import configure_settings, create_source_repository
 from tests.support.resume_helpers import StoreBoundary
 from tests.support.storage.sqlite import make_state

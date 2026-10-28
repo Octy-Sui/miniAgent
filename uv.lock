@@ -587,6 +587,7 @@ dependencies = [
     { name = "psutil" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "pyyaml" },
     { name = "typer" },
 ]
 
@@ -604,7 +605,6 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
-    { name = "pyyaml" },
 ]
 
 [package.metadata]
@@ -617,6 +617,7 @@ requires-dist = [
     { name = "psutil", specifier = ">=7.2.2" },
     { name = "pydantic", specifier = ">=2.13.5" },
     { name = "pydantic-settings", specifier = ">=2.15.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "typer", specifier = ">=0.12.0" },
     { name = "uvicorn", marker = "extra == 'dashboard'", specifier = ">=0.30,<1" },
 ]
@@ -630,7 +631,6 @@ dev = [
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "pytest-cov", specifier = ">=7,<8" },
-    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [[package]]

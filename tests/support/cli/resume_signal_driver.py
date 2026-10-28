@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from miniagent.agents.default_agent import DEFAULT_AGENT
 from miniagent.artifacts import FileArtifactStore
 from miniagent.cli import bootstrap as composition
 from miniagent.cli.bootstrap import BootstrapConfig, execute_new_run
@@ -13,6 +12,7 @@ from miniagent.cli.signals import _ForcedSignalCancellation, run_with_signals
 from miniagent.models.messages import AssistantMessage
 from miniagent.models.protocol import FinishReason, ModelResponse, ModelUsage
 from miniagent.storage import SQLiteRunStore
+from tests.support.cli.agent import DEFAULT_AGENT
 
 
 def ready(value="ready"):

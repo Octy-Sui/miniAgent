@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from miniagent.agents.default_agent import DEFAULT_AGENT
 from miniagent.cli.model_limits import ModelLimits, load_model_limits
+from tests.support.cli.agent import DEFAULT_AGENT
 
 
 def test_default_qwen_limits() -> None:

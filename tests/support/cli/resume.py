@@ -1,10 +1,10 @@
-from miniagent.agents.default_agent import DEFAULT_AGENT
 from miniagent.cli.bootstrap import BootstrapConfig, bootstrap
 from miniagent.models.messages import SystemMessage, UserMessage
 from miniagent.runtime.execution import RunExecution
 from miniagent.runtime.journal import RunJournal
 from miniagent.runtime.recording import RunRecorder
 from miniagent.runtime.state import create_run_state
+from tests.support.cli.agent import DEFAULT_AGENT
 from tests.support.runtime.runtime import QueueProvider, final_response
 from tests.support.trajectory.fixtures import request_for
 

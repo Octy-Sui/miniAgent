@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from miniagent.agents.default_agent import DEFAULT_AGENT
+from tests.support.cli.agent import DEFAULT_AGENT
 
 
 @pytest.mark.parametrize(

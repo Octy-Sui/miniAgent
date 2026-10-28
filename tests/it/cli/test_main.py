@@ -114,8 +114,9 @@ def test_cli_model_override_preserves_generation_options(
 
     assert invocation.exit_code == 0
     assert configs[0].agent.model.model == "replacement"
-    assert configs[0].agent.model.provider == cli_main.DEFAULT_AGENT.model.provider
-    assert configs[0].agent.generation == cli_main.DEFAULT_AGENT.generation
+    assert configs[0].agent.model.provider == "qwen"
+    assert configs[0].agent.generation.temperature == 0
+    assert configs[0].agent.generation.max_output_tokens == 4096
 
 
 def test_unknown_requests_are_not_rendered_as_zero_cost(monkeypatch):

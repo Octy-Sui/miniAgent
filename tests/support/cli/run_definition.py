@@ -1,7 +1,6 @@
 from pathlib import Path
 from uuid import uuid4
 
-from miniagent.agents.default_agent import DEFAULT_AGENT
 from miniagent.cli.model_limits import ModelLimits
 from miniagent.cli.run_definition import (
     CLIApplicationDefinition,
@@ -13,6 +12,7 @@ from miniagent.metering.pricing import ModelPrice, PriceConfig
 from miniagent.policy import digest_json
 from miniagent.runtime.config import RuntimeConfig
 from miniagent.runtime.state import create_run_state
+from tests.support.cli.agent import DEFAULT_AGENT
 
 
 def definition():

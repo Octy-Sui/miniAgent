@@ -3,7 +3,6 @@ from typing import cast
 
 import pytest
 
-from miniagent.agents.default_agent import DEFAULT_AGENT
 from miniagent.artifacts import FileArtifactStore
 from miniagent.cli.bootstrap import (
     BootstrapConfig,
@@ -20,6 +19,7 @@ from miniagent.models.protocol import (
 )
 from miniagent.runtime import CancellationToken, RunStatus
 from miniagent.tools.shell import ShellArguments
+from tests.support.cli.agent import DEFAULT_AGENT
 from tests.support.cli.bootstrap import (
     StaticProvider,
     configure_settings,
